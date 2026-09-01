@@ -1,0 +1,17 @@
+# Simulation + controller. Enough on its own to run controller/ and rl.lessons,
+# rl.climb_task and rl.bench's simulator half.
+mujoco==3.12.0
+numpy>=2.0
+
+# Training. torch here is whatever wheel pip picks for the platform:
+#   macOS (Apple silicon)  -> MPS build, nothing extra to do
+#   Linux + NVIDIA         -> the default PyPI wheel is already CUDA-enabled;
+#                             for a specific CUDA version instead, install torch
+#                             first from the matching index, e.g.
+#     pip install torch --index-url https://download.pytorch.org/whl/cu124
+#                             and then `pip install -r requirements.txt`
+#   Linux, no GPU          -> pip install torch --index-url \
+#                               https://download.pytorch.org/whl/cpu
+torch>=2.6
+gymnasium>=1.0
+stable-baselines3>=2.4

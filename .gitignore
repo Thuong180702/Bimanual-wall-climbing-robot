@@ -1,0 +1,12 @@
+# virtualenv -- 789 MB, rebuild with: pip install -r requirements.txt
+.venv/
+
+# training runs, checkpoints, rendered videos and stills -- all reproducible
+out/
+
+# generated from scene.xml by `python -m rl.lessons`, so it would only go stale here
+urdf/lessons/
+
+__pycache__/
+*.pyc
+.DS_Store

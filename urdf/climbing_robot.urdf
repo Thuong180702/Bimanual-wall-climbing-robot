@@ -1,0 +1,504 @@
+<?xml version="1.0"?>
+<!-- Bimanual wall-climbing robot. Generated from Fusion "3d-climbing-robot". -->
+<!-- Units: m, kg, rad. Frame: +X forward (toward the wall), +Y left, +Z up. -->
+<!-- Joint sign convention: about Y, NEGATIVE = flexion / forward / closing. -->
+<!-- effort= values are geometry-derived static-hold estimates, NOT actuator specs. -->
+<robot name="bimanual_wall_climber">
+  <mujoco>
+    <compiler meshdir="." balanceinertia="true" discardvisual="false"/>
+  </mujoco>
+  <material name="aluminium">
+    <color rgba="0.75 0.76 0.78 1.0"/>
+  </material>
+
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0.000000 -0.000000 0.100000" rpy="0 0 0"/>
+      <mass value="4.395172"/>
+      <inertia ixx="0.0237738495" ixy="-7.85803422e-18" ixz="3.75712261e-17" iyy="0.0159027497" iyz="-2.01362127e-17" izz="0.0216115277"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/base_link.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.100000" rpy="0 0 0"/>
+      <geometry><box size="0.140000 0.210000 0.200000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="waist_link">
+    <inertial>
+      <origin xyz="-0.000000 -0.000000 0.020000" rpy="0 0 0"/>
+      <mass value="0.848230"/>
+      <inertia ixx="0.000643241096" ixy="-3.13651863e-18" ixz="2.8601403e-19" iyy="0.000643241096" iyz="1.56954082e-20" izz="0.00106028752"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/waist_link.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.020000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.050000" length="0.040000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="torso_upper">
+    <inertial>
+      <origin xyz="-0.000000 -0.000000 0.082500" rpy="0 0 0"/>
+      <mass value="4.037000"/>
+      <inertia ixx="0.0239772948" ixy="-1.10162047e-16" ixz="3.41348576e-18" iyy="0.0139069447" iyz="1.54247013e-17" izz="0.0251898802"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/torso_upper.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.082500" rpy="0 0 0"/>
+      <geometry><box size="0.150000 0.240000 0.165000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="shoulder_L">
+    <inertial>
+      <origin xyz="-0.000000 0.015000 0.000000" rpy="0 0 0"/>
+      <mass value="0.075543"/>
+      <inertia ixx="3.72065583e-05" ixy="-2.94888796e-20" ixz="-1.07434062e-19" iyy="5.4499531e-05" iyz="0" izz="3.72065583e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/shoulder_L.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.015000 0.000000" rpy="-1.570796 0 0"/>
+      <geometry><cylinder radius="0.032500" length="0.030000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="upper_arm_L">
+    <inertial>
+      <origin xyz="0.000000 0.000000 -0.100000" rpy="0 0 0"/>
+      <mass value="0.293489"/>
+      <inertia ixx="0.0013507446" ixy="8.6047461e-19" ixz="-7.24008466e-19" iyy="0.0013507446" iyz="2.84217094e-18" izz="0.000268235027"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/upper_arm_L.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.100000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.032500" length="0.200000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="humerus_rot_L">
+    <inertial>
+      <origin xyz="0.000000 0.000000 -0.030000" rpy="0 0 0"/>
+      <mass value="0.090412"/>
+      <inertia ixx="6.72165457e-05" ixy="-3.44630155e-21" ixz="-9.2266077e-20" iyy="6.72165457e-05" iyz="0" izz="5.28849095e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/humerus_rot_L.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.030000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.027500" length="0.060000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="fore_arm_L">
+    <inertial>
+      <origin xyz="0.000000 0.000000 -0.072500" rpy="0 0 0"/>
+      <mass value="0.186534"/>
+      <inertia ixx="0.00051719289" ixy="-9.59338625e-20" ixz="3.00972966e-20" iyy="0.00051719289" iyz="-3.55271368e-19" izz="0.000168606138"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/fore_arm_L.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.072500" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.032500" length="0.145000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="forearm_rot_L">
+    <inertial>
+      <origin xyz="-0.000000 0.000000 -0.030000" rpy="0 0 0"/>
+      <mass value="0.076010"/>
+      <inertia ixx="5.73019079e-05" ixy="-3.66596015e-21" ixz="5.57775652e-20" iyy="5.73019079e-05" iyz="0" izz="4.51115877e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/forearm_rot_L.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.030000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.027500" length="0.060000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="wrist_L">
+    <inertial>
+      <origin xyz="-0.000000 -0.000000 -0.010000" rpy="0 0 0"/>
+      <mass value="0.040045"/>
+      <inertia ixx="1.23034469e-05" ixy="5.00791751e-20" ixz="-4.91707991e-19" iyy="1.23034469e-05" iyz="8.8817842e-20" izz="1.98192347e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/wrist_L.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.010000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.027500" length="0.020000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="wrist_dev_L">
+    <inertial>
+      <origin xyz="-0.000000 -0.000000 -0.010000" rpy="0 0 0"/>
+      <mass value="0.040045"/>
+      <inertia ixx="1.23034469e-05" ixy="1.75898643e-19" ixz="-4.37903415e-19" iyy="1.23034469e-05" iyz="-2.66453526e-19" izz="1.98192347e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/wrist_dev_L.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.010000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.027500" length="0.020000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="hook_L">
+    <inertial>
+      <origin xyz="0.007491 -0.000000 -0.067509" rpy="0 0 0"/>
+      <mass value="0.123530"/>
+      <inertia ixx="0.000211507204" ixy="-8.12683254e-18" ixz="3.37665614e-05" iyy="0.000185831673" iyz="-1.0658141e-17" izz="7.74695056e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/hook_L.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.055000" rpy="0 0 0"/>
+      <geometry><box size="0.012000 0.065000 0.110000"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.026000 0.000000 -0.104000" rpy="0 0 0"/>
+      <geometry><box size="0.040000 0.065000 0.012000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="shoulder_R">
+    <inertial>
+      <origin xyz="-0.000000 -0.015000 0.000000" rpy="0 0 0"/>
+      <mass value="0.075543"/>
+      <inertia ixx="3.72065583e-05" ixy="-5.56677594e-20" ixz="-1.13755052e-19" iyy="5.4499531e-05" iyz="0" izz="3.72065583e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/shoulder_R.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 -0.015000 0.000000" rpy="-1.570796 0 0"/>
+      <geometry><cylinder radius="0.032500" length="0.030000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="upper_arm_R">
+    <inertial>
+      <origin xyz="0.000000 0.000000 -0.100000" rpy="0 0 0"/>
+      <mass value="0.293489"/>
+      <inertia ixx="0.0013507446" ixy="-1.91569867e-21" ixz="1.59490793e-18" iyy="0.0013507446" iyz="0" izz="0.000268235027"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/upper_arm_R.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.100000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.032500" length="0.200000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="humerus_rot_R">
+    <inertial>
+      <origin xyz="0.000000 0.000000 -0.030000" rpy="0 0 0"/>
+      <mass value="0.090412"/>
+      <inertia ixx="6.72165457e-05" ixy="4.81052306e-20" ixz="-3.67264416e-20" iyy="6.72165457e-05" iyz="0" izz="5.28849095e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/humerus_rot_R.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.030000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.027500" length="0.060000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="fore_arm_R">
+    <inertial>
+      <origin xyz="0.000000 0.000000 -0.072500" rpy="0 0 0"/>
+      <mass value="0.186534"/>
+      <inertia ixx="0.00051719289" ixy="-2.40470245e-21" ixz="-2.32124732e-19" iyy="0.00051719289" iyz="-3.55271368e-19" izz="0.000168606138"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/fore_arm_R.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.072500" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.032500" length="0.145000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="forearm_rot_R">
+    <inertial>
+      <origin xyz="-0.000000 -0.000000 -0.030000" rpy="0 0 0"/>
+      <mass value="0.076010"/>
+      <inertia ixx="5.73019079e-05" ixy="2.44009769e-21" ixz="6.19735359e-20" iyy="5.73019079e-05" iyz="0" izz="4.51115877e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/forearm_rot_R.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.030000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.027500" length="0.060000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="wrist_R">
+    <inertial>
+      <origin xyz="-0.000000 0.000000 -0.010000" rpy="0 0 0"/>
+      <mass value="0.040045"/>
+      <inertia ixx="1.23034469e-05" ixy="-2.41531753e-20" ixz="-1.35823715e-20" iyy="1.23034469e-05" iyz="0" izz="1.98192347e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/wrist_R.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.010000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.027500" length="0.020000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="wrist_dev_R">
+    <inertial>
+      <origin xyz="-0.000000 0.000000 -0.010000" rpy="0 0 0"/>
+      <mass value="0.040045"/>
+      <inertia ixx="1.23034469e-05" ixy="-2.48421591e-20" ixz="-1.53929166e-20" iyy="1.23034469e-05" iyz="8.8817842e-20" izz="1.98192347e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/wrist_dev_R.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.010000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.027500" length="0.020000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="hook_R">
+    <inertial>
+      <origin xyz="0.007491 0.000000 -0.067509" rpy="0 0 0"/>
+      <mass value="0.123530"/>
+      <inertia ixx="0.000211507204" ixy="-2.44249065e-19" ixz="3.37665614e-05" iyy="0.000185831673" iyz="0" izz="7.74695056e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/hook_R.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="aluminium"/>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.055000" rpy="0 0 0"/>
+      <geometry><box size="0.012000 0.065000 0.110000"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.026000 0.000000 -0.104000" rpy="0 0 0"/>
+      <geometry><box size="0.040000 0.065000 0.012000"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="waist_yaw" type="revolute">
+    <parent link="base_link"/>
+    <child link="waist_link"/>
+    <origin xyz="0.000000 0.000000 0.200000" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.785398" upper="0.785398" effort="49" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="torso_fixed" type="fixed">
+    <parent link="waist_link"/>
+    <child link="torso_upper"/>
+    <origin xyz="0.000000 0.000000 0.040000" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="shoulder_L_abduction" type="revolute">
+    <parent link="torso_upper"/>
+    <child link="shoulder_L"/>
+    <origin xyz="-0.000000 0.125000 0.165000" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="0.000000" upper="3.141593" effort="68" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="shoulder_L_flexion" type="revolute">
+    <parent link="shoulder_L"/>
+    <child link="upper_arm_L"/>
+    <origin xyz="0.000000 0.030000 0.000000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.141593" upper="1.047198" effort="68" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="shoulder_L_rotation" type="revolute">
+    <parent link="upper_arm_L"/>
+    <child link="humerus_rot_L"/>
+    <origin xyz="0.000000 -0.000000 -0.200000" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.221730" upper="1.570796" effort="46" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="elbow_L" type="revolute">
+    <parent link="humerus_rot_L"/>
+    <child link="fore_arm_L"/>
+    <origin xyz="0.000000 0.000000 -0.060000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.094395" upper="0.000000" effort="39" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="forearm_L_roll" type="revolute">
+    <parent link="fore_arm_L"/>
+    <child link="forearm_rot_L"/>
+    <origin xyz="0.000000 -0.000000 -0.145000" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.483530" upper="1.483530" effort="23" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="wrist_L_flexion" type="revolute">
+    <parent link="forearm_rot_L"/>
+    <child link="wrist_L"/>
+    <origin xyz="0.000000 0.000000 -0.060000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.436332" upper="0.436332" effort="17" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="wrist_L_deviation" type="revolute">
+    <parent link="wrist_L"/>
+    <child link="wrist_dev_L"/>
+    <origin xyz="0.000000 -0.000000 -0.020000" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.523599" upper="0.349066" effort="15" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="finger_L" type="revolute">
+    <parent link="wrist_dev_L"/>
+    <child link="hook_L"/>
+    <origin xyz="-0.000000 -0.000000 -0.020000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.570796" upper="0.349066" effort="13" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="shoulder_R_abduction" type="revolute">
+    <parent link="torso_upper"/>
+    <child link="shoulder_R"/>
+    <origin xyz="0.000000 -0.125000 0.165000" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.141593" upper="0.000000" effort="68" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="shoulder_R_flexion" type="revolute">
+    <parent link="shoulder_R"/>
+    <child link="upper_arm_R"/>
+    <origin xyz="0.000000 -0.030000 0.000000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.141593" upper="1.047198" effort="68" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="shoulder_R_rotation" type="revolute">
+    <parent link="upper_arm_R"/>
+    <child link="humerus_rot_R"/>
+    <origin xyz="0.000000 0.000000 -0.200000" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.570796" upper="1.221730" effort="46" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="elbow_R" type="revolute">
+    <parent link="humerus_rot_R"/>
+    <child link="fore_arm_R"/>
+    <origin xyz="0.000000 0.000000 -0.060000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.094395" upper="0.000000" effort="39" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="forearm_R_roll" type="revolute">
+    <parent link="fore_arm_R"/>
+    <child link="forearm_rot_R"/>
+    <origin xyz="0.000000 0.000000 -0.145000" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.483530" upper="1.483530" effort="23" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="wrist_R_flexion" type="revolute">
+    <parent link="forearm_rot_R"/>
+    <child link="wrist_R"/>
+    <origin xyz="0.000000 0.000000 -0.060000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.436332" upper="0.436332" effort="17" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="wrist_R_deviation" type="revolute">
+    <parent link="wrist_R"/>
+    <child link="wrist_dev_R"/>
+    <origin xyz="0.000000 -0.000000 -0.020000" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.349066" upper="0.523599" effort="15" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+  <joint name="finger_R" type="revolute">
+    <parent link="wrist_dev_R"/>
+    <child link="hook_R"/>
+    <origin xyz="0.000000 0.000000 -0.020000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.570796" upper="0.349066" effort="13" velocity="3.0"/>
+    <dynamics damping="0.1" friction="0.0"/>
+  </joint>
+
+</robot>
