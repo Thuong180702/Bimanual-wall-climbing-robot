@@ -62,8 +62,13 @@ MIN_SEP = 0.12           # m the hooks must keep along the rung. The hooks are 6
                          # is not a guess: the one policy that traversed cleanly
                          # never came closer than 119 mm.
 HOLD_LOAD = 20.0         # N through the wrist before a seated hook counts as held
-DANGLE_GRACE = 3.0       # s a hand may be off a hold for free -- that is a reach
-K_DANGLE = 0.01          # per step, per hand still off after the grace runs out
+DANGLE_GRACE = 3.0       # s of TOTAL off-time per hand that is free -- one reach
+DANGLE_MAX_FRAC = 0.5    # and past that, a hand may be off at most this fraction of
+                         # the episode so far. Being off half the time is what
+                         # alternating looks like; 79 % is one hand doing everything.
+K_DANGLE = 0.01          # per step, per hand over its share
+STALE_AFTER = 8.0        # s a hand may stay on its hold without ever letting go
+K_STALE = 0.01           # per step, per hand past that
 K_ACT = 2e-4             # action magnitude penalty -- smoothness
 K_VEL = 1e-4             # joint velocity penalty -- smoothness
 SUCCESS_R = 10.0
@@ -117,11 +122,23 @@ FAIL_R = -10.0
 # the flat penalty actively pushed towards the exploit it was meant to close.
 #
 # What deserves a penalty is not letting go, it is a hand PARKED off the wall. So
-# each hand gets DANGLE_GRACE seconds free -- long enough for a reach -- and only
-# the time past that costs. A reach inside the grace is now free; a hand left
-# hanging for a whole 60 s episode pays about 29, against the ~5.5 that crossing
-# lesson 1 earns it. Both hooks off needs no term of its own: the episode already
-# ends with FAIL_R after 0.6 s of it.
+# each hand gets DANGLE_GRACE seconds free -- long enough for a reach. The first
+# version then charged every further step of a CONTINUOUS stretch off the wall, and
+# a policy walked straight through it: measured on the 10.4M run, the right hand was
+# off the rung for 79 % of the episode and paid 0.13 in total, because it made 88
+# short hops and only one of them outlasted the grace. The grace reset on every
+# touch. So the budget is now cumulative over the episode and capped as a FRACTION
+# of it -- flutter cannot dodge a share.
+#
+# K_STALE is the mirror image, and it exists because of the single most consistent
+# finding across every run: the LEFT HAND HAS NEVER ONCE LET GO. Not in any policy,
+# at any step count. The two hands deadlock -- the right is airborne 79-84 % of the
+# time, so there is never a safe moment for the left to release, and the roles
+# freeze. K_DANGLE says do not stay off; K_STALE says do not stay on. Together the
+# only cheap gait left is alternating.
+#
+# Both hooks off needs no term of its own: the episode already ends with FAIL_R
+# after 0.6 s of it.
 
 
 class ClimbTask:
@@ -316,7 +333,9 @@ class ClimbTask:
         self.cross_axis = self.segs[self._seat('L')[0]][1]
         sep = self._throat_true('L') - self._throat_true('R')
         self.cross_sign = float(np.sign(sep @ self.cross_axis)) or 1.0
-        self.off_t = np.zeros(2)          # consecutive control steps each hand is off
+        self.off_t = np.zeros(2)          # TOTAL control steps each hand has been off
+        self.held_t = np.zeros(2)         # steps since each hand was last fully clear
+        self.n_steps = 0
         return self._obs(), {}
 
     def step(self, action):
@@ -327,8 +346,13 @@ class ClimbTask:
         self._sense()
         gaps = np.array([self._seat(s)[1] for s in 'LR'])
         d, free, held = self._hand_dists(), gaps >= ON_RUNG, self._holding()
-        self.off_t = np.where(free, self.off_t + 1, 0.0)
-        parked = float(np.sum(self.off_t > DANGLE_GRACE / (FRAME_SKIP * self.dt)))
+        self.n_steps += 1
+        self.off_t += free                      # cumulative: never reset by a touch
+        self.held_t = np.where(gaps > CLEAR_OF, 0.0, self.held_t + 1)
+        grace = DANGLE_GRACE / (FRAME_SKIP * self.dt)
+        parked = float(np.sum(free & (self.off_t > grace)
+                              & (self.off_t > DANGLE_MAX_FRAC * self.n_steps)))
+        stale = float(np.sum(self.held_t > STALE_AFTER / (FRAME_SKIP * self.dt)))
         # A hand re-anchors only after it has genuinely let go and taken hold again.
         # Without the let_go gate, a weight shift that drops the wrist load counts as
         # taking a new hold, and a hand that never leaves the rung banks progress --
@@ -340,11 +364,11 @@ class ClimbTask:
         sep_err = self._sep_error()
         r = (K_BANK * float((self.anchor_d - new_anchor).sum())
              + K_REACH * float((self.prev_d - d).sum())
-             - K_DANGLE * parked - K_SEP * sep_err
+             - K_DANGLE * parked - K_STALE * stale - K_SEP * sep_err
              - K_ACT * float(a @ a) - K_VEL * float(self.dq @ self.dq))
         self.anchor_d, self.held, self.prev_d = new_anchor, held, d
         info = {'dist': float(d.sum()), 'lesson': self.lesson,
-                'off': float(free.sum()), 'parked': parked,
+                'off': float(free.sum()), 'parked': parked, 'stale': stale,
                 'banked': float(self.anchor_d.sum()), 'sep_err': sep_err}
         terminated, truncated = False, False
         if self._success():
@@ -449,6 +473,50 @@ def main():
         f"runs out")
     print(f"dangle test: {grace} steps ({DANGLE_GRACE:.0f} s) of reach are free, "
           f"a hand parked past that is charged")
+
+    # The evasion the 10.4M policy found: 88 short hops kept every stretch under the
+    # grace, so a hand off 79 % of the episode paid 0.13 in total. A cumulative
+    # budget has to charge that.
+    t = ClimbTask(1)
+    t.reset()
+    real_seat = t._seat
+    k = {'i': 0}
+    def flutter(sd):
+        if sd != 'L':
+            return real_seat(sd)
+        # 13 steps off, 4 steps on -- 76 % off, no stretch anywhere near the grace
+        return (real_seat(sd)[0], 9.0 if (k['i'] % 17) < 13 else real_seat(sd)[1])
+    t._seat = flutter
+    charged, longest, run = 0, 0, 0
+    for _ in range(600):
+        k['i'] += 1
+        _, _, te, tr, info = t.step(np.zeros(17))
+        charged += info['parked'] > 0
+        run = run + 1 if info['off'] else 0
+        longest = max(longest, run)
+        if te or tr:
+            break
+    print(f"flutter test: a hand off 76% of the episode in hops of at most "
+          f"{longest} steps (grace {grace}) is charged on {charged} steps")
+    assert longest < grace, "the test is not fluttering -- a stretch outlasted the grace"
+    assert charged > 100, (f"only {charged} steps charged: short hops still dodge the "
+                           f"dangle budget, which is what the 10.4M run exploited")
+
+    # And its mirror: a hand that never lets go must start costing. Across every run
+    # measured, the left hand has never once released.
+    t = ClimbTask(1)
+    t.reset()
+    stale_at, n = None, int(STALE_AFTER / (FRAME_SKIP * t.dt))
+    for i in range(n + 60):
+        _, _, te, tr, info = t.step(np.zeros(17))
+        if info['stale'] > 0 and stale_at is None:
+            stale_at = i + 1
+        if te or tr:
+            break
+    print(f"stale test: hanging still, a hand that never releases is charged from "
+          f"step {stale_at} (threshold {n} = {STALE_AFTER:.0f} s)")
+    assert stale_at is not None, "a hand held for the whole episode is never charged"
+    assert stale_at > n - 2, f"charged at step {stale_at}, before the {n}-step threshold"
 
     # A hand whose wrist load merely dips -- a weight shift -- must not count as
     # having taken a new hold. On the 5.1M policy every anchor re-take came from

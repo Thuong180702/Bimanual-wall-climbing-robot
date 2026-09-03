@@ -32,7 +32,10 @@ def show(name, names):
     print(f"{'steps':>12}: {st['timesteps']:,}")
     print(f"{'pool':>12}: {st['active']}")
     b = st.get('best')
-    print(f"{'best':>12}: " + (f"{b:.0%}" if isinstance(b, (int, float)) and b >= 0
+    # a sum of per-lesson success rates, so 1.00 can be one lesson passed or two
+    # half-passed; the per-lesson table below is what to read for detail
+    print(f"{'best':>12}: " + (f"{b:.2f} of {len(st['active'])}"
+                               if isinstance(b, (int, float)) and b >= 0
                                else "not scored yet")
           + ("  (best_model.zip saved)" if st['_best_exists'] else ""))
     print(f"{'updated':>12}: {st['_age']:.0f} s ago"

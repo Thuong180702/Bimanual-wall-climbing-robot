@@ -136,16 +136,23 @@ class Checkpoint(BaseCallback):
         self.last, self.best = 0, best if best is not None else -1.0
 
     def score(self):
-        """mean success rate over the active lessons, once each has enough episodes.
+        """SUM of the success rates over the active lessons. Not the mean.
 
-        The pool is what is being trained, so scoring only it keeps the number
-        comparable across a curriculum unlock instead of jumping when a fresh lesson
-        with 0 % joins the average.
+        The mean was a bug with a clean signature. When lesson 2 unlocked at 0 % it
+        halved the score, so on the 10.4M run the stored best froze at step 308 512
+        with 57 % while the policy went on to reach 85 % on lesson 1 -- and
+        best_model.zip held the weaker of the two. The comment here used to claim the
+        mean kept the number comparable across an unlock; it did the opposite.
+
+        A sum has the three properties that matter: unlocking a lesson adds 0, so it
+        can never lower the score; getting better at any lesson raises it; and
+        forgetting an old one lowers it, which a "score the newest lesson" rule would
+        have missed.
         """
         rates = [self.cur.rate(k) for k in self.cur.active]
         if any(n < UNLOCK_MIN for n, _ in rates):
             return None
-        return sum(r for _, r in rates) / len(rates)
+        return sum(r for _, r in rates)
 
     def save(self, tag=''):
         os.makedirs(self.dir, exist_ok=True)
@@ -165,13 +172,14 @@ class Checkpoint(BaseCallback):
         if s is not None and s > self.best:
             self.best = s
             self.save('best_')
-            print(f"[best] {s:.0%} over the pool at {self.model.num_timesteps} steps")
+            print(f"[best] score {s:.2f} over {len(self.cur.active)} lesson(s) "
+                  f"at {self.model.num_timesteps:,} steps")
         if self.model.num_timesteps - self.last >= self.every:
             self.last = self.model.num_timesteps
             self.save()
             rates = " ".join(f"L{k} {self.cur.rate(k)[1]:.0%}" for k in self.cur.active)
             print(f"[checkpoint] {self.model.num_timesteps:,} steps | {rates} | "
-                  f"best {self.best:.0%} | out/{os.path.basename(self.dir)}")
+                  f"best {self.best:.2f} | out/{os.path.basename(self.dir)}")
         return True
 
 
@@ -228,6 +236,23 @@ def self_check():
 
     off = Curriculum([1, 2, 3], enabled=False)
     assert off.active == [1, 2, 3], "--no-curriculum must start with the whole pool"
+
+    # The best-checkpoint score must never fall just because a lesson unlocked. Under
+    # the old mean it did: 85% on lesson 1 alone scored 0.85, and unlocking lesson 2
+    # at 0% dropped it to 0.42, so the 10.4M run kept a 308k-step policy as "best".
+    class Cp:
+        active = None
+        def rate(self, k):
+            return (WINDOW, {1: 0.85, 2: 0.0, 3: 0.0}[k])
+    cp, sc = Cp(), Checkpoint.score
+    cp.active = [1]
+    before = sc(type('X', (), {'cur': cp})())
+    cp.active = [1, 2]
+    after = sc(type('X', (), {'cur': cp})())
+    print(f"score test: lesson 1 at 85% scores {before:.2f}; unlocking lesson 2 at 0% "
+          f"scores {after:.2f}")
+    assert after >= before, (f"unlocking a lesson dropped the score {before:.2f} -> "
+                             f"{after:.2f}; best_model.zip will freeze at the old one")
     print(f"curriculum: unlocks at {UNLOCK_AT:.0%} over {UNLOCK_MIN}+ episodes, "
           f"keeps every lesson in the pool, survives a save/load. OK")
 
