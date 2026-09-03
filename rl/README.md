@@ -230,7 +230,14 @@ asserts all of it.
 | anchor moves only after the hand got `CLEAR_OF` the rung | without it, a wrist-load dip counted as taking a new hold — on the 5.1M policy **every** re-anchor was that, with the hook never leaving the rung |
 | both terms charged **both ways** | paying only in the good direction is a pump: measured **+27.28 paid for 0.000 m of travel** and 99 release/reseat cycles in one episode |
 | `K_DANGLE` with a `DANGLE_GRACE` | the flat version taxed the release climbing is made of, −15.25 against +5.57 of progress |
-| `K_CROSS` | the distance term is a **sum** over both hands, so it does not care which hand works: policies froze one hand and crossed the other over it, 100 % of steps in the crossed shoulder band and 0 % outward |
+| `K_SEP` | the distance term is a **sum** over both hands, so it does not care which hand works: policies froze one hand and crossed the other over it. Pricing only *crossed* then parked both hands on the same point (mean separation 1 mm), so it is a floor, not a sign test |
+| `K_DANGLE` over a cumulative budget | charging a *continuous* stretch off the wall was evadable: 88 short hops kept every stretch under the grace and a hand off 79 % of the episode paid 0.13 |
+| `K_STALE` | across every run, **the left hand never once let go**. The hands deadlock — the right is airborne 79–84 % of the time, so the left never gets a safe moment. `K_DANGLE` says do not stay off, `K_STALE` says do not stay on |
+| `K_EFFORT`, `K_FIGHT`, `K_TIME` | the gait was legal but nothing like climbing. Measured against a still hang (29.6 N·m, 107 N): the stuck episode ran 145 N·m and **202 N of grip on a 109 N robot** — ~95 N of the two arms pulling against each other. All three price the *excess* over hanging still, never the absolute, so existing stays free |
+
+Replayed on the audited 10.4M policy, the whole set separates the two behaviours
+cleanly: its 99-step success scores **+13.23** and its 1490-step stuck episode
+**−51.17**. Not one term charges the healthy episode more than 0.30.
 
 A single-joint sweep says crossing is not necessary: the leading hand gains **+459 mm**
 toward the goal on its 60° of outward travel, against **+64 mm** for crossing the

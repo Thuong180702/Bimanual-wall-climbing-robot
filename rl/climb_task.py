@@ -71,6 +71,34 @@ STALE_AFTER = 8.0        # s a hand may stay on its hold without ever letting go
 K_STALE = 0.01           # per step, per hand past that
 K_ACT = 2e-4             # action magnitude penalty -- smoothness
 K_VEL = 1e-4             # joint velocity penalty -- smoothness
+
+# --- doing it the way a climber would: cheaply, and without fighting yourself -----
+# Measured on the 10.4M policy against a robot just hanging still (action = 0):
+#
+#                        torque      both hands' load
+#   hanging still       29.6 N.m         107 N          <- the cost of existing
+#   lesson 1 (4 s)      55.5 N.m         131 N
+#   lesson 2 (60 s)    145.1 N.m         202 N          <- on a 109 N robot
+#
+# 202 N of grip on a 109 N robot means the two arms are pulling against each other:
+# ~95 N of pure internal force that lifts nothing. That is the opposite of shifting
+# your weight onto one hand before you lift the other, which is what the gait is
+# supposed to be.
+#
+# Both terms price the EXCESS over hanging still, never the absolute. Penalising the
+# absolute would charge the robot for existing, and the cheapest way to stop paying
+# would be to end the episode -- exactly the wrong lesson.
+#
+# Deliberately NOT rewarded: the number of times the load majority swaps. The 10.4M
+# policy already swaps it 5.8 times a second on lesson 1 and 9.2 on lesson 2 -- that
+# is chatter, not weight shifting, and paying per swap would buy more of it.
+TAU_IDLE = 30.0          # N.m of joint torque a still hang already costs
+WEIGHT = 109.0           # N, the robot
+K_EFFORT = 5e-5          # per step, per N.m of torque above the idle hang
+K_FIGHT = 5e-5           # per step, per N of grip above body weight
+K_TIME = 0.003           # per step. A whole 1500-step episode costs 4.5 against
+                         # SUCCESS_R's 10, so finishing early is worth real points
+                         # and giving up early still loses (FAIL_R is -10).
 SUCCESS_R = 10.0
 FAIL_R = -10.0
 
@@ -362,13 +390,18 @@ class ClimbTask:
         self.let_go &= ~took
         new_anchor = np.where(took, d, self.anchor_d)
         sep_err = self._sep_error()
+        effort = max(0.0, float(np.abs(self.tau).sum()) - TAU_IDLE)
+        grip = sum(float(np.linalg.norm(self.env.hand(s)['force'])) for s in 'LR')
+        fight = max(0.0, grip - WEIGHT)
         r = (K_BANK * float((self.anchor_d - new_anchor).sum())
              + K_REACH * float((self.prev_d - d).sum())
              - K_DANGLE * parked - K_STALE * stale - K_SEP * sep_err
+             - K_EFFORT * effort - K_FIGHT * fight - K_TIME
              - K_ACT * float(a @ a) - K_VEL * float(self.dq @ self.dq))
         self.anchor_d, self.held, self.prev_d = new_anchor, held, d
         info = {'dist': float(d.sum()), 'lesson': self.lesson,
                 'off': float(free.sum()), 'parked': parked, 'stale': stale,
+                'effort': effort, 'fight': fight,
                 'banked': float(self.anchor_d.sum()), 'sep_err': sep_err}
         terminated, truncated = False, False
         if self._success():
@@ -515,6 +548,26 @@ def main():
             break
     print(f"stale test: hanging still, a hand that never releases is charged from "
           f"step {stale_at} (threshold {n} = {STALE_AFTER:.0f} s)")
+
+    # Effort and internal force must both read ~zero for a robot that is simply
+    # hanging. If existing costs, the cheapest policy is to stop existing.
+    t = ClimbTask(1)
+    t.reset()
+    eff, fig = [], []
+    for _ in range(200):
+        _, _, te, tr, info = t.step(np.zeros(17))
+        eff.append(info['effort']); fig.append(info['fight'])
+        if te or tr:
+            break
+    eff, fig = np.mean(eff), np.mean(fig)
+    print(f"idle test: hanging still costs {K_EFFORT*eff:.4f}/step in effort and "
+          f"{K_FIGHT*fig:.4f}/step in internal force")
+    assert K_EFFORT * eff < 0.002, (
+        f"a still hang is charged {K_EFFORT*eff:.4f}/step of effort -- existing must "
+        f"be free, or ending the episode becomes the cheapest policy")
+    assert K_FIGHT * fig < 0.002, (
+        f"a still hang is charged {K_FIGHT*fig:.4f}/step of internal force; the two "
+        f"hooks together carry about body weight and that must read as no fighting")
     assert stale_at is not None, "a hand held for the whole episode is never charged"
     assert stale_at > n - 2, f"charged at step {stale_at}, before the {n}-step threshold"
 
@@ -574,8 +627,12 @@ def main():
     for _ in range(400):
         a = rng.uniform(-1, 1, 17)
         _, r, te, tr, info = t.step(a)
-        # strip the penalties; what is left must be the two potential terms
-        acc += (r + K_DANGLE * info['parked'] + K_SEP * info["sep_err"]
+        # strip every per-step cost; what is left must be the two potential terms.
+        # Each cost added to the reward has to be added here too -- the assert below
+        # is what notices when one is forgotten.
+        acc += (r + K_DANGLE * info['parked'] + K_STALE * info['stale']
+                + K_SEP * info['sep_err'] + K_EFFORT * info['effort']
+                + K_FIGHT * info['fight'] + K_TIME
                 + K_ACT * float(a @ a) + K_VEL * float(t.dq @ t.dq))
         if te or tr:
             # the terminal bonus is not a potential and is not meant to be
