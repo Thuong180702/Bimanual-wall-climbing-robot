@@ -12,6 +12,9 @@ python -m rl.train_ppo --self-check          # curriculum logic, trains nothing
 python -m rl.train_ppo --name climber        # train: all 9, curriculum on
 # Ctrl-C any time, then:
 python -m rl.train_ppo --name climber --resume
+
+# from a second terminal, while it trains:
+python -m rl.status --name climber --watch
 ```
 
 `torch`, `gymnasium` and `stable-baselines3` are installed in this repo's `.venv`
@@ -24,6 +27,7 @@ python -m rl.train_ppo --name climber --resume
 | `train_ppo.py` | thin SB3 PPO entry point |
 | `bench.py` | simulator throughput vs env count, and cpu vs mps for the policy |
 | `render.py` | PNGs of the lesson scenes → `out/scenes/` (ffmpeg writes them, no image dep) |
+| `status.py` | what a run is doing, read from its checkpoint — safe to run while it trains |
 | `eval.py` | score a checkpoint per lesson against a do-nothing control |
 
 ## Lessons

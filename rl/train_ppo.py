@@ -169,8 +169,9 @@ class Checkpoint(BaseCallback):
         if self.model.num_timesteps - self.last >= self.every:
             self.last = self.model.num_timesteps
             self.save()
-            print(f"[checkpoint] {self.dir} at {self.model.num_timesteps} steps, "
-                  f"pool {self.cur.active}, best {self.best:.0%}")
+            rates = " ".join(f"L{k} {self.cur.rate(k)[1]:.0%}" for k in self.cur.active)
+            print(f"[checkpoint] {self.model.num_timesteps:,} steps | {rates} | "
+                  f"best {self.best:.0%} | out/{os.path.basename(self.dir)}")
         return True
 
 
