@@ -10,7 +10,7 @@ Two subsystems share one model:
 | [`rl/`](rl/README.md) | a PPO curriculum: nine lesson scenes ordered by difficulty, and the task/reward around them |
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
+python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 python -m controller.test_climb      # the classical controller, phase by phase
@@ -31,6 +31,19 @@ rewarded that were not climbing — the hook slides along a smooth rung, a rewar
 pays one direction can be pumped, a sum over two hands does not care which hand
 works. Each is now an assertion in `python -m rl.climb_task`. No policy climbs a
 gapped rung yet.
+
+## Platforms
+
+Trains on macOS, Linux and Windows; wheels exist for every dependency on all three.
+The simulator is CPU-only, so **CPU cores are what set the speed** — a GPU can help
+only the policy network, and that is under the noise floor here: cutting 90 % of the
+gradient work moved throughput by 0 % (4850 vs 4797 fps). `--device cuda` exists and
+works, it simply has nothing to do. The GPU path that would pay is MJX, which runs
+the physics itself on the GPU; the model is two small edits away from being MJX-ready
+(capsule collision geoms, and dropping the `jointlimitfrc` sensors — no sensor the
+task uses is lost).
+
+`ffmpeg` is needed only by `rl.render` and `controller.record`, never for training.
 
 ## Two rules that shaped everything here
 

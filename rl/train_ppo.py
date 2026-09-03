@@ -297,7 +297,11 @@ def main():
 
     # Ctrl-C during a rollout would otherwise lose everything since the last
     # checkpoint; SIGTERM likewise, so a killed run is resumable too.
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
+    try:
+        signal.signal(signal.SIGTERM,
+                      lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
+    except (ValueError, AttributeError, OSError):
+        pass          # Windows accepts only a short list of signals; Ctrl-C still works
     try:
         # no progress_bar: it pulls in tqdm + rich, and verbose=1 already prints the
         # rollout table with elapsed time and total_timesteps every update

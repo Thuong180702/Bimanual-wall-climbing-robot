@@ -13,7 +13,21 @@ from .lessons import LESSONS, xml_path
 OUT = 'out/scenes'
 
 
+def _need_ffmpeg():
+    """ffmpeg writes the frames; it is a separate program, not a pip
+    package, and Windows has none by default."""
+    import shutil
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit(
+            "ffmpeg not found on PATH -- it writes the frames.\n"
+            "  macOS:   brew install ffmpeg\n"
+            "  Windows: winget install Gyan.FFmpeg  (then reopen the shell)\n"
+            "  Linux:   apt install ffmpeg\n"
+            "Training and evaluation do not need it.")
+
+
 def png(path, img):
+    _need_ffmpeg()
     h, w = img.shape[:2]
     p = subprocess.run(
         ['ffmpeg', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{w}x{h}',

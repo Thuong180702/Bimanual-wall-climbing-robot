@@ -9,6 +9,19 @@ import subprocess, sys, argparse, numpy as np, mujoco
 from . import SCENE
 
 
+def _need_ffmpeg():
+    """ffmpeg writes the frames; it is a separate program, not a pip
+    package, and Windows has none by default."""
+    import shutil
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit(
+            "ffmpeg not found on PATH -- it writes the frames.\n"
+            "  macOS:   brew install ffmpeg\n"
+            "  Windows: winget install Gyan.FFmpeg  (then reopen the shell)\n"
+            "  Linux:   apt install ffmpeg\n"
+            "Training and evaluation do not need it.")
+
+
 class Video:
     """Frames in, mp4 out. `speed` is simulated seconds played per second of video."""
 
@@ -27,6 +40,7 @@ class Video:
         self.cam.distance, self.cam.azimuth, self.cam.elevation = 1.9, azimuth, -10.0
         self.every = max(1, int(round(speed / (fps * model.opt.timestep))))
         self.n = 0
+        _need_ffmpeg()
         self.p = subprocess.Popen(
             ['ffmpeg', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{w}x{h}',
              '-r', str(fps), '-i', '-', '-an', '-vcodec', 'libx264', '-crf', '23',
