@@ -233,11 +233,17 @@ asserts all of it.
 | `K_SEP` | the distance term is a **sum** over both hands, so it does not care which hand works: policies froze one hand and crossed the other over it. Pricing only *crossed* then parked both hands on the same point (mean separation 1 mm), so it is a floor, not a sign test |
 | `K_DANGLE` over a cumulative budget | charging a *continuous* stretch off the wall was evadable: 88 short hops kept every stretch under the grace and a hand off 79 % of the episode paid 0.13 |
 | `K_STALE` | across every run, **the left hand never once let go**. The hands deadlock — the right is airborne 79–84 % of the time, so the left never gets a safe moment. `K_DANGLE` says do not stay off, `K_STALE` says do not stay on |
+| finger inside `GRIP_BAND` gates `_holding` and `_success` | nothing ever asked a finger to close, and the simulator lets an open hook carry the whole robot. The 10M policy held with the finger at +20° for most of an episode. There are **two** ways out of the band and it used both — the left hand opened, the right ratcheted −36 → −46 → −37, past the −45° cliff where pull-off drops from >1200 N to 72 N |
+| `ON_RUNG` 60 mm → **20 mm** | a seated hook measures 2–8 mm, so 60 mm accepted a hand merely *near* the rung: the policy banked progress and passed `_success` hovering at 42–58 mm |
+| `STALE_AFTER` 8 s → **2.5 s** | the threshold was longer than the episode it policed. The winning lesson-1 run is 5.8 s, so the hand that never released was charged exactly 0.00 |
+| `MIN_GRABS` in `_success` | the task was completable with **neither hand ever leaving the rung**: 1 m traversed with the right hook never further than 24 mm from the rail and the left hand carrying under 10 N for 89 % of the episode. Alternating grips is not one way of doing this task, it is the task |
 | `K_EFFORT`, `K_FIGHT`, `K_TIME` | the gait was legal but nothing like climbing. Measured against a still hang (29.6 N·m, 107 N): the stuck episode ran 145 N·m and **202 N of grip on a 109 N robot** — ~95 N of the two arms pulling against each other. All three price the *excess* over hanging still, never the absolute, so existing stays free |
 
-Replayed on the audited 10.4M policy, the whole set separates the two behaviours
-cleanly: its 99-step success scores **+13.23** and its 1490-step stuck episode
-**−51.17**. Not one term charges the healthy episode more than 0.30.
+Replayed on the audited policies the set does what it should. The 10.4M run's
+99-step success scored +13.23 against its 1490-step stuck episode's −51.17, with no
+term charging the healthy episode more than 0.30. The 10M run's ratcheting exploit,
+which scored **+13.58 and `success`** under the old rules, now scores **−4.98 and
+`fell`** with 0 real grabs from either hand.
 
 A single-joint sweep says crossing is not necessary: the leading hand gains **+459 mm**
 toward the goal on its 60° of outward travel, against **+64 mm** for crossing the

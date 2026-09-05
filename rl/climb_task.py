@@ -41,8 +41,12 @@ CLEAR_OF = 0.08          # m of gap at which a hook is unambiguously OFF the run
                          # never let go still banked progress. The throat is ~50 mm
                          # deep, and a seated hook measures 2-8 mm, so 80 mm cannot
                          # be reached without genuinely letting go.
-ON_RUNG = 0.06           # m of throat-to-rung-axis gap below which a hook is on its
-                         # hold. Measured: 2-8 mm while
+ON_RUNG = 0.020          # m of throat-to-rung-axis gap below which a hook is on its
+                         # hold. Was 0.06, which is far looser than it sounds: a
+                         # SEATED hook measures 2-8 mm, so 60 mm accepted a hand
+                         # merely near the rung. The 10M policy banked progress and
+                         # passed `_success` with a hand hovering at 42-58 mm and its
+                         # finger wide open. Measured: 2-8 mm while
                          # seated, 68 mm and up once genuinely clear, so the two
                          # states are far apart and any threshold in between works.
                          # `env.latched` cannot do this job -- it is a tight box
@@ -67,7 +71,10 @@ DANGLE_MAX_FRAC = 0.5    # and past that, a hand may be off at most this fractio
                          # the episode so far. Being off half the time is what
                          # alternating looks like; 79 % is one hand doing everything.
 K_DANGLE = 0.01          # per step, per hand over its share
-STALE_AFTER = 8.0        # s a hand may stay on its hold without ever letting go
+STALE_AFTER = 2.5        # s a hand may stay on its hold without ever letting go.
+                         # Was 8.0, longer than the episodes it was supposed to
+                         # police: the winning lesson-1 episode runs 5.8 s, so the
+                         # hand that never released was charged exactly 0.00.
 K_STALE = 0.01           # per step, per hand past that
 K_ACT = 2e-4             # action magnitude penalty -- smoothness
 K_VEL = 1e-4             # joint velocity penalty -- smoothness
@@ -99,6 +106,11 @@ K_FIGHT = 5e-5           # per step, per N of grip above body weight
 K_TIME = 0.003           # per step. A whole 1500-step episode costs 4.5 against
                          # SUCCESS_R's 10, so finishing early is worth real points
                          # and giving up early still loses (FAIL_R is -10).
+MIN_GRABS = 1            # real holds each hand must take before success counts. A
+                         # grab is the `took` event the anchor already uses: the hand
+                         # got CLEAR_OF the rung and then came back seated, loaded and
+                         # inside the grip band. One is deliberately the floor -- the
+                         # point is to make zero impossible, not to script a gait.
 SUCCESS_R = 10.0
 FAIL_R = -10.0
 
@@ -308,12 +320,30 @@ class ClimbTask:
         sep = self._throat_true('L') - self._throat_true('R')
         return max(0.0, MIN_SEP - self.cross_sign * float(sep @ self.cross_axis))
 
+    def _gripping(self, side):
+        """is the finger in the band that actually holds?
+
+        `GRIP_BAND` is -40..-10 deg, and the model README measures why: inside it the
+        pull-off force is >1200 N, at 0 deg it is 764 N, and past -45 deg the rung
+        walks out of the throat and it collapses to 72 N. So there are TWO ways out
+        of a grip, and the 10M policy used both -- the left hand opened to +20 deg
+        and dangled, while the right ratcheted along the rung by cycling -36 -> -46
+        -> -37. Nothing in the reward had ever asked a finger to close, because the
+        simulator lets an open hook carry the whole robot (the README says so
+        outright), so closing cost action and bought nothing.
+        """
+        return GRIP_BAND[0] <= self.env.sensor('enc_finger_' + side)[0] <= GRIP_BAND[1]
+
     def _holding(self):
-        """per hand: seated AND carrying. Load is what separates a hook that has
-        taken a hold from one hovering next to the rung -- and hovering next to it
-        is exactly what the pump learned to do."""
+        """per hand: seated, carrying, AND actually gripping.
+
+        Load alone is not a grip: the README records a hand pressed on a wall reading
+        >20 N through the pad and 86 N through the wrist with the finger shut on
+        nothing.
+        """
         return np.array([self._seat(s)[1] < ON_RUNG
                          and np.linalg.norm(self.env.hand(s)['force']) > HOLD_LOAD
+                         and self._gripping(s)
                          for s in 'LR'])
 
     def _dist(self):
@@ -326,12 +356,24 @@ class ClimbTask:
         the reward used something else, the dense signal and the thing being scored
         disagreed, which is how the first runs came to be graded on a box the model
         README already says reads False on a hook carrying 167 N.
+
+        And each hand must have taken MIN_GRABS real holds along the way. That turns
+        success from a state into a state plus a method, which is normally the wrong
+        move -- but the whole task is reachable without it: the 10M policy traversed
+        1 m with the right hook never further than 24 mm from the rung, ratcheting
+        along it, and the left hand hanging in the air carrying under 10 N for 89 %
+        of the episode. Alternating grips is not one way of doing this task, it IS
+        the task.
         """
+        if (self.grabs < MIN_GRABS).any():
+            return False
         for i, s in enumerate('LR'):
             nm, gap = self._seat(s)
             if gap >= ON_RUNG or nm not in self.spec['goal_rungs']:
                 return False
             if np.linalg.norm(self._throat_true(s) - self.goals[i]) > LATCH_TOL:
+                return False
+            if not self._gripping(s):
                 return False
         return True
 
@@ -357,6 +399,7 @@ class ClimbTask:
         self.anchor_d = self.prev_d.copy()   # goal distance of each hand's last hold
         self.held = self._holding()
         self.let_go = np.zeros(2, bool)      # has this hand been clear since anchoring
+        self.grabs = np.zeros(2, int)        # real holds taken, per hand, this episode
         # the line the hands travel along, and which way round they start on it
         self.cross_axis = self.segs[self._seat('L')[0]][1]
         sep = self._throat_true('L') - self._throat_true('R')
@@ -388,6 +431,7 @@ class ClimbTask:
         self.let_go |= gaps > CLEAR_OF
         took = held & ~self.held & self.let_go
         self.let_go &= ~took
+        self.grabs += took
         new_anchor = np.where(took, d, self.anchor_d)
         sep_err = self._sep_error()
         effort = max(0.0, float(np.abs(self.tau).sum()) - TAU_IDLE)
@@ -402,7 +446,8 @@ class ClimbTask:
         info = {'dist': float(d.sum()), 'lesson': self.lesson,
                 'off': float(free.sum()), 'parked': parked, 'stale': stale,
                 'effort': effort, 'fight': fight,
-                'banked': float(self.anchor_d.sum()), 'sep_err': sep_err}
+                'banked': float(self.anchor_d.sum()), 'sep_err': sep_err,
+                'grabs': self.grabs.copy()}
         terminated, truncated = False, False
         if self._success():
             r += SUCCESS_R
@@ -562,6 +607,48 @@ def main():
     eff, fig = np.mean(eff), np.mean(fig)
     print(f"idle test: hanging still costs {K_EFFORT*eff:.4f}/step in effort and "
           f"{K_FIGHT*fig:.4f}/step in internal force")
+
+    # An open hand must not count as holding. The 10.4M policy held the robot with
+    # the finger at +20 deg for most of an episode and banked progress doing it,
+    # because nothing checked the finger -- and there are two ways out of the band,
+    # opening AND over-closing past the -45 deg cliff.
+    t = ClimbTask(1)
+    t.reset()
+    fi = JOINTS.index('finger_L')
+    assert t._holding()[0], "the hang keyframe should start out holding"
+    for edge, push in (('mở toang', +1.0), ('siết quá', -1.0)):
+        t.reset()
+        act = np.zeros(17)
+        act[fi] = push
+        gap = None
+        for _ in range(120):
+            _, _, te, tr, _ = t.step(act)
+            ang = np.degrees(t.env.sensor('enc_finger_L')[0])
+            gap = t._seat('L')[1]
+            if not (np.degrees(GRIP_BAND[0]) <= ang <= np.degrees(GRIP_BAND[1])):
+                break
+            if te or tr:
+                break
+        print(f"grip test ({edge}): ngón {ang:+.0f} deg, khe hở {gap*1000:.0f} mm "
+              f"-> holding = {t._holding()[0]}")
+        assert not t._holding()[0], (
+            f"a hand at {ang:+.0f} deg still counts as holding; the band is "
+            f"{np.degrees(GRIP_BAND[0]):.0f}..{np.degrees(GRIP_BAND[1]):.0f}")
+
+    # And success must need real grabs, not just arriving. Geometry is stubbed to
+    # the goal so only the grab count and the finger are left to decide.
+    t = ClimbTask(1)
+    t.reset()
+    t._seat = lambda s: (t.spec['goal_rungs'][0], 0.003)
+    t._throat_true = lambda s: t.goals[0] if s == 'L' else t.goals[1]
+    t.grabs = np.zeros(2, int)
+    assert not t._success(), "arriving with zero grabs counts as success"
+    t.grabs = np.array([MIN_GRABS, 0])
+    assert not t._success(), "one hand having grabbed is enough for success"
+    t.grabs = np.array([MIN_GRABS, MIN_GRABS])
+    assert t._success(), "seated, gripping and both hands grabbed should succeed"
+    print(f"grab test: success needs {MIN_GRABS} real hold(s) from EACH hand; "
+          f"0 and one-sided are both refused")
     assert K_EFFORT * eff < 0.002, (
         f"a still hang is charged {K_EFFORT*eff:.4f}/step of effort -- existing must "
         f"be free, or ending the episode becomes the cheapest policy")
