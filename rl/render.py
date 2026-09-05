@@ -116,29 +116,45 @@ def sheet(imgs, cols=3, pad=6, bg=28):
 
 
 def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
-          deterministic=True, azimuth=200.0, distance=1.9):
+          deterministic=True, azimuth=200.0, distance=1.9, ckpt=''):
     """Roll a saved policy out on a lesson and write it to mp4.
 
     Reuses `controller.record.Video`, which already fades the walls and pipes raw
     frames to ffmpeg. Its `every` is speed/(fps*timestep), so passing
     speed = fps*timestep makes it write on every call -- one frame per call here,
     which is one per control step.
+
+    The hooks are tinted per frame by whether the finger is actually gripping:
+    GREEN inside the band the model README measures at >1200 N of pull-off, RED
+    outside it (764 N at 0 deg, 72 N past -45). Policies hold the robot with an open
+    hand for 13-55 % of their load-bearing time and it is invisible otherwise -- the
+    hook looks the same either way from any camera angle.
     """
+    import mujoco as mj
     from stable_baselines3 import PPO
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
     from controller.record import Video
     from .train_ppo import MultiLesson
+    from climbing_env import GRIP_BAND
 
-    venv = VecNormalize.load(f'out/{run}/vecnorm.pkl',
+    pre = f'out/{run}/{ckpt}'
+    venv = VecNormalize.load(pre + 'vecnorm.pkl',
                              DummyVecEnv([lambda: MultiLesson([lesson])]))
     venv.training = False
     venv.norm_reward = False
-    model = PPO.load(f'out/{run}/model', env=venv, device='cpu')
+    model = PPO.load(pre + 'model', env=venv, device='cpu')
     obs = venv.reset()
     t = venv.envs[0].cur
     m, d = t.env.model, t.env.data
-    for g in range(m.ngeom):                     # collision boxes are group 3, hidden
-        pass
+    # the hook alone is a few centimetres of mesh and reads as a grey speck at this
+    # framing, so the whole forearm-roll/wrist/hook chain carries the colour
+    import mujoco as _mj
+    chain = ('forearm_rot_%s', 'wrist_%s', 'wrist_dev_%s', 'hook_%s')
+    hook_geoms = {}
+    for sd in 'LR':
+        ids = {_mj.mj_name2id(m, _mj.mjtObj.mjOBJ_BODY, n % sd) for n in chain}
+        hook_geoms[sd] = [g for g in range(m.ngeom)
+                          if m.geom_bodyid[g] in ids and m.geom_group[g] == 1]
     vid = Video(path, m, w=960, h=640, fps=fps, speed=fps * m.opt.timestep,
                 azimuth=azimuth)
     vid.cam.distance = distance
@@ -149,6 +165,12 @@ def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
         obs, r, dn, info = venv.step(act)
         n += 1
         if n % stride == 0:
+            for sd in 'LR':
+                ang = t.env.sensor('enc_finger_' + sd)[0]
+                grip = GRIP_BAND[0] <= ang <= GRIP_BAND[1]
+                for g in hook_geoms[sd]:
+                    m.geom_rgba[g] = ([0.25, 0.85, 0.35, 1] if grip
+                                      else [0.95, 0.25, 0.20, 1])
             vid.tick(d, lookat=d.xpos[base] + np.array([0., 0., 0.45]))
         if dn[0]:
             done_n += 1
@@ -164,12 +186,16 @@ def main():
     ap.add_argument('--width', type=int, default=560)
     ap.add_argument('--video', default=None, metavar='RUN',
                     help='render a saved policy from out/RUN to mp4')
+    ap.add_argument('--best', action='store_true',
+                    help='render best_model.zip instead of the latest checkpoint')
     a = ap.parse_args()
     if a.video:
         os.makedirs(OUT, exist_ok=True)
-        video(a.video, 1, f'{OUT}/{a.video}_lesson1.mp4', episodes=4)
-        video(a.video, 2, f'{OUT}/{a.video}_lesson2.mp4', episodes=1,
-              stride=3, cap=1600)
+        ck = 'best_' if a.best else ''
+        tag = f"{a.video}{'_best' if a.best else ''}"
+        video(a.video, 1, f'{OUT}/{tag}_lesson1.mp4', episodes=4, ckpt=ck)
+        video(a.video, 2, f'{OUT}/{tag}_lesson2.mp4', episodes=2,
+              stride=2, cap=1600, ckpt=ck)
         return
     os.makedirs(OUT, exist_ok=True)
 
