@@ -17,10 +17,17 @@ CAPTURE_DZ = (-0.010, 0.070)
 
 class ClimbingEnv:
     def __init__(self, xml='scene.xml', fall_z=-1.2, free_fall_s=0.6,
-                 success_z=2.00, timeout_s=60.0, qvel_max=100.0):
+                 success_z=2.00, timeout_s=60.0, qvel_max=100.0, held_fn=None):
         self.model = mujoco.MjModel.from_xml_path(xml)
         self.data = mujoco.MjData(self.model)
         self.fall_z, self.free_fall_s = fall_z, free_fall_s
+        # What counts as "still attached to the wall", for the `released` timer only.
+        # Defaults to `latched`, which is what the classical controller wants. But
+        # `latched` is a tight box round the nominal seat, and measured over an
+        # episode it reads False on 32 % of the steps -- 89 % of those with a hook
+        # carrying more than 20 N. That kills any one-handed phase, which is exactly
+        # the phase a climbing gait is made of, so the RL task passes its own.
+        self.held_fn = held_fn or (lambda: self.latched('L')[0] or self.latched('R')[0])
         self.success_z, self.timeout_s, self.qvel_max = success_z, timeout_s, qvel_max
         self.base = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, 'base_link')
         self.hook = {s: mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, 'hook_'+s)
@@ -111,7 +118,7 @@ class ClimbingEnv:
         if ctrl is not None:
             self.data.ctrl[:] = ctrl
         mujoco.mj_step(self.model, self.data)
-        held = self.latched('L')[0] or self.latched('R')[0]
+        held = self.held_fn()
         self._no_grip_t = 0.0 if held else self._no_grip_t + self.model.opt.timestep
         return self.data
 

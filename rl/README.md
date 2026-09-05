@@ -234,9 +234,10 @@ asserts all of it.
 | `K_DANGLE` over a cumulative budget | charging a *continuous* stretch off the wall was evadable: 88 short hops kept every stretch under the grace and a hand off 79 % of the episode paid 0.13 |
 | `K_STALE` | across every run, **the left hand never once let go**. The hands deadlock — the right is airborne 79–84 % of the time, so the left never gets a safe moment. `K_DANGLE` says do not stay off, `K_STALE` says do not stay on |
 | finger inside `GRIP_BAND` gates `_holding` and `_success` | nothing ever asked a finger to close, and the simulator lets an open hook carry the whole robot. The 10M policy held with the finger at +20° for most of an episode. There are **two** ways out of the band and it used both — the left hand opened, the right ratcheted −36 → −46 → −37, past the −45° cliff where pull-off drops from >1200 N to 72 N |
-| `ON_RUNG` 60 mm → **20 mm** | a seated hook measures 2–8 mm, so 60 mm accepted a hand merely *near* the rung: the policy banked progress and passed `_success` hovering at 42–58 mm |
+| every hold test reads **contact force** (`_contact`) | see the section below — this replaced `ON_RUNG`, `CLEAR_OF` and `env.latched`, all three of which were proxies a policy could satisfy without holding, or *fail* while holding |
 | `STALE_AFTER` 8 s → **2.5 s** | the threshold was longer than the episode it policed. The winning lesson-1 run is 5.8 s, so the hand that never released was charged exactly 0.00 |
 | `MIN_GRABS` in `_success` | the task was completable with **neither hand ever leaving the rung**: 1 m traversed with the right hook never further than 24 mm from the rail and the left hand carrying under 10 N for 89 % of the episode. Alternating grips is not one way of doing this task, it is the task |
+| finger setpoint clamped at `GRIP_CLIFF` | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N. Nothing above the cliff is useful, so it is a mechanical stop — 45° of pure self-destruct removed from the search. Opening is untouched |
 | `K_EFFORT`, `K_FIGHT`, `K_TIME` | the gait was legal but nothing like climbing. Measured against a still hang (29.6 N·m, 107 N): the stuck episode ran 145 N·m and **202 N of grip on a 109 N robot** — ~95 N of the two arms pulling against each other. All three price the *excess* over hanging still, never the absolute, so existing stays free |
 
 Replayed on the audited policies the set does what it should. The 10.4M run's
@@ -253,6 +254,48 @@ hands — kept reinforcing it.
 **Do not train on a narrowed pool.** Dropping lesson 1 to force lesson 2 was tried and
 it is plain sequential fine-tuning: lesson 1 went from 12/12 to falling 4/4, and
 lesson 2 got worse too. Keep the pool mixed, as the section above says.
+
+## Contact force, and why every distance threshold before it was wrong
+
+The 20.8M-step `win3` run reported **2.5 %** on lesson 1 and never unlocked lesson 2.
+The policy was not the problem. Three separate proxies for *"is this hand on its
+hold"* disagreed with each other and with the physics:
+
+| test | what it measured | how it failed |
+|---|---|---|
+| `env.latched` | rung inside a box round the nominal seat | read False on **both** hands for 32 % of an episode — 89 % of those with a hook carrying more than 20 N |
+| seat gap `< ON_RUNG` | radial distance, throat point to rung axis | a seated hook reads 2 mm hanging still but **31 mm under a 50 N side pull**, and a hand merely hovering reads 42 mm. The two states overlap, so no threshold separates them |
+| wrist F/T | force through the wrist | a hand pressed flat on a wall reads 86 N with the finger shut on nothing |
+
+They were also wired to *different* places: the reward used the gap, and the episode
+was ended by `env.latched`. So a one-handed phase — the thing a climbing gait is made
+of — was 0.6 s from a spurious `released` and a −10, while the reward said the hand
+was fine. `ON_RUNG` was tightened to 20 mm on a measurement taken from a **static**
+two-handed hang, which does not survive contact with a loaded hook.
+
+MuJoCo already knows the answer. `_contact` sums the normal force between a hook's
+collision geoms and any rung:
+
+| | holding | free / fallen |
+|---|---|---|
+| contact force | **72 – 229 N** | **0.0 N exactly** |
+
+No overlap, across static hangs, one-handed hangs, a 50 N side pull and a 200 N
+downward pull; no flicker (1200 steps of still hang, minimum 40 N); and it costs
+nothing (1 % *faster* than `latched`, which does matrix work per rung). It now
+answers every one of those questions — held, let go, still attached, success —
+so all three proxies and their thresholds are gone.
+
+Re-measuring the same `win3` policy against contact instead of the gap:
+
+| | reported | actually |
+|---|---|---|
+| lesson 1 success | 2.5 % | **40 %** (16/40) |
+| real grab cycles per episode | L 0, R 2 | **L 8.1, R 10.3** |
+| episodes with both hands cycling | — | **38/40** |
+
+The alternating gait was already there. The measurement could not see it, and
+`MIN_GRABS` — which reads the same broken counter — was rejecting the successes.
 
 Skipped: domain randomization, best-checkpoint keeping. Reward weights are
 first-guess knobs — `rl.eval` plus the diagnostics are how you tell.

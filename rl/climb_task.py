@@ -19,7 +19,7 @@ fingers included.
 import numpy as np, mujoco
 from controller.kinematics import Estimator, JOINTS, THROAT_PT
 from .lessons import LESSONS, xml_path, rung_segments
-from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET
+from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET, GRIP_CLIFF
 
 FRAME_SKIP = 20          # sim steps per control step: 0.002 s x 20 = 25 Hz
 ACT_SCALE = 0.06         # rad of setpoint travel per control step (1.5 rad/s max)
@@ -32,29 +32,12 @@ N_NEAR = 3               # nearest rungs reported per hand. Without these the po
                          # memorise each fixed layout. Three is what a hand chooses
                          # between; the map supplies them, so this is hardware-legal.
 FAR = np.array([9.0, 9.0, 9.0])   # padding for a scene with fewer than N_NEAR rungs
-CLEAR_OF = 0.08          # m of gap at which a hook is unambiguously OFF the rung.
-                         # A hand must get this far clear before it may re-anchor:
-                         # measured on the 5.1M policy, every single anchor re-take
-                         # came from the wrist load dipping (min 1.0 N against a
-                         # 20 N HOLD_LOAD) while the hook never left the rung -- so
-                         # the reward was paying for weight shifts, and a hand that
-                         # never let go still banked progress. The throat is ~50 mm
-                         # deep, and a seated hook measures 2-8 mm, so 80 mm cannot
-                         # be reached without genuinely letting go.
-ON_RUNG = 0.020          # m of throat-to-rung-axis gap below which a hook is on its
-                         # hold. Was 0.06, which is far looser than it sounds: a
-                         # SEATED hook measures 2-8 mm, so 60 mm accepted a hand
-                         # merely near the rung. The 10M policy banked progress and
-                         # passed `_success` with a hand hovering at 42-58 mm and its
-                         # finger wide open. Measured: 2-8 mm while
-                         # seated, 68 mm and up once genuinely clear, so the two
-                         # states are far apart and any threshold in between works.
-                         # `env.latched` cannot do this job -- it is a tight box
-                         # round the nominal seat, the model README records it
-                         # reading False on a hook carrying 167 N, and measured
-                         # through a real episode it called a hand FREE on 65 % of
-                         # the steps where the hook had never left the rung. Gating
-                         # the reward on that paid for sliding all over again.
+# A hand is on its hold when its hook is in CONTACT with a rung and bearing force --
+# see `_contact`. Two distance thresholds used to do this job and both were wrong in
+# a way that was measured: 80 mm for "unambiguously off" and 20 mm for "on". A seated
+# hook reads 2 mm hanging still but 31 mm under a 50 N side pull, and a hand merely
+# hovering reads 42 mm, so the two states overlap and no threshold separates them.
+# Contact force does not overlap at all: 72-229 N holding, exactly 0.0 N free.
 # ponytail: first-guess reward weights, sweep them before trusting a run
 K_BANK = 5.0             # per metre of progress BANKED by taking a new hold
 K_REACH = 2.0            # per metre of live approach -- shaping only, see below
@@ -65,7 +48,9 @@ MIN_SEP = 0.12           # m the hooks must keep along the rung. The hooks are 6
                          # and the robot drops, which is what it was doing. 120 mm
                          # is not a guess: the one policy that traversed cleanly
                          # never came closer than 119 mm.
-HOLD_LOAD = 20.0         # N through the wrist before a seated hook counts as held
+HOLD_LOAD = 20.0         # N of hook-on-rung CONTACT force before a hand counts as
+                         # holding. Measured either side of it: 72-229 N while
+                         # holding, 0.0 N free -- so the exact value does not matter.
 DANGLE_GRACE = 3.0       # s of TOTAL off-time per hand that is free -- one reach
 DANGLE_MAX_FRAC = 0.5    # and past that, a hand may be off at most this fraction of
                          # the episode so far. Being off half the time is what
@@ -108,8 +93,8 @@ K_TIME = 0.003           # per step. A whole 1500-step episode costs 4.5 against
                          # and giving up early still loses (FAIL_R is -10).
 MIN_GRABS = 1            # real holds each hand must take before success counts. A
                          # grab is the `took` event the anchor already uses: the hand
-                         # got CLEAR_OF the rung and then came back seated, loaded and
-                         # inside the grip band. One is deliberately the floor -- the
+                         # lost contact with the rung entirely and then came back
+                         # bearing force with the finger inside the grip band. One is deliberately the floor -- the
                          # point is to make zero impossible, not to script a gait.
 SUCCESS_R = 10.0
 FAIL_R = -10.0
@@ -186,13 +171,32 @@ class ClimbTask:
         self.lesson = lesson
         self.spec = LESSONS[lesson]
         self.env = ClimbingEnv(xml=xml_path(lesson), success_z=1e9,
-                               timeout_s=self.spec['timeout'])
+                               timeout_s=self.spec['timeout'],
+                               held_fn=self._attached)
         self.est = Estimator(self.env.model)
         self.segs = rung_segments(self.env.model)
         self.goals = [np.asarray(g, float) for g in self.spec['goals']]
         self.lo = self.env.model.actuator_ctrlrange[:, 0].copy()
         self.hi = self.env.model.actuator_ctrlrange[:, 1].copy()
+        # The finger joint runs to -90 deg, but the README measures the hook levering
+        # itself off the rung past GRIP_CLIFF (-45): pull-off drops from >1200 N to
+        # 72 N. The 20.8M policy drove the right finger to -83 and the hook walked
+        # out of the throat while carrying 100 N. Nothing above the cliff is useful,
+        # so it is a mechanical stop, not a reward term -- 45 deg of pure
+        # self-destruct removed from the search space. Opening is untouched: a hand
+        # still has the full range up to +20 to let go.
+        for j in ('finger_L', 'finger_R'):
+            self.lo[JOINTS.index(j)] = GRIP_CLIFF
         self.dt = self.env.model.opt.timestep
+        m = self.env.model
+        self._rung_name = {g: mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
+                           for g in self.env.rungs}
+        self._hook_geoms = {}
+        for sd in 'LR':
+            ids = {mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, nm % sd)
+                   for nm in ('hook_%s', 'finger_%s')}
+            self._hook_geoms[sd] = {g for g in range(m.ngeom)
+                                    if m.geom_bodyid[g] in ids and m.geom_contype[g]}
         self.obs_dim = len(self.reset()[0])
 
     # ---- hardware-legal sensing -------------------------------------------
@@ -287,16 +291,44 @@ class ClimbTask:
         return np.array([float(np.linalg.norm(self._throat_true(s) - self.goals[i]))
                          for i, s in enumerate('LR')])
 
+    def _contact(self, side):
+        """(N of normal force between this hook and a rung, names of rungs touched)
+
+        The only unambiguous answer to "is this hand on its hold", and the one that
+        should have been used from the start. Every proxy tried before it failed in a
+        way that was measured on this model:
+
+          `env.latched`   a box round the nominal seat. Reads False on BOTH hands for
+                          32 % of an episode of the 20.8M policy, 89 % of those with a
+                          hook carrying more than 20 N.
+          seat gap        a radial distance. A hook that is genuinely seated reads
+                          2 mm hanging still but 31 mm under a 50 N side pull, and a
+                          hand merely hovering reads 42 mm -- the two states overlap,
+                          so no threshold separates them.
+          wrist F/T       a hand pressed flat on a wall reads 86 N with the finger
+                          shut on nothing.
+
+        Contact force has no overlap at all: measured 72-229 N while holding, and
+        exactly 0.0 N free or fallen, across static hangs, one-handed hangs, a 50 N
+        side pull and a 200 N downward pull.
+        """
+        m, d = self.env.model, self.env.data
+        tot, hit, f6 = 0.0, set(), np.zeros(6)
+        for i in range(d.ncon):
+            c = d.contact[i]
+            for a, b in ((c.geom1, c.geom2), (c.geom2, c.geom1)):
+                if a in self._hook_geoms[side] and b in self._rung_name:
+                    mujoco.mj_contactForce(m, d, i, f6)
+                    tot += abs(f6[0])
+                    hit.add(self._rung_name[b])
+        return tot, hit
+
     def _seat(self, side):
         """(rung name, gap) for the rung this hook is nearest to"""
         p = self._throat_true(side)
         return min(((nm, float(np.linalg.norm(
             p - (c + np.clip((p - c) @ a, -h, h) * a))))
             for nm, (c, a, h) in self.segs.items()), key=lambda v: v[1])
-
-    def _free(self):
-        """per hand: True when it is not seated on a rung"""
-        return np.array([self._seat(s)[1] >= ON_RUNG for s in 'LR'])
 
     def _sep_error(self):
         """metres of hand separation missing ALONG the rung they travel on.
@@ -320,6 +352,22 @@ class ClimbTask:
         sep = self._throat_true('L') - self._throat_true('R')
         return max(0.0, MIN_SEP - self.cross_sign * float(sep @ self.cross_axis))
 
+    def _attached(self):
+        """is ANY hook still on the wall? -- the `released` timer's question.
+
+        The reward and the terminator have to agree. They did not: the reward called
+        a hand held at a seat-gap threshold, while the episode was ended by
+        `env.latched`, a box round the nominal seat. Measured over one episode of the
+        20.8M policy the box read False on BOTH hands for 32 % of the steps, and 89 %
+        of those had a hook carrying more than 20 N -- so every one-handed phase was
+        0.6 s from a spurious `released` and a -10. That is the phase a climbing gait
+        is made of, and it is why 20.8M steps bought a 2.5 % success rate.
+
+        Union with `latched`, never a replacement, so this can only ever keep an
+        episode alive longer than the old rule did.
+        """
+        return any(self._contact(s)[0] > 0.0 for s in 'LR')
+
     def _gripping(self, side):
         """is the finger in the band that actually holds?
 
@@ -341,9 +389,7 @@ class ClimbTask:
         >20 N through the pad and 86 N through the wrist with the finger shut on
         nothing.
         """
-        return np.array([self._seat(s)[1] < ON_RUNG
-                         and np.linalg.norm(self.env.hand(s)['force']) > HOLD_LOAD
-                         and self._gripping(s)
+        return np.array([self._contact(s)[0] > HOLD_LOAD and self._gripping(s)
                          for s in 'LR'])
 
     def _dist(self):
@@ -367,13 +413,11 @@ class ClimbTask:
         """
         if (self.grabs < MIN_GRABS).any():
             return False
+        held = self._holding()
         for i, s in enumerate('LR'):
-            nm, gap = self._seat(s)
-            if gap >= ON_RUNG or nm not in self.spec['goal_rungs']:
+            if not held[i] or self._contact(s)[1].isdisjoint(self.spec['goal_rungs']):
                 return False
             if np.linalg.norm(self._throat_true(s) - self.goals[i]) > LATCH_TOL:
-                return False
-            if not self._gripping(s):
                 return False
         return True
 
@@ -415,11 +459,11 @@ class ClimbTask:
         for _ in range(FRAME_SKIP):
             self.env.step(self.ctrl)
         self._sense()
-        gaps = np.array([self._seat(s)[1] for s in 'LR'])
-        d, free, held = self._hand_dists(), gaps >= ON_RUNG, self._holding()
+        touch = np.array([self._contact(s)[0] for s in 'LR'])
+        d, free, held = self._hand_dists(), touch <= 0.0, self._holding()
         self.n_steps += 1
         self.off_t += free                      # cumulative: never reset by a touch
-        self.held_t = np.where(gaps > CLEAR_OF, 0.0, self.held_t + 1)
+        self.held_t = np.where(free, 0.0, self.held_t + 1)
         grace = DANGLE_GRACE / (FRAME_SKIP * self.dt)
         parked = float(np.sum(free & (self.off_t > grace)
                               & (self.off_t > DANGLE_MAX_FRAC * self.n_steps)))
@@ -428,7 +472,7 @@ class ClimbTask:
         # Without the let_go gate, a weight shift that drops the wrist load counts as
         # taking a new hold, and a hand that never leaves the rung banks progress --
         # which is what the 5.1M policy was doing on both hands.
-        self.let_go |= gaps > CLEAR_OF
+        self.let_go |= free
         took = held & ~self.held & self.let_go
         self.let_go &= ~took
         self.grabs += took
@@ -445,6 +489,7 @@ class ClimbTask:
         self.anchor_d, self.held, self.prev_d = new_anchor, held, d
         info = {'dist': float(d.sum()), 'lesson': self.lesson,
                 'off': float(free.sum()), 'parked': parked, 'stale': stale,
+                'touch': touch.copy(),
                 'effort': effort, 'fight': fight,
                 'banked': float(self.anchor_d.sum()), 'sep_err': sep_err,
                 'grabs': self.grabs.copy()}
@@ -533,10 +578,10 @@ def main():
     t = ClimbTask(1)
     t.reset()
     grace = int(DANGLE_GRACE / (FRAME_SKIP * t.dt))
-    # hold the left hand off by faking its seat gap -- step() derives free, held and
-    # let_go from that one measurement, so this is the quantity to intercept
-    real_seat = t._seat
-    t._seat = lambda s: (real_seat(s)[0], 9.0) if s == 'L' else real_seat(s)
+    # hold the left hand off by faking its contact force -- step() derives free,
+    # held and let_go from that one measurement, so this is the quantity to intercept
+    real_con = t._contact
+    t._contact = lambda s: (0.0, set()) if s == 'L' else real_con(s)
     charged = []
     for _ in range(grace + 30):
         _, r, te, tr, info = t.step(np.zeros(17))
@@ -557,14 +602,14 @@ def main():
     # budget has to charge that.
     t = ClimbTask(1)
     t.reset()
-    real_seat = t._seat
+    real_con = t._contact
     k = {'i': 0}
     def flutter(sd):
         if sd != 'L':
-            return real_seat(sd)
+            return real_con(sd)
         # 13 steps off, 4 steps on -- 76 % off, no stretch anywhere near the grace
-        return (real_seat(sd)[0], 9.0 if (k['i'] % 17) < 13 else real_seat(sd)[1])
-    t._seat = flutter
+        return (0.0, set()) if (k['i'] % 17) < 13 else real_con(sd)
+    t._contact = flutter
     charged, longest, run = 0, 0, 0
     for _ in range(600):
         k['i'] += 1
@@ -624,12 +669,12 @@ def main():
         for _ in range(120):
             _, _, te, tr, _ = t.step(act)
             ang = np.degrees(t.env.sensor('enc_finger_L')[0])
-            gap = t._seat('L')[1]
+            gap = t._contact('L')[0]
             if not (np.degrees(GRIP_BAND[0]) <= ang <= np.degrees(GRIP_BAND[1])):
                 break
             if te or tr:
                 break
-        print(f"grip test ({edge}): ngón {ang:+.0f} deg, khe hở {gap*1000:.0f} mm "
+        print(f"grip test ({edge}): ngón {ang:+.0f} deg, tiếp xúc {gap:.0f} N "
               f"-> holding = {t._holding()[0]}")
         assert not t._holding()[0], (
             f"a hand at {ang:+.0f} deg still counts as holding; the band is "
@@ -639,7 +684,7 @@ def main():
     # the goal so only the grab count and the finger are left to decide.
     t = ClimbTask(1)
     t.reset()
-    t._seat = lambda s: (t.spec['goal_rungs'][0], 0.003)
+    t._contact = lambda s: (HOLD_LOAD * 5, {t.spec['goal_rungs'][0]})
     t._throat_true = lambda s: t.goals[0] if s == 'L' else t.goals[1]
     t.grabs = np.zeros(2, int)
     assert not t._success(), "arriving with zero grabs counts as success"
