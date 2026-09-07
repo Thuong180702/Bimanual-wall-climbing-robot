@@ -1,6 +1,6 @@
 """Train ONE PPO policy across the lessons, with a curriculum and resume.
 
-    python -m rl.train_ppo --name climber                 # all 9, curriculum on
+    python -m rl.train_ppo --name climber                 # all 11, curriculum on
     python -m rl.train_ppo --name climber --resume        # continue where it stopped
     python -m rl.train_ppo --name t1 --lessons 1,2        # a subset
     python -m rl.train_ppo --name t1 --no-curriculum      # all lessons from step 0
@@ -268,7 +268,7 @@ def main():
     # lesson 1 on the 12-core M4 Pro: 6->3413, 8->3950, 12->4330, 20->4977,
     # 32->5259. It keeps creeping up past the core count because the envs sit idle
     # during each policy update, so on a big machine try more than this default.
-    # Each env holds all 9 scenes, ~66 MB, so budget RAM at --envs x 66 MB.
+    # Each env holds all 11 scenes, ~80 MB, so budget RAM at --envs x 80 MB.
     ap.add_argument('--envs', type=int, default=default_envs())
     ap.add_argument('--device', default='cpu',
                     choices=['cpu', 'cuda', 'mps', 'auto'],

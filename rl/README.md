@@ -1,6 +1,6 @@
 # PPO curriculum
 
-The frame for training PPO on the climbing tasks, as nine lessons ordered by
+The frame for training PPO on the climbing tasks, as eleven lessons ordered by
 difficulty instead of the mixed scene.
 
 ```bash
@@ -9,7 +9,7 @@ python -m rl.climb_task     # smoke-check the task API on every lesson
 python -m rl.bench          # where the time actually goes on this machine
 python -m rl.train_ppo --self-check          # curriculum logic, trains nothing
 
-python -m rl.train_ppo --name climber        # train: all 9, curriculum on
+python -m rl.train_ppo --name climber        # train: all 11, curriculum on
 # Ctrl-C any time, then:
 python -m rl.train_ppo --name climber --resume
 
@@ -22,7 +22,7 @@ python -m rl.status --name climber --watch
 
 | file | what it is |
 |---|---|
-| `lessons.py` | the 9 lesson specs + scene generator (writes `urdf/lessons/`) |
+| `lessons.py` | the 11 lesson specs + scene generator (writes `urdf/lessons/`) |
 | `climb_task.py` | Gymnasium-shaped env: obs / action / reward / termination |
 | `train_ppo.py` | thin SB3 PPO entry point |
 | `bench.py` | simulator throughput vs env count, and cpu vs mps for the policy |
@@ -32,9 +32,15 @@ python -m rl.status --name climber --watch
 
 ## Lessons
 
-1. traverse, continuous rung → 2. traverse, gaps → 3. climb up → 4. up-over-down →
-5. climb down → 6. staggered heights → 7. perpendicular wall → 8. wall behind the
-back → 9. row beyond static reach (needs a dynamic move).
+−1. one hand, one step (0.30 m) → 0. both hands, one step (0.40 m) → 1. traverse,
+continuous rung → 2. traverse, gaps → 3. climb up → 4. up-over-down → 5. climb down
+→ 6. staggered heights → 7. perpendicular wall → 8. wall behind the back → 9. row
+beyond static reach (needs a dynamic move).
+
+Lessons −1 and 0 are one lift-and-place cycle. They exist because lesson 1 — five
+such cycles per hand — stopped being findable from scratch once dragging and jumping
+stopped paying; the `win5` section below has the numbers, and why the step is one
+hand first and 0.40 m, not 0.30, after.
 
 Every lesson keeps the robot, sensors, actuators and the verified hanging keyframe
 of `urdf/scene.xml` verbatim and swaps only walls + rungs, so all start states are
@@ -232,7 +238,7 @@ asserts all of it.
 | `K_DANGLE` with a `DANGLE_GRACE` | the flat version taxed the release climbing is made of, −15.25 against +5.57 of progress |
 | `K_SEP` | the distance term is a **sum** over both hands, so it does not care which hand works: policies froze one hand and crossed the other over it. Pricing only *crossed* then parked both hands on the same point (mean separation 1 mm), so it is a floor, not a sign test |
 | `K_DANGLE` over a cumulative budget | charging a *continuous* stretch off the wall was evadable: 88 short hops kept every stretch under the grace and a hand off 79 % of the episode paid 0.13 |
-| `K_STALE` | across every run, **the left hand never once let go**. The hands deadlock — the right is airborne 79–84 % of the time, so the left never gets a safe moment. `K_DANGLE` says do not stay off, `K_STALE` says do not stay on |
+| `K_STALE` | across every run, **the left hand never once let go**. The hands deadlock — the right is airborne 79–84 % of the time, so the left never gets a safe moment. `K_DANGLE` says do not stay off, `K_STALE` says do not stay on. Now **0.001**, not 0.01: at 0.01 two hands hanging for 60 s cost 28.6 — three times a fall — and that is the landscape `win5` settled into (below). Nudges must never add up to more than the fall they exist to prevent; the incentive test asserts a full idle episode (−7.4) stays above `FAIL_R` |
 | finger inside `GRIP_BAND` gates `_holding` and `_success` | nothing ever asked a finger to close, and the simulator lets an open hook carry the whole robot. The 10M policy held with the finger at +20° for most of an episode. There are **two** ways out of the band and it used both — the left hand opened, the right ratcheted −36 → −46 → −37, past the −45° cliff where pull-off drops from >1200 N to 72 N |
 | every hold test reads **contact force** (`_contact`) | see the section below — this replaced `ON_RUNG`, `CLEAR_OF` and `env.latched`, all three of which were proxies a policy could satisfy without holding, or *fail* while holding |
 | `STALE_AFTER` 8 s → **2.5 s** | the threshold was longer than the episode it policed. The winning lesson-1 run is 5.8 s, so the hand that never released was charged exactly 0.00 |
@@ -338,6 +344,45 @@ moving. With both hooks seated the anchored hook was dragged 100–724 mm per te
 and every jump adds more. `K_SLIDE` and `K_FLIGHT` exist so that the gait the policy
 is paid for is the one the sensors can track — one hand holds still while the other
 moves, which is also the one that was asked for.
+
+## `win5`: the map became exact, and nothing moved
+
+15.3M steps under the three rules above, lesson 1 only, **0 / 40** — the best
+checkpoint is the first one. Not falling, either: all 30 audited episodes ran the
+full 60 s.
+
+| `win5` latest, lesson 1 | |
+|---|---|
+| gait | left hook on 100 % of the time; right hook flutters — let go and re-touch in place, 9–20 times per episode, enough for its `MIN_GRABS`; body moves 0.18 m |
+| pose estimate | anchor **3–20 mm** off through the whole episode, free hand 9 mm mean (p90 16) on approach — reach odometry with a still anchor is as exact as promised |
+| action noise (std) | 1.0 → **0.13** (win4 held 0.47): exploration was gone |
+| reward, per episode | stale −14.7, time −4.5, effort −1.3, slide −0.8, dangle −0.8; bank **+0.9**, reach +0.3; total −22 |
+
+Doing nothing cost −33 (stale −28.6, time −4.5) against −10 for a fall. The policy
+found the cheapest place in that landscape — hang from one hook, flutter the other to
+dodge its share of the stale charge — and its noise collapsed there. The +7/m for
+progress was never large against the nudges, and in earlier runs it had not needed
+to be: a random shove along the rung was paid. Now a shove is a charged drag, and
+the one paid move — lift, carry, re-seat — is a sequence, and 1.1 m of it is five
+cycles per hand.
+
+Two changes. `K_STALE` 0.01 → 0.001, so a full idle episode costs −7.4 and a fall
+never becomes the cheap way out (asserted). And a first rung that random behaviour
+brushes against: random policies produce a supported grab cycle from **both** hands
+in about a third of episodes, and those are paid — that is the gradient.
+
+The first draft of that rung was 0.30 m per hand, and it deadlocked by geometry: the
+hands start 0.314 m apart, so the right hand's goal landed 14 mm from where the left
+hand starts, and two 65 mm hooks cannot share that span. A 600k-step policy on it
+had the right hook in its goal region on 42 % of steps, hovering 100 mm (min 44)
+from the left hook, banking +0.96 and never seating; the left hook, which had to
+move first, never let go. Hence lesson −1 (the left hand alone moves 0.30 m; the
+right owes only a supported re-grip where it is) and lesson 0 (both hands 0.40 m,
+the goal 86 mm past the other hand's start).
+
+Checked locally before shipping (8 envs on the M4 Pro, 400k steps): lesson −1 at
+52 % by 250k and 75 % by 400k, lesson 0 unlocked at about 300k and had its first
+success by 400k, action std still 0.90.
 
 Skipped: domain randomization, best-checkpoint keeping. Reward weights are
 first-guess knobs — `rl.eval` plus the diagnostics are how you tell.

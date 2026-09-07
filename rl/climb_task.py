@@ -86,7 +86,13 @@ STALE_AFTER = 2.5        # s a hand may stay on its hold without ever letting go
                          # Was 8.0, longer than the episodes it was supposed to
                          # police: the winning lesson-1 episode runs 5.8 s, so the
                          # hand that never released was charged exactly 0.00.
-K_STALE = 0.01           # per step, per hand past that
+K_STALE = 0.001          # per step, per hand past that. Was 0.01, and with two hands
+                         # a 60 s hang then cost 28.6 -- three times a fall. The
+                         # 15M-step win5 policy lived in that landscape: it never
+                         # fell, hung from one hook and fluttered the other to dodge
+                         # its share, and collapsed its action noise to 0.13 there.
+                         # Nudges must never add up to more than the fall they are
+                         # meant to prevent; the incentive test below holds that.
 K_ACT = 2e-4             # action magnitude penalty -- smoothness
 K_VEL = 1e-4             # joint velocity penalty -- smoothness
 
@@ -687,6 +693,23 @@ def main():
             ends.append(info.get('reason'))
             t.reset()
     print(f"random rollout: 300 steps, episode ends: {ends or 'none'}")
+
+    # Falling must never be the cheap way out. A full episode of hanging still is the
+    # most a policy can pay for doing nothing; if that exceeds FAIL_R, the gradient
+    # at the start of training points at the floor. It did: the per-step nudges
+    # summed to -33 over 60 s against a -10 fall.
+    t = ClimbTask(1)
+    t.reset()
+    idle = 0.0
+    while True:
+        _, r, te, tr, info = t.step(np.zeros(17))
+        idle += r
+        if te or tr:
+            break
+    print(f"incentive test: hanging still through the whole of lesson 1 costs "
+          f"{idle:+.2f}; a fall costs {FAIL_R:+.0f} plus the steps before it")
+    assert info.get('reason') == 'timeout' and idle > FAIL_R, (
+        f"doing nothing ({idle:+.2f}) costs more than falling ({FAIL_R:+.0f})")
 
     # The reward change, tested against the exploit it exists for. This is phase 7's
     # own experiment: shove the robot along the rung with both hooks on and the hook
