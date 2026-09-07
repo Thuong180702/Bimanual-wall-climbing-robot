@@ -146,6 +146,24 @@ LESSONS = {
             rungs=[_ry('start', -0.90, 1.50, 1.00)],
             goal_rungs=['rung_start'],
             goals=[[0.44, 1.257, 1.00], [0.44, 0.943, 1.00]]),
+    # 1.5 sits between the continuous rung and the 0.25 m gaps because 0.25 was
+    # never crossed once in 2M steps of exposure, in three local runs. Measured on
+    # the last of them: when the free hand came closest to the far ledge it was
+    # 120-160 mm short, the hands were 627-689 mm apart -- the static reach limit
+    # -- and the HOLDING hand was still 0.47-0.54 m from the edge of its segment.
+    # The order a climber uses -- lead hand to the edge, trailing hand up beside
+    # it, then reach -- was never found because it was never once rewarded, and
+    # the edge itself was not in the observation (it is now, see `_near_rungs`).
+    # A 0.12 m gap is crossed by the ordinary 0.30 m step the policy already has,
+    # so the first crossings happen by accident and the credit does the rest.
+    1.5: dict(name='traverse_small_gaps', timeout=60.0,
+              title='traverse a broken rung: segments with 0.12 m gaps',
+              walls=[WALL_FRONT],
+              rungs=[_ry('start', -0.45, 0.35, 1.00),
+                     _ry('seg1', 0.47, 0.95, 1.00),
+                     _ry('seg2', 1.07, 1.65, 1.00)],
+              goal_rungs=['rung_seg2'],
+              goals=[[0.44, 1.55, 1.00], [0.44, 1.24, 1.00]]),
     2: dict(name='traverse_gaps', timeout=60.0,
             title='traverse a broken rung: segments with 0.25 m gaps',
             walls=[WALL_FRONT],
@@ -212,15 +230,26 @@ LESSONS = {
 }
 
 
+def lesson_key(x):
+    """'2' -> 2, '-1' -> -1, '1.5' -> 1.5: keys are ints except the half-steps"""
+    f = float(str(x).strip())
+    return int(f) if f == int(f) else f
+
+
+def lesson_tag(lesson):
+    """'lesson01', 'lesson-2', 'lesson1.5' -- the file and model name stem"""
+    return f"lesson{lesson:02d}" if isinstance(lesson, int) else f"lesson{lesson:g}"
+
+
 def xml_path(lesson):
-    return os.path.join(OUT, f"lesson{lesson:02d}_{LESSONS[lesson]['name']}.xml")
+    return os.path.join(OUT, f"{lesson_tag(lesson)}_{LESSONS[lesson]['name']}.xml")
 
 
 def write(lesson):
     spec = LESSONS[lesson]
     xml = open(SCENE).read()
     xml = xml.replace('<mujoco model="bimanual_wall_climber_scene">',
-                      f'<mujoco model="lesson{lesson:02d}_{spec["name"]}">')
+                      f'<mujoco model="{lesson_tag(lesson)}_{spec["name"]}">')
     xml = xml.replace('meshdir="meshes/"', 'meshdir="../meshes/"')
     for old, new in WIDEN + PAD:
         assert old in xml, f"scene.xml changed; patch target not found: {old}"

@@ -18,7 +18,7 @@ except ImportError as e:
     raise SystemExit(f"missing training deps ({e}); pip install -r requirements.txt")
 
 from .train_ppo import MultiLesson
-from .lessons import LESSONS
+from .lessons import LESSONS, lesson_key
 
 
 def run(venv, episodes, policy=None):
@@ -49,7 +49,7 @@ def main():
 
     run_dir = os.path.join('out', a.name)
     state = json.load(open(os.path.join(run_dir, 'state.json')))
-    lessons = ([int(x) for x in a.lessons.split(',')] if a.lessons
+    lessons = ([lesson_key(x) for x in a.lessons.split(',')] if a.lessons
                else state['active'])
     print(f"{run_dir}: {state['timesteps']} steps, pool {state['active']}\n")
     print(f"{'lesson':>24} {'policy':>18} {'do nothing':>18}")

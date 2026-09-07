@@ -1,6 +1,6 @@
 """Train ONE PPO policy across the lessons, with a curriculum and resume.
 
-    python -m rl.train_ppo --name climber                 # all 12, curriculum on
+    python -m rl.train_ppo --name climber                 # all 13, curriculum on
     python -m rl.train_ppo --name climber --resume        # continue where it stopped
     python -m rl.train_ppo --name t1 --lessons 1,2        # a subset
     python -m rl.train_ppo --name t1 --no-curriculum      # all lessons from step 0
@@ -46,7 +46,7 @@ except ImportError as e:
 
 from . import default_envs
 from .climb_task import ClimbTask
-from .lessons import LESSONS
+from .lessons import LESSONS, lesson_key
 
 WINDOW = 40          # episodes per lesson the success rate is measured over
 UNLOCK_AT = 0.60     # success rate on the newest lesson that unlocks the next one
@@ -78,7 +78,7 @@ class MultiLesson(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self.cur = self.tasks[int(self.rng.choice(self.active))]
+        self.cur = self.tasks[self.active[int(self.rng.integers(len(self.active)))]]
         return self.cur.reset(seed)
 
     def step(self, a):
@@ -93,7 +93,7 @@ class Curriculum(BaseCallback):
         super().__init__()
         self.pool = list(pool)
         self.active = list(active or ([self.pool[0]] if enabled else self.pool))
-        self.hist = {int(k): list(v) for k, v in (history or {}).items()}
+        self.hist = {lesson_key(k): list(v) for k, v in (history or {}).items()}
         self.enabled = enabled
 
     def rate(self, lesson):
@@ -268,7 +268,7 @@ def main():
     # lesson 1 on the 12-core M4 Pro: 6->3413, 8->3950, 12->4330, 20->4977,
     # 32->5259. It keeps creeping up past the core count because the envs sit idle
     # during each policy update, so on a big machine try more than this default.
-    # Each env holds all 12 scenes, ~87 MB, so budget RAM at --envs x 87 MB.
+    # Each env holds all 13 scenes, ~94 MB, so budget RAM at --envs x 94 MB.
     ap.add_argument('--envs', type=int, default=default_envs())
     ap.add_argument('--device', default='cpu',
                     choices=['cpu', 'cuda', 'mps', 'auto'],
@@ -290,7 +290,7 @@ def main():
     if a.self_check:
         return self_check()
 
-    pool = [int(x) for x in a.lessons.split(',')]
+    pool = [lesson_key(x) for x in a.lessons.split(',')]
     run = os.path.join('out', a.name)
     state = {}
     if a.resume:

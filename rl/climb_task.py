@@ -408,18 +408,25 @@ class ClimbTask:
         return (best[1], best[2]) if best and best[0] < REACH_TOL else None
 
     def _near_rungs(self, p):
-        """the N_NEAR rungs closest to p: offset to each one's axis, and its direction.
+        """the N_NEAR rungs closest to p: offset to each one's axis, and its direction;
+        and for the nearest one, how far p is from each of its two ends along it.
 
         Every point along a rung is a seat -- the rungs are smooth, so where a hand
-        lands along one is free, which is also why it can slide there.
+        lands along one is free, which is also why it can slide there. But a rung
+        ENDS, and a policy that cannot see where was measured reaching for the far
+        ledge with its holding hand still half a metre from the edge of its own:
+        127-160 mm short at the static reach limit, in three runs, never once
+        across. The two end distances are signed along the rung's axis (which is
+        also in the observation), negative once past that end.
 
         Estimated, not ground truth: `p` is the estimator's throat and the rung
         geometry is the wall map, which vision/SLAM supplies on hardware.
         """
         cand = []
         for c, a, h in self.segs.values():
-            q = c + np.clip((p - c) @ a, -h, h) * a
-            cand.append((float(np.linalg.norm(p - q)), q - p, a))
+            s = float((p - c) @ a)
+            q = c + np.clip(s, -h, h) * a
+            cand.append((float(np.linalg.norm(p - q)), q - p, a, s, h))
         cand.sort(key=lambda v: v[0])
         out = []
         for i in range(N_NEAR):
@@ -427,6 +434,8 @@ class ClimbTask:
                 out += [cand[i][1], cand[i][2]]
             else:
                 out += [FAR, np.zeros(3)]
+        _, _, _, s, h = cand[0]
+        out.append(np.array([h - s, h + s]))
         return np.concatenate(out)
 
     def _obs(self):

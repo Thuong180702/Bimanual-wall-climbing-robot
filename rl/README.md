@@ -1,6 +1,6 @@
 # PPO curriculum
 
-The frame for training PPO on the climbing tasks, as twelve lessons ordered by
+The frame for training PPO on the climbing tasks, as thirteen lessons ordered by
 difficulty instead of the mixed scene.
 
 ```bash
@@ -9,7 +9,7 @@ python -m rl.climb_task     # smoke-check the task API on every lesson
 python -m rl.bench          # where the time actually goes on this machine
 python -m rl.train_ppo --self-check          # curriculum logic, trains nothing
 
-python -m rl.train_ppo --name climber        # train: all 12, curriculum on
+python -m rl.train_ppo --name climber        # train: all 13, curriculum on
 # Ctrl-C any time, then:
 python -m rl.train_ppo --name climber --resume
 
@@ -22,7 +22,7 @@ python -m rl.status --name climber --watch
 
 | file | what it is |
 |---|---|
-| `lessons.py` | the 12 lesson specs + scene generator (writes `urdf/lessons/`) |
+| `lessons.py` | the 13 lesson specs + scene generator (writes `urdf/lessons/`) |
 | `climb_task.py` | Gymnasium-shaped env: obs / action / reward / termination |
 | `train_ppo.py` | thin SB3 PPO entry point |
 | `bench.py` | simulator throughput vs env count, and cpu vs mps for the policy |
@@ -33,8 +33,8 @@ python -m rl.status --name climber --watch
 ## Lessons
 
 −2. left hand, one step (0.30 m) → −1. right hand, one step (0.30 m, the other way)
-→ 0. both hands, one step (0.40 m) → 1. traverse, continuous rung → 2. traverse,
-gaps → 3. climb up → 4. up-over-down → 5. climb down → 6. staggered heights →
+→ 0. both hands, one step (0.40 m) → 1. traverse, continuous rung → 1.5. traverse,
+small gaps (0.12 m) → 2. traverse, gaps (0.25 m) → 3. climb up → 4. up-over-down → 5. climb down → 6. staggered heights →
 7. perpendicular wall → 8. wall behind the back → 9. row beyond static reach (needs
 a dynamic move).
 
@@ -419,9 +419,21 @@ filter above, trusting a seated-but-unloaded anchor through the hand-over, and
 counting a hold only while the other hand is loaded. With those three (1.5–3M local
 steps): lesson 2 unlocks at 0.9M in every run; on lesson 2 the anchor holds to
 9–70 mm and the free hand to 31 mm on approach — the map is readable there — and on
-lesson 1 a traverse ends 27–320 mm off instead of 0.5–1.0 m. Lesson 2 itself is still
-0/40 after ~2M steps of exposure on the Mac: the hand gets to within 110–200 mm of
-the far ledge and sees it at 160–330; what is left is learning the reach.
+lesson 1 a traverse ends 27–320 mm off instead of 0.5–1.0 m. Lesson 2 itself was still
+0/40 after ~2M steps of exposure on the Mac, and the reason is a climber's rule the
+policy had no way to find. When the free hand came closest to the far ledge it was
+120–160 mm short, the hands were 627–689 mm apart — the static reach limit — and the
+**holding hand was still 0.47–0.54 m from the edge of its own segment**. Lead hand to
+the edge, trailing hand up beside it, *then* reach: from a holder at y ≈ 0.25 the
+free hand reaches ~0.9 and the ledge (0.60–0.95) is in static reach, no swing needed.
+That order was never once rewarded, because a 0.25 m gap is never crossed by
+accident — and the edge of a rung was not in the observation at all (the three
+nearest rungs were given as nearest-point offsets, which read 0 anywhere along the
+rung you are on). Two changes, neither a script: each hand now sees the signed
+distance to both ends of its nearest rung, and lesson 1.5 puts a 0.12 m gap in the
+way first — one an ordinary 0.30 m step crosses, so the first crossings happen with
+the gait the policy already has and the credit does the rest. The body swing is a
+lesson-9 matter (0.75 m, beyond static reach), not a lesson-2 one.
 
 Skipped: domain randomization, best-checkpoint keeping. Reward weights are
 first-guess knobs — `rl.eval` plus the diagnostics are how you tell.

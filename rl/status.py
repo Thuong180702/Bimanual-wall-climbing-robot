@@ -27,7 +27,8 @@ def read(name):
 
 def show(name, names):
     st = read(name)
-    hist = {int(k): v for k, v in st['history'].items()}
+    from .lessons import lesson_key
+    hist = {lesson_key(k): v for k, v in st['history'].items()}
     print(f"{'run':>12}: out/{name}")
     print(f"{'steps':>12}: {st['timesteps']:,}")
     print(f"{'pool':>12}: {st['active']}")

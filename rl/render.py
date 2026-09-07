@@ -1,6 +1,6 @@
 """Render the lesson scenes to PNG.
 
-    python -m rl.render                    # a sheet of all twelve + close-ups
+    python -m rl.render                    # a sheet of all thirteen + close-ups
     python -m rl.render --lesson 6         # just one, bigger
 
 No image dependency: PNGs are written by piping a raw frame to ffmpeg, the same
@@ -8,7 +8,7 @@ trick `controller/record.py` uses for video.
 """
 import argparse, os, subprocess
 import numpy as np, mujoco
-from .lessons import LESSONS, xml_path
+from .lessons import LESSONS, xml_path, lesson_key, lesson_tag
 
 OUT = 'out/scenes'
 
@@ -182,7 +182,7 @@ def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--lesson', type=int, default=None)
+    ap.add_argument('--lesson', type=lesson_key, default=None)
     ap.add_argument('--width', type=int, default=560)
     ap.add_argument('--video', default=None, metavar='RUN',
                     help='render a saved policy from out/RUN to mp4')
@@ -200,7 +200,7 @@ def main():
     os.makedirs(OUT, exist_ok=True)
 
     if a.lesson:
-        p = png(f"{OUT}/lesson{a.lesson:02d}_{LESSONS[a.lesson]['name']}.png",
+        p = png(f"{OUT}/{lesson_tag(a.lesson)}_{LESSONS[a.lesson]['name']}.png",
                 shot(a.lesson, w=1200, h=820))
         print(p)
         return
