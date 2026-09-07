@@ -25,6 +25,12 @@ FRAME_SKIP = 20          # sim steps per control step: 0.002 s x 20 = 25 Hz
 ACT_SCALE = 0.06         # rad of setpoint travel per control step (1.5 rad/s max)
 LATCH_TOL = 0.15         # m from the goal point that still counts, given a latch
 RUNG_TOL = 0.06          # m: estimated throat this close to a rung axis = that rung
+REACH_TOL = 0.35         # m: a hold placed by arm reach (see `_reach_point`) may sit
+                         # this far from the IMU-based guess and still be believed.
+                         # The guess is only asked which side of the anchor the hand
+                         # is on, and mid-swing it is 148 mm off on average, 1.4 m at
+                         # worst -- the candidates it chooses between are 2x the
+                         # hand separation apart, so a loose gate is the right one.
 N_NEAR = 3               # nearest rungs reported per hand. Without these the policy
                          # cannot see the wall at all: it knows where the goal is and
                          # nothing about what lies between, so lesson 2 (gaps) and 6
@@ -32,6 +38,26 @@ N_NEAR = 3               # nearest rungs reported per hand. Without these the po
                          # memorise each fixed layout. Three is what a hand chooses
                          # between; the map supplies them, so this is hardware-legal.
 FAR = np.array([9.0, 9.0, 9.0])   # padding for a scene with fewer than N_NEAR rungs
+
+
+def _pivot_only(R_tri, R_seat, axis):
+    """the rotation of the form Rot(axis, th) @ R_seat nearest R_tri, and how far
+    off it still is (rad). A seated hook can only turn about its rung, so this is
+    the family its true orientation lives in; the IMU picks the member."""
+    a = axis / np.linalg.norm(axis)
+    D = R_tri @ R_seat.T
+    v = np.cross(a, [1.0, 0.0, 0.0])
+    if np.linalg.norm(v) < 0.1:
+        v = np.cross(a, [0.0, 0.0, 1.0])
+    v /= np.linalg.norm(v)
+    w = D @ v
+    w -= (w @ a) * a
+    w /= np.linalg.norm(w)
+    th = np.arctan2(np.cross(v, w) @ a, v @ w)
+    K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+    R = (np.eye(3) + np.sin(th) * K + (1 - np.cos(th)) * K @ K) @ R_seat
+    miss = np.arccos(np.clip((np.trace(R_tri.T @ R) - 1) / 2, -1.0, 1.0))
+    return R, float(miss)
 # A hand is on its hold when its hook is in CONTACT with a rung and bearing force --
 # see `_contact`. Two distance thresholds used to do this job and both were wrong in
 # a way that was measured: 80 mm for "unambiguously off" and 20 mm for "on". A seated
@@ -96,6 +122,29 @@ MIN_GRABS = 1            # real holds each hand must take before success counts.
                          # lost contact with the rung entirely and then came back
                          # bearing force with the finger inside the grip band. One is deliberately the floor -- the
                          # point is to make zero impossible, not to script a gait.
+K_FLIGHT = 0.15          # per control step during which, for even one physics
+                         # substep, no hook bore HOLD_LOAD: a jump. (The finger is
+                         # not asked here -- that is a grab-quality question, and
+                         # asking it made 52 % of an alternating episode a jump.) The 21M policy's
+                         # entire lesson-1 gait was jumps -- the right hook let go
+                         # and re-caught within 1-5 control steps while the left hung
+                         # in the air (off 96 % of the time, 0.0 load swaps per
+                         # episode), and each brief tap of the left hand then banked
+                         # the distance the jump had covered. A jump also blinds the
+                         # robot: the pose estimate is rooted in the hand that holds,
+                         # and with none holding the position along the rung is
+                         # unobservable -- measured 0.6-2.8 m of drift, which is why
+                         # a broken rung was never once reached. The charge is small;
+                         # the teeth are that a jump BANKS NOTHING (see step()).
+K_SLIDE = 10.0           # per metre a LOADED hook (contact > HOLD_LOAD) moves along
+                         # its rung. Sliding is allowed -- the rung is smooth and it
+                         # is meant to stay that way -- but a loaded hook dragged
+                         # along the bar is friction work, and it is also invisible:
+                         # the pose estimate is rooted in the hand that holds, so
+                         # every millimetre it slides is a millimetre the map is
+                         # wrong by. Measured on the 20.8M policy: the anchor slid
+                         # 100 mm in 6 steps with both hooks seated. Progress pays
+                         # 7/m, so 10 makes dragging a loss; lifting the hand is free.
 SUCCESS_R = 10.0
 FAIL_R = -10.0
 
@@ -197,6 +246,7 @@ class ClimbTask:
                    for nm in ('hook_%s', 'finger_%s')}
             self._hook_geoms[sd] = {g for g in range(m.ngeom)
                                     if m.geom_bodyid[g] in ids and m.geom_contype[g]}
+        self._flight = 0
         self.obs_dim = len(self.reset()[0])
 
     # ---- hardware-legal sensing -------------------------------------------
@@ -225,17 +275,81 @@ class ClimbTask:
         self.tau = np.array([enc[j][2] for j in JOINTS])
         self.imu_s = self.env.imu(raw_only=True)
         self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1])
-        for s in 'LR':
-            if self._confirmed(s):
-                hit = self._nearest_rung(self.est.throat(s))
-                if hit:
-                    self.hold[s] = hit
-        # anchor: keep the current one while it is confirmed, else the other hand
+        # The anchor's hold is left alone while it holds: re-projecting a hand's
+        # own estimate onto its own rung learns nothing. The OTHER hand's hold,
+        # while both are seated, comes from arm reach -- exact along the rung,
+        # which the IMU-rooted estimate is not (see `_reach_point`).
         other = 'R' if self.anchor == 'L' else 'L'
-        if not self._confirmed(self.anchor) and self._confirmed(other):
+        both = self._confirmed(self.anchor) and self._confirmed(other)
+        if both:
+            pA = self.hold[self.anchor][1]
+            delta = self.est.throat(other) - self.est.throat(self.anchor)
+            # which side: at the moment of the grab, the map-rooted guess; after
+            # that, wherever this hand was a step ago -- the branch never flips
+            # under a hand that has not moved
+            guess = self.hold[other][1] if self._both_conf else self._side_guess(pA, delta)
+            hit = (self._reach_point(pA, float(np.linalg.norm(delta)), guess)
+                   or self._nearest_rung(self.est.throat(other)))
+            if hit:
+                self.hold[other] = hit
+        # anchor: keep the current one while it is confirmed, else the other hand
+        elif not self._confirmed(self.anchor) and self._confirmed(other):
             self.anchor = other
             self.est.update(self.q, self.imu_s, self.anchor,
                             self.hold[self.anchor][1])
+        self._both_conf = both
+
+    def _side_guess(self, anchor_pt, delta):
+        """where the other throat is, trusting the IMU for the swing alone.
+
+        The anchored hook's world orientation is the rung's frame turned about the
+        rung's axis by the swing angle. Everything but the swing is the map's, so
+        along the rung this guess does not depend on the IMU at all -- measured at
+        the moment of a grab, 16 mm mean and 139 mm worst, against 29 and 250 for
+        the raw IMU attitude, which the body's own acceleration bends. It is only
+        ever asked which side of the anchor the hand is on. A hook seated on a rung
+        of another direction (lesson 7's corner) does not fit the family; then the
+        raw estimate is used as it was.
+        """
+        A = self.anchor
+        R_tri = self.est.hook_R(A)
+        R, miss = _pivot_only(R_tri, self.R_seat[A], self.segs[self.hold[A][0]][1])
+        if miss > np.radians(30):
+            return anchor_pt + delta
+        return anchor_pt + R @ (R_tri.T @ delta)
+
+    def _reach_point(self, anchor_pt, L, guess):
+        """(rung name, point) for a seated hand exactly L from the anchor's hold.
+
+        Both throats sit on rung axes the map knows, and L -- the distance between
+        them -- is exact from the encoders whatever the attitude: relative poses
+        inside the scratch tree do not depend on where the tree is put. So the new
+        hold is a sphere of radius L about the anchor's hold cut by a rung's axis:
+        two candidates per rung, and `guess` (the IMU-rooted estimate) is asked only
+        which one -- the single question it can answer mid-swing.
+
+        Why this exists: rooting everything in the IMU attitude put the free hand
+        148 mm off on average (up to 1.4 m) while the body swung, and with an
+        exact attitude the very same arithmetic was off by 0 mm. Every hold taken
+        through that error was baked into the map frame for good -- measured
+        0.25-1.3 m of drift along the rung over one alternating episode, so a
+        broken rung's gap was never where the policy saw it.
+        """
+        best = None
+        for nm, (c, a, h) in self.segs.items():
+            w = c - np.asarray(anchor_pt)
+            b = float(w @ a)
+            disc = b * b - (float(w @ w) - L * L)
+            if disc < 0.0:
+                continue
+            for s_ in (-b - np.sqrt(disc), -b + np.sqrt(disc)):
+                if abs(s_) > h + 0.03:          # off the end of this segment
+                    continue
+                q = c + float(np.clip(s_, -h, h)) * a
+                err = float(np.linalg.norm(q - guess))
+                if best is None or err < best[0]:
+                    best = (err, nm, q)
+        return (best[1], best[2]) if best and best[0] < REACH_TOL else None
 
     def _near_rungs(self, p):
         """the N_NEAR rungs closest to p: offset to each one's axis, and its direction.
@@ -366,7 +480,12 @@ class ClimbTask:
         Union with `latched`, never a replacement, so this can only ever keep an
         episode alive longer than the old rule did.
         """
-        return any(self._contact(s)[0] > 0.0 for s in 'LR')
+        con = [self._contact(s)[0] for s in 'LR']
+        # Sampled every physics substep, because a jump can start and end inside
+        # one control step: the 21M policy let go and re-caught in 1-5 steps.
+        if not any(c > HOLD_LOAD for c in con):
+            self._flight += 1
+        return any(c > 0.0 for c in con)
 
     def _gripping(self, side):
         """is the finger in the band that actually holds?
@@ -438,10 +557,18 @@ class ClimbTask:
         self.hold = {s: self._nearest_rung(self._throat_true(s)) for s in 'LR'}
         assert all(self.hold.values()), "keyframe hooks are not on a rung"
         self.anchor = 'L'
+        # the hooks' orientation when seated: what a hook on a rung of this
+        # direction looks like, up to a turn about the rung. Known for the same
+        # reason the initial holds are -- you hung it there.
+        self.R_seat = {s: self.env.data.xmat[self.env.hook[s]].reshape(3, 3).copy()
+                       for s in 'LR'}
+        self._both_conf = False
         self._sense()
         self.prev_d = self._hand_dists()
         self.anchor_d = self.prev_d.copy()   # goal distance of each hand's last hold
         self.held = self._holding()
+        self.prev_thr = np.array([self._throat_true(s) for s in 'LR'])
+        self.prev_loaded = np.array([self._contact(s)[0] > HOLD_LOAD for s in 'LR'])
         self.let_go = np.zeros(2, bool)      # has this hand been clear since anchoring
         self.grabs = np.zeros(2, int)        # real holds taken, per hand, this episode
         # the line the hands travel along, and which way round they start on it
@@ -451,16 +578,27 @@ class ClimbTask:
         self.off_t = np.zeros(2)          # TOTAL control steps each hand has been off
         self.held_t = np.zeros(2)         # steps since each hand was last fully clear
         self.n_steps = 0
+        self._flight = 0
         return self._obs(), {}
 
     def step(self, action):
         a = np.clip(np.asarray(action, float), -1.0, 1.0)
         self.ctrl = np.clip(self.ctrl + ACT_SCALE * a, self.lo, self.hi)
+        self._flight = 0
         for _ in range(FRAME_SKIP):
             self.env.step(self.ctrl)
         self._sense()
-        touch = np.array([self._contact(s)[0] for s in 'LR'])
+        con = [self._contact(s) for s in 'LR']
+        touch = np.array([c[0] for c in con])
         d, free, held = self._hand_dists(), touch <= 0.0, self._holding()
+        # a loaded hook dragged along its rung: metres, either direction, truth
+        thr = np.array([self._throat_true(s) for s in 'LR'])
+        loaded, slide = touch > HOLD_LOAD, 0.0
+        for k, (_, on) in enumerate(con):
+            if loaded[k] and self.prev_loaded[k] and on:
+                ax = self.segs[next(iter(on))][1]
+                slide += abs(float((thr[k] - self.prev_thr[k]) @ ax))
+        self.prev_thr, self.prev_loaded = thr, loaded
         self.n_steps += 1
         self.off_t += free                      # cumulative: never reset by a touch
         self.held_t = np.where(free, 0.0, self.held_t + 1)
@@ -472,7 +610,22 @@ class ClimbTask:
         # Without the let_go gate, a weight shift that drops the wrist load counts as
         # taking a new hold, and a hand that never leaves the rung banks progress --
         # which is what the 5.1M policy was doing on both hands.
-        self.let_go |= free
+        flight, forfeit = self._flight > 0, 0.0
+        if flight:
+            # A jump. Whatever ground it gained this step is never paid for: the
+            # anchor moves down by exactly that gain, so the next hold banks only
+            # what was climbed with a hand on the wall. Ground LOST in a jump is not
+            # forgiven -- the anchor stays and the next hold pays for the retreat.
+            # That is not a potential; it can only ever reduce what is paid, so it
+            # cannot be pumped. Only this step's gain, not everything pending: a
+            # one-substep bounce mid-reach must not cost the whole reach. And the
+            # hand that jumped never let go while the other held, so its landing
+            # is no cycle at all -- let_go is only granted below, outside a jump.
+            gain = np.maximum(0.0, self.prev_d - d)
+            forfeit = float(gain.sum())
+            self.anchor_d = self.anchor_d - gain
+        else:
+            self.let_go |= free             # letting go while the other hand holds
         took = held & ~self.held & self.let_go
         self.let_go &= ~took
         self.grabs += took
@@ -484,12 +637,14 @@ class ClimbTask:
         r = (K_BANK * float((self.anchor_d - new_anchor).sum())
              + K_REACH * float((self.prev_d - d).sum())
              - K_DANGLE * parked - K_STALE * stale - K_SEP * sep_err
-             - K_EFFORT * effort - K_FIGHT * fight - K_TIME
+             - K_EFFORT * effort - K_FIGHT * fight - K_TIME - K_FLIGHT * flight
+             - K_SLIDE * slide
              - K_ACT * float(a @ a) - K_VEL * float(self.dq @ self.dq))
         self.anchor_d, self.held, self.prev_d = new_anchor, held, d
         info = {'dist': float(d.sum()), 'lesson': self.lesson,
                 'off': float(free.sum()), 'parked': parked, 'stale': stale,
-                'touch': touch.copy(),
+                'touch': touch.copy(), 'flight': float(flight), 'forfeit': forfeit,
+                'slide': slide,
                 'effort': effort, 'fight': fight,
                 'banked': float(self.anchor_d.sum()), 'sep_err': sep_err,
                 'grabs': self.grabs.copy()}
@@ -547,10 +702,11 @@ def main():
     t.reset()
     base = mujoco.mj_name2id(t.env.model, mujoco.mjtObj.mjOBJ_BODY, 'base_link')
     t.env.data.xfrc_applied[base] = [0, 25, 0, 0, 0, 0]
-    moved_while_held, held, n = 0.0, 0, 0
+    moved_while_held, held, n, slid = 0.0, 0, 0, 0.0
     prev, bank0 = t._dist(), None
     for _ in range(150):
         _, r, te, tr, info = t.step(np.zeros(17))
+        slid += info['slide']
         if bank0 is None:
             bank0 = info['banked']
         now = t._dist()
@@ -565,7 +721,11 @@ def main():
     banked = bank0 - info['banked']
     print(f"slide test: 25 N along the rung, both hooks seated for {held}/{n} steps, "
           f"body moved {moved_while_held*1000:.0f} mm over those -- "
-          f"banked {banked*1000:+.1f} mm")
+          f"banked {banked*1000:+.1f} mm, loaded hooks dragged {slid*1000:.0f} mm "
+          f"and charged {K_SLIDE*slid:.2f}")
+    assert slid > 0.02 and 0.5 < slid / max(moved_while_held, 1e-9) < 2.0, (
+        f"the hooks were dragged {moved_while_held*1000:.0f} mm under load but "
+        f"K_SLIDE saw {slid*1000:.0f} mm")
     assert held > 100, (f"only {held}/{n} steps with both hooks seated: 25 N should "
                         f"not take a hook off the rung, so something else is")
     assert abs(banked) < 1e-6, (
@@ -746,6 +906,93 @@ def main():
         f"{MIN_SEP*1000:.0f} -- this is the case that made the second grab fail")
     assert inverted > together, "swapping the hands must cost more than merging them"
 
+    # Odometry by reach: the point on a rung exactly L from the anchor's hold, with
+    # the IMU guess deciding only which side. Exact where the guess is 148 mm off.
+    t = ClimbTask(2)
+    t.reset()
+    c, a, h = t.segs['rung_start']
+    pA = c - 0.10 * a                          # the anchor, on the start rung
+    T = c + 0.15 * a                           # the truth: 0.25 m further along it
+    bad = T + np.array([0.10, 0.08, -0.09])    # a guess 157 mm off, wrong in x and z
+    nm, q = t._reach_point(pA, 0.25, bad)
+    assert nm == 'rung_start' and np.linalg.norm(q - T) < 1e-9, (nm, q - T)
+    c1, a1, h1 = t.segs['rung_seg1']
+    T1 = c1 - (h1 - 0.02) * a1                 # 20 mm in from the near end of seg1
+    L1 = float(np.linalg.norm(T1 - pA))
+    nm, q = t._reach_point(pA, L1, T1 + np.array([0.12, -0.06, 0.05]))
+    assert nm == 'rung_seg1' and np.linalg.norm(q - T1) < 1e-9, (nm, q - T1)
+    nm2, q2 = t._reach_point(pA, 0.25, T - 0.5 * a)
+    assert np.linalg.norm(q2 - T) > 0.4, "the guess must be able to choose the other side"
+    assert t._reach_point(pA, 0.25, T + 0.6 * a) is None, "a guess 0.6 m off was believed"
+    ax = np.array([0.0, 1.0, 0.0])
+    Rs = t.R_seat['L']
+    Kx = np.array([[0, 0, 0], [0, 0, -1.0], [0, 1.0, 0]])      # a turn about x
+    R_true = _pivot_only(np.eye(3), np.eye(3), ax)[0]           # identity, sanity
+    swing = (np.eye(3) + np.sin(0.7) * np.array([[0, 0, 1.0], [0, 0, 0], [-1.0, 0, 0]])
+             + (1 - np.cos(0.7)) * np.array([[0, 0, 1.0], [0, 0, 0], [-1.0, 0, 0]]) @
+             np.array([[0, 0, 1.0], [0, 0, 0], [-1.0, 0, 0]])) @ Rs
+    tilt = (np.eye(3) + np.sin(0.1) * Kx + (1 - np.cos(0.1)) * Kx @ Kx) @ swing
+    R, miss = _pivot_only(tilt, Rs, ax)
+    # the tilt is applied after the swing, so the nearest pure swing is 0.7 rad to a
+    # couple of mrad -- a side question, not a survey
+    assert np.abs(R - swing).max() < 0.01 and abs(miss - 0.1) < 1e-3, (miss, np.abs(R - swing).max())
+    print(f"pivot test: a 0.7 rad swing plus a 0.1 rad tilt is read back as the swing "
+          f"alone, {miss:.3f} rad off")
+    print(f"reach test: a hold 0.25 m along the rung is placed to "
+          f"{np.linalg.norm(q - T1)*1e3:.4f} mm from a guess 157 mm off; across the "
+          f"gap onto seg1 too; a guess on the far side picks the far side")
+
+    # A jump -- no hand holding, for even one physics substep -- must bank nothing,
+    # count no grab and be charged; a supported reach must still bank in full; and
+    # a tap after a jump must be worth nothing. That tap is the 21M policy's whole
+    # trick: the right hook jumped along the rung while the left hung in the air,
+    # and each brief touch of the left hand banked what the jump had covered.
+    t = ClimbTask(1)
+    t.reset()
+    real_con, real_d = t._contact, t._hand_dists
+    on = {s: real_con(s) for s in 'LR'}
+    st = {'L': on['L'], 'R': on['R'], 'd': real_d().copy()}
+    t._contact = lambda s: st[s]
+    t._hand_dists = lambda: st['d'].copy()
+    z = np.zeros(17)
+    # a supported reach: left off while the right holds, 0.3 m toward the goal
+    bank0 = t.anchor_d.sum()
+    st['L'] = (0.0, set())
+    for _ in range(3):
+        st['d'][0] -= 0.1
+        _, _, _, _, info = t.step(z)
+        assert info['flight'] == 0.0, "a one-handed hang is being called a jump"
+    st['L'] = on['L']
+    _, _, _, _, info = t.step(z)
+    assert list(info['grabs']) == [1, 0] and abs(bank0 - info['banked'] - 0.3) < 1e-9, (
+        f"a supported 0.3 m reach banked {(bank0 - info['banked'])*1000:.0f} mm "
+        f"and counted {info['grabs']} grabs")
+    # a jump: both hands off, 0.3 m toward the goal, then both land
+    bank1, forf, charged = t.anchor_d.sum(), 0.0, 0.0
+    st['L'] = st['R'] = (0.0, set())
+    for _ in range(3):
+        st['d'] -= 0.1
+        _, _, _, _, info = t.step(z)
+        forf += info['forfeit']
+        charged += info['flight']
+    st['L'], st['R'] = on['L'], on['R']
+    _, r, _, _, info = t.step(z)
+    assert charged == 3.0, f"3 jump steps charged {charged:.0f}"
+    assert abs(forf - 0.6) < 1e-9, f"a 0.6 m jump forfeited {forf*1000:.0f} mm"
+    assert list(info['grabs']) == [1, 0], f"landing from a jump counted a grab: {info['grabs']}"
+    assert abs(bank1 - info['banked'] - 0.6) < 1e-9 and info['forfeit'] == 0.0
+    # the tap: the left hand touches the rung right after the jump -- worth nothing
+    st['L'] = (0.0, set())
+    _, _, _, _, _ = t.step(z)
+    st['L'] = on['L']
+    b = t.anchor_d.sum()
+    _, _, _, _, info = t.step(z)
+    assert list(info['grabs']) == [2, 0], "a supported let-go after a jump must count again"
+    assert abs(b - info['banked']) < 1e-9, (
+        f"a tap after a jump banked {(b - info['banked'])*1000:.0f} mm")
+    print("jump test: a supported 0.3 m reach banks 300 mm; a 0.6 m jump banks 0, "
+          "forfeits 600 mm, counts no grab and is charged; the tap after it banks 0")
+
     # No pump, proved rather than hoped. Both reward terms are differences of a
     # stored quantity, so over any trajectory whatsoever they must telescope to the
     # endpoint difference -- swing a hand out and back a hundred times and the sum
@@ -755,7 +1002,7 @@ def main():
     t = ClimbTask(1)
     t.reset()
     rng = np.random.default_rng(3)
-    d0, bank0, acc = t._dist(), t.anchor_d.sum(), 0.0
+    d0, bank0, acc, forfeit = t._dist(), t.anchor_d.sum(), 0.0, 0.0
     for _ in range(400):
         a = rng.uniform(-1, 1, 17)
         _, r, te, tr, info = t.step(a)
@@ -764,15 +1011,19 @@ def main():
         # is what notices when one is forgotten.
         acc += (r + K_DANGLE * info['parked'] + K_STALE * info['stale']
                 + K_SEP * info['sep_err'] + K_EFFORT * info['effort']
-                + K_FIGHT * info['fight'] + K_TIME
+                + K_FIGHT * info['fight'] + K_TIME + K_FLIGHT * info['flight']
+                + K_SLIDE * info['slide']
                 + K_ACT * float(a @ a) + K_VEL * float(t.dq @ t.dq))
+        forfeit += info['forfeit']       # a jump's gains are dropped, never paid
         if te or tr:
             # the terminal bonus is not a potential and is not meant to be
             acc -= SUCCESS_R if info.get('reason') == 'success' else FAIL_R
             break
-    expect = K_BANK * (bank0 - info['banked']) + K_REACH * (d0 - t._dist())
+    expect = (K_BANK * (bank0 - info['banked'] - forfeit)
+              + K_REACH * (d0 - t._dist()))
     print(f"telescoping test: {acc:+.4f} accumulated over the trajectory against "
-          f"{expect:+.4f} from the endpoints alone")
+          f"{expect:+.4f} from the endpoints alone ({forfeit*1000:.0f} mm forfeited "
+          f"in jumps)")
     assert abs(acc - expect) < 1e-6, (
         f"reward accumulated {acc:+.4f} but the endpoints say {expect:+.4f}: the "
         f"terms are not potentials any more and the trajectory can be pumped")

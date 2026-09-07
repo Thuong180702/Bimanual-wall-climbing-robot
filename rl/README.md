@@ -238,6 +238,8 @@ asserts all of it.
 | `STALE_AFTER` 8 s → **2.5 s** | the threshold was longer than the episode it policed. The winning lesson-1 run is 5.8 s, so the hand that never released was charged exactly 0.00 |
 | `MIN_GRABS` in `_success` | the task was completable with **neither hand ever leaving the rung**: 1 m traversed with the right hook never further than 24 mm from the rail and the left hand carrying under 10 N for 89 % of the episode. Alternating grips is not one way of doing this task, it is the task |
 | finger setpoint clamped at `GRIP_CLIFF` | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N. Nothing above the cliff is useful, so it is a mechanical stop — 45° of pure self-destruct removed from the search. Opening is untouched |
+| `K_FLIGHT`, and a jump **forfeits** its gain | the 21M policy's whole lesson-1 gait was jumps: the right hook let go and re-caught within 1–5 control steps while the left hung in the air — off **96 %** of the time, **0.0** load swaps per episode — and each brief tap of the left hand then banked what the jump had covered. A control step in which, for even one physics substep, no hook bore `HOLD_LOAD` is a jump: charged, whatever ground it gained is taken off the anchor so no later hold pays for it, and the landing is no cycle. Replayed: that policy drops from 5/5 to **0/12**, 2.0 m forfeited per episode |
+| `K_SLIDE` | sliding stays legal — the rung is smooth on purpose — but a **loaded** hook dragged along it pays 10/m against progress's 7. Measured in shadow on the alternating policy: the anchored hook was dragged **100–724 mm per tenure**, both hooks seated, and that is a distance the sensors cannot see (next section) |
 | `K_EFFORT`, `K_FIGHT`, `K_TIME` | the gait was legal but nothing like climbing. Measured against a still hang (29.6 N·m, 107 N): the stuck episode ran 145 N·m and **202 N of grip on a 109 N robot** — ~95 N of the two arms pulling against each other. All three price the *excess* over hanging still, never the absolute, so existing stays free |
 
 Replayed on the audited policies the set does what it should. The 10.4M run's
@@ -296,6 +298,46 @@ Re-measuring the same `win3` policy against contact instead of the gap:
 
 The alternating gait was already there. The measurement could not see it, and
 `MIN_GRABS` — which reads the same broken counter — was rejecting the successes.
+
+## Where the robot thought it was
+
+The observation is map-relative: goal and rungs are given relative to the hands, and
+the hands come from an estimator rooted in the hand that holds — encoders, IMU and
+the wall map, nothing else. The 21M `win4` run showed what that costs when the gait
+is wrong:
+
+| `win4`, 21.2M steps | lesson 1 | lesson 2 (0.25 m gaps) |
+|---|---|---|
+| success | 95 % (best), 60 % (last) | **0 %** for the 16M steps it was in the pool |
+| gait | right hook jumps, left hangs 96 % off | left hangs 95 % off |
+| rungs touched in 30 episodes | — | `rung_start` only — **never `seg1`, never `seg2`** |
+| estimate drift within an episode | 0.6 – 1.2 m | 0.3 – 2.8 m; `seg1` truly 134 mm away, seen at 417 |
+
+Lesson 2 was not hard. The policy could not see it: every jump moves the robot along
+the rung with no hand to root the estimate in, and the drift is the sum of the jumps.
+
+Where the error comes from, measured on the alternating `win3` policy over 815 steps
+and 43 grabs, with the free hand's estimate rooted at the anchor's **true** hold:
+
+| attitude source | free hand, all steps | along the rung, at a grab |
+|---|---|---|
+| IMU triad (accel + mag) | 148 mm mean, 1425 max | 29 mm mean, 250 max |
+| rung frame from the map, IMU only for the swing | 154 / 1426 | **16 / 139** |
+| perfect | **0 / 0** | **0 / 0** |
+
+The kinematics are exact. All of it is the attitude, which the body's own
+acceleration bends. So holds are now placed by **reach** (`_reach_point`): the
+distance between the two throats is exact from the encoders whatever the attitude,
+both throats sit on rung axes the map knows, and the new hold is the point on a rung
+at that distance from the anchor's hold — a sphere cut by a line. The map-rooted
+guess picks the side; after that the branch stays put. Exact in the unit test from a
+guess 157 mm off, across the gap onto `seg1` as well.
+
+What reach cannot fix, measured in shadow on the trained gait: the anchor itself
+moving. With both hooks seated the anchored hook was dragged 100–724 mm per tenure,
+and every jump adds more. `K_SLIDE` and `K_FLIGHT` exist so that the gait the policy
+is paid for is the one the sensors can track — one hand holds still while the other
+moves, which is also the one that was asked for.
 
 Skipped: domain randomization, best-checkpoint keeping. Reward weights are
 first-guess knobs — `rl.eval` plus the diagnostics are how you tell.
