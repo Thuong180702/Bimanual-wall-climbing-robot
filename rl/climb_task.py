@@ -307,6 +307,13 @@ class ClimbTask:
         return bool(h['pad'] > 20.0 and GRIP_BAND[0] <= ang <= GRIP_BAND[1]
                     and np.linalg.norm(h['force']) > 12.0)
 
+    def _touching(self, side):
+        """is the hook still on its rung, loaded or not? Pad contact and the finger
+        in the band. `_confirmed` asks for HOLD_LOAD-scale force, which a hook that
+        has handed its weight to the other one no longer has -- but it has not gone
+        anywhere, and its hold is still the map's best anchor."""
+        return bool(self.env.hand(side)['pad'] > 2.0 and self._gripping(side))
+
     def _nearest_rung(self, p):
         """(rung name, point on its axis) if p is within RUNG_TOL of one, else None"""
         best = None
@@ -339,7 +346,14 @@ class ClimbTask:
         # while both are seated, comes from arm reach -- exact along the rung,
         # which the IMU-rooted estimate is not (see `_reach_point`).
         other = 'R' if self.anchor == 'L' else 'L'
-        both = self._confirmed(self.anchor) and self._confirmed(other)
+        cA, cB = self._confirmed(self.anchor), self._confirmed(other)
+        # The anchor's hold is trusted for one step after it stops being confirmed:
+        # a hook that has only just unloaded has not gone anywhere in 40 ms. Without
+        # that, a quick hand-over -- the old hand under HOLD_LOAD before the new one
+        # is over it -- switched to the new hand's STALE hold from its previous
+        # tenure. Measured on the 3M policy: 86 of 129 switches had no overlap and
+        # baked in 62 mm each, 5.3 m over four episodes; the 43 with overlap, 1 mm.
+        both = cB and (cA or self._anchor_fresh or self._touching(self.anchor))
         if both:
             pA = self.hold[self.anchor][1]
             delta = self.est.throat(other) - self.est.throat(self.anchor)
@@ -352,11 +366,13 @@ class ClimbTask:
             if hit:
                 self.hold[other] = hit
         # anchor: keep the current one while it is confirmed, else the other hand
-        elif not self._confirmed(self.anchor) and self._confirmed(other):
+        if not cA and cB:
             self.anchor = other
             self.est.update(self.q, self.imu_s, self.anchor,
                             self.hold[self.anchor][1], R_torso=self._Rf)
+            cA = True
         self._both_conf = both
+        self._anchor_fresh = cA
 
     def _reach_point(self, anchor_pt, L, guess):
         """(rung name, point) for a seated hand exactly L from the anchor's hold.
@@ -599,6 +615,7 @@ class ClimbTask:
         assert all(self.hold.values()), "keyframe hooks are not on a rung"
         self.anchor = 'L'
         self._both_conf = False
+        self._anchor_fresh = True
         imu = self.env.imu(raw_only=True)
         self._Rf = triad(imu['accel'], imu['mag'])   # at rest the triad is right
         self._w_sum[:] = 0.0
