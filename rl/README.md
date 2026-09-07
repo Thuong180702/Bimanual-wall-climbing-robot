@@ -435,5 +435,15 @@ way first — one an ordinary 0.30 m step crosses, so the first crossings happen
 the gait the policy already has and the credit does the rest. The body swing is a
 lesson-9 matter (0.75 m, beyond static reach), not a lesson-2 one.
 
+Checked locally (1.5M steps, 8 envs): with the end distances in the observation
+the pool opened -1 @ 0.10M, 0 @ 0.19M, 1 @ 0.37M, 1.5 @ 0.78M — lesson 1 at 60 % and the first 0.12 m crossings by 1.5M;
+without them, -1 @ 0.14M, 0 @ 0.24M, 1 @ 0.38M, 1.5 @ 0.54M, lesson 1 still at 0 %. One run of the same configuration
+collapsed instead: lesson −1 reached 70 % at 0.44M, lesson 0 unlocked and stayed at
+0 %, and by 3M both were at 0 % with the left hand fluttering 48 grabs per episode.
+A newly unlocked lesson that fails for long is half the pool's gradient, and a
+policy can lose what it knew to it. `rl.status` shows it: an earlier lesson's rate
+falling while the newest sits at 0 % for more than ~1M steps. If that happens,
+restart — the runs that get past it do so early.
+
 Skipped: domain randomization, best-checkpoint keeping. Reward weights are
 first-guess knobs — `rl.eval` plus the diagnostics are how you tell.
