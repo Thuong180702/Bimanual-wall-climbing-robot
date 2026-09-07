@@ -670,7 +670,12 @@ class ClimbTask:
         flight = self._flight > 0
         if not flight:
             self.let_go |= free             # letting go while the other hand holds
-        took = held & ~self.held & self.let_go
+        # ...and while the OTHER hand still carries the weight: three points of
+        # contact. A hold taken with nothing else loaded was a jump's landing or a
+        # hand-over with a gap in it, and the gap is where the map goes wrong: on
+        # the 3M policy 86 of 129 anchor switches had no step with both hands
+        # confirmed and baked in 62 mm each. What is paid is what can be seen.
+        took = held & ~self.held & self.let_go & loaded[::-1]
         self.let_go &= ~took
         self.grabs += took
         first = took & (self.grabs == 1)        # each hand's first real hold this episode

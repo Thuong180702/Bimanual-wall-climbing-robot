@@ -247,6 +247,7 @@ asserts all of it.
 | finger setpoint clamped at `GRIP_CLIFF` | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N. Nothing above the cliff is useful, so it is a mechanical stop — 45° of pure self-destruct removed from the search. Opening is untouched |
 | `K_FLIGHT`, and a jump earns nothing | the 21M policy's whole lesson-1 gait was jumps: the right hook let go and re-caught within 1–5 control steps while the left hung in the air — off **96 %** of the time, **0.0** load swaps per episode — and each brief tap of the left hand then banked what the jump had covered. A control step in which, for even one physics substep, no hook bore `HOLD_LOAD` is a jump: charged, nobody is loaded so nothing is credited, and the landing is no cycle. Replayed: that policy drops from 5/5 to **0/12** |
 | `K_SLIDE` | sliding stays legal — the rung is smooth on purpose — but a **loaded** hook dragged along it pays 10/m, because it is friction work and because it is invisible: measured in shadow on the alternating policy, the anchored hook was dragged **100–724 mm per tenure**, both hooks seated (next section). This is *not* what makes dragging unprofitable — the relative credit is. Raising it to 20 was tried when the drag appeared and it stalled learning outright: 3M steps at 30 % on the very first lesson, std 0.42, because the same charge lands on the few centimetres the holding hook settles by during every honest reach. It has to beat the live shaping term and the bank: `assert K_SLIDE > K_BANK and K_SLIDE > 2 K_REACH` |
+| a hold counts only while the **other hand is loaded** | three points of contact. A hold taken with nothing else on the wall was a jump's landing or a hand-over with a gap in it, and the gap is where the map goes wrong: 86 of 129 anchor switches on the 3M policy had no step with both hands confirmed and baked in 62 mm each. Gated, the same curriculum unlocks at the same pace (lesson 2 at 0.94M against 0.89M), hand-overs with overlap go from 30 % to 53 %, and the anchor's error at the end of a lesson-1 traverse drops from 540–980 mm to 27–320 mm. What is paid is what can be seen |
 | `K_GRAB`, once per hand per episode | seating a hook from the air is the one skill the reach credit cannot teach by itself. Under the relative credit the 600k policy carried the free hand to within 40 mm of its goal and **hovered there for the whole episode** — 0.2 grabs per episode, paying the dangle charge rather than come down, because the grab that would have banked its credit was a rare event with a small payoff. The earlier world-anchored reward had taught seating by accident, by paying shuffles *on* the rung first. One bonus for each hand's first supported hold: flutter cannot farm it, and it is a partial payment of `MIN_GRABS`, not a goal of its own |
 | `K_EFFORT`, `K_FIGHT`, `K_TIME` | the gait was legal but nothing like climbing. Measured against a still hang (29.6 N·m, 107 N): the stuck episode ran 145 N·m and **202 N of grip on a 109 N robot** — ~95 N of the two arms pulling against each other. All three price the *excess* over hanging still, never the absolute, so existing stays free |
 
@@ -414,7 +415,13 @@ episode, 87 % success in audit — and lesson 2 unlocked at about 2.5M. What rem
 was the map: 447 mm of loaded slide per episode, two thirds of it millimetre-scale
 settling under load rather than dragging, plus the triad's 25° — enough to put
 `seg1` at 230–630 mm in the estimate when it was 65–120 mm away. Hence the attitude
-filter above; the settling stays, and the reach odometry absorbs what it can.
+filter above, trusting a seated-but-unloaded anchor through the hand-over, and
+counting a hold only while the other hand is loaded. With those three (1.5–3M local
+steps): lesson 2 unlocks at 0.9M in every run; on lesson 2 the anchor holds to
+9–70 mm and the free hand to 31 mm on approach — the map is readable there — and on
+lesson 1 a traverse ends 27–320 mm off instead of 0.5–1.0 m. Lesson 2 itself is still
+0/40 after ~2M steps of exposure on the Mac: the hand gets to within 110–200 mm of
+the far ledge and sees it at 160–330; what is left is learning the reach.
 
 Skipped: domain randomization, best-checkpoint keeping. Reward weights are
 first-guess knobs — `rl.eval` plus the diagnostics are how you tell.
