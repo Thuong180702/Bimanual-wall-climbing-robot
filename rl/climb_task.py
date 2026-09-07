@@ -149,15 +149,22 @@ K_SLIDE = 10.0           # per metre a LOADED hook (contact > HOLD_LOAD) moves a
                          # the pose estimate is rooted in the hand that holds, so
                          # every millimetre it slides is a millimetre the map is
                          # wrong by. Measured on the 20.8M policy: the anchor slid
-                         # 100 mm in 6 steps with both hooks seated. Progress pays
-                         # 7/m, so 10 makes dragging a loss; lifting the hand is free.
+                         # 100 mm in 6 steps with both hooks seated. This is NOT
+                         # what makes dragging unprofitable -- the relative credit
+                         # below is, see the block above `class ClimbTask`. It was
+                         # tried at 20 and that stalled learning: the same charge
+                         # lands on the 30-120 mm the holding hook settles by during
+                         # every honest reach, and the 3M-step local run at 20 never
+                         # left the first lesson (30 %, std 0.42) where 10 had it at
+                         # 75 % by 400k. It only has to beat the live shaping term.
+assert K_SLIDE > 2 * K_REACH, "a drag must not be paid for by the live shaping alone"
 SUCCESS_R = 10.0
 FAIL_R = -10.0
 
-# Progress is BANKED, not live: each hand carries an anchor -- where it last took a
-# hold -- and the reward is the reduction in the distance from that anchor to the
-# goal. Two earlier shapes both failed, and the second failed hard enough to be
-# worth writing down.
+# Progress is CREDITED to a hand only while it is free and the other hand holds,
+# and only for the part of its approach that is its own -- the holder's motion is
+# subtracted -- then BANKED when it takes its next supported hold. Retreats always
+# debit. Three earlier shapes failed, and each is worth writing down.
 #
 # Paying for live distance however it closed paid for the phase-7 slide: the first
 # run crossed 0.75 m with the left hook never once opening its finger.
@@ -188,12 +195,24 @@ FAIL_R = -10.0
 # span of rung, so the second grab failed on contact and the robot fell. Hence a
 # floor, MIN_SEP, rather than a sign test.
 #
-# An anchor cannot be pumped: it only moves when a hand actually takes a hold, and
-# it moves in both directions, so the term telescopes to K_BANK x (how far the holds
-# actually travelled). Sliding does not move it either, because nothing was taken.
-# A small live-distance term stays as shaping, charged symmetrically so it also
-# telescopes -- over a full swing it nets zero, and the grip pad keeps what sliding
-# can win inside it down to about 16 mm.
+# The third shape was an ANCHOR: bank how far the hold travelled, in the world,
+# between one supported grab and the next. It telescopes and it cannot be pumped by
+# oscillation -- and it was beaten a third way. The 2M local run dragged the loaded
+# right hook along the rung 864 mm per lesson-1 episode while the free left hand
+# tapped its way along: every tap re-seated the left hand where it already was
+# RELATIVE to the right, and banked the distance the drag had carried the body.
+# One drag advanced both anchors, 14/m earned against 10/m of slide charge. Raising
+# the charge to 20 stalled learning instead, because the same charge lands on the
+# few centimetres the holding hook settles by during every honest reach.
+#
+# So progress is measured the way the sensors measure it: relative to the hand that
+# holds. Per step a free hand with the other hand loaded is credited its approach
+# MINUS the holder's own displacement toward that goal; a loaded hand approaching is
+# credited nothing; and every retreat -- free or loaded, supported or in flight --
+# debits in full. Credit never exceeds the world approach, so over any closed loop
+# it sums to <= 0 and cannot be pumped, and a drag, a tap, a jump and a slide all
+# earn exactly nothing. A small live-distance term stays as shaping, charged
+# symmetrically so it telescopes; K_SLIDE > 2 K_REACH keeps a drag a loss even there.
 #
 # The dangle penalty is the other half, and its first version was WRONG in an
 # instructive way: charged flat, every step a hand was off, it taxed the release
@@ -571,7 +590,7 @@ class ClimbTask:
         self._both_conf = False
         self._sense()
         self.prev_d = self._hand_dists()
-        self.anchor_d = self.prev_d.copy()   # goal distance of each hand's last hold
+        self.credit = np.zeros(2)            # relative approach earned since the last hold
         self.held = self._holding()
         self.prev_thr = np.array([self._throat_true(s) for s in 'LR'])
         self.prev_loaded = np.array([self._contact(s)[0] > HOLD_LOAD for s in 'LR'])
@@ -599,11 +618,12 @@ class ClimbTask:
         d, free, held = self._hand_dists(), touch <= 0.0, self._holding()
         # a loaded hook dragged along its rung: metres, either direction, truth
         thr = np.array([self._throat_true(s) for s in 'LR'])
+        dp = thr - self.prev_thr
         loaded, slide = touch > HOLD_LOAD, 0.0
         for k, (_, on) in enumerate(con):
             if loaded[k] and self.prev_loaded[k] and on:
                 ax = self.segs[next(iter(on))][1]
-                slide += abs(float((thr[k] - self.prev_thr[k]) @ ax))
+                slide += abs(float(dp[k] @ ax))
         self.prev_thr, self.prev_loaded = thr, loaded
         self.n_steps += 1
         self.off_t += free                      # cumulative: never reset by a touch
@@ -616,43 +636,46 @@ class ClimbTask:
         # Without the let_go gate, a weight shift that drops the wrist load counts as
         # taking a new hold, and a hand that never leaves the rung banks progress --
         # which is what the 5.1M policy was doing on both hands.
-        flight, forfeit = self._flight > 0, 0.0
-        if flight:
-            # A jump. Whatever ground it gained this step is never paid for: the
-            # anchor moves down by exactly that gain, so the next hold banks only
-            # what was climbed with a hand on the wall. Ground LOST in a jump is not
-            # forgiven -- the anchor stays and the next hold pays for the retreat.
-            # That is not a potential; it can only ever reduce what is paid, so it
-            # cannot be pumped. Only this step's gain, not everything pending: a
-            # one-substep bounce mid-reach must not cost the whole reach. And the
-            # hand that jumped never let go while the other held, so its landing
-            # is no cycle at all -- let_go is only granted below, outside a jump.
-            gain = np.maximum(0.0, self.prev_d - d)
-            forfeit = float(gain.sum())
-            self.anchor_d = self.anchor_d - gain
-        else:
+        flight = self._flight > 0
+        if not flight:
             self.let_go |= free             # letting go while the other hand holds
         took = held & ~self.held & self.let_go
         self.let_go &= ~took
         self.grabs += took
-        new_anchor = np.where(took, d, self.anchor_d)
+        # Progress, RELATIVE to the hand that holds (see the block above the class).
+        # A free hand whose partner is loaded is credited its approach minus the
+        # partner's own forward motion; a loaded hand approaching is credited
+        # nothing; any retreat debits in full. A jump (nobody loaded) therefore
+        # credits nothing and, since let_go is not granted during one, lands as no
+        # cycle. Banked when the hand next takes a supported hold.
+        approach = self.prev_d - d
+        credit = np.minimum(0.0, approach)
+        for k in (0, 1):
+            o = 1 - k
+            if free[k] and loaded[o]:
+                u = self.goals[k] - thr[k]
+                u /= max(float(np.linalg.norm(u)), 1e-9)
+                credit[k] = approach[k] - max(0.0, float(dp[o] @ u))
+        self.credit += credit
+        bank = float(self.credit[took].sum())
+        self.credit[took] = 0.0
         sep_err = self._sep_error()
         effort = max(0.0, float(np.abs(self.tau).sum()) - TAU_IDLE)
         grip = sum(float(np.linalg.norm(self.env.hand(s)['force'])) for s in 'LR')
         fight = max(0.0, grip - WEIGHT)
-        r = (K_BANK * float((self.anchor_d - new_anchor).sum())
-             + K_REACH * float((self.prev_d - d).sum())
+        r = (K_BANK * bank
+             + K_REACH * float(approach.sum())
              - K_DANGLE * parked - K_STALE * stale - K_SEP * sep_err
              - K_EFFORT * effort - K_FIGHT * fight - K_TIME - K_FLIGHT * flight
              - K_SLIDE * slide
              - K_ACT * float(a @ a) - K_VEL * float(self.dq @ self.dq))
-        self.anchor_d, self.held, self.prev_d = new_anchor, held, d
+        self.held, self.prev_d = held, d
         info = {'dist': float(d.sum()), 'lesson': self.lesson,
                 'off': float(free.sum()), 'parked': parked, 'stale': stale,
-                'touch': touch.copy(), 'flight': float(flight), 'forfeit': forfeit,
-                'slide': slide,
+                'touch': touch.copy(), 'flight': float(flight), 'bank': bank,
+                'credit': credit.copy(), 'slide': slide,
                 'effort': effort, 'fight': fight,
-                'banked': float(self.anchor_d.sum()), 'sep_err': sep_err,
+                'banked': float(self.credit.sum()), 'sep_err': sep_err,
                 'grabs': self.grabs.copy()}
         terminated, truncated = False, False
         if self._success():
@@ -725,13 +748,12 @@ def main():
     t.reset()
     base = mujoco.mj_name2id(t.env.model, mujoco.mjtObj.mjOBJ_BODY, 'base_link')
     t.env.data.xfrc_applied[base] = [0, 25, 0, 0, 0, 0]
-    moved_while_held, held, n, slid = 0.0, 0, 0, 0.0
-    prev, bank0 = t._dist(), None
+    moved_while_held, held, n, slid, paid = 0.0, 0, 0, 0.0, 0.0
+    prev = t._dist()
     for _ in range(150):
         _, r, te, tr, info = t.step(np.zeros(17))
         slid += info['slide']
-        if bank0 is None:
-            bank0 = info['banked']
+        paid += info['bank']
         now = t._dist()
         if info['off'] == 0:                    # both hooks seated this step
             moved_while_held += abs(prev - now)
@@ -741,10 +763,10 @@ def main():
         if te or tr:
             break
     t.env.data.xfrc_applied[base] = np.zeros(6)
-    banked = bank0 - info['banked']
+    banked = paid + max(0.0, info['banked'])
     print(f"slide test: 25 N along the rung, both hooks seated for {held}/{n} steps, "
           f"body moved {moved_while_held*1000:.0f} mm over those -- "
-          f"banked {banked*1000:+.1f} mm, loaded hooks dragged {slid*1000:.0f} mm "
+          f"credited {banked*1000:+.1f} mm, loaded hooks dragged {slid*1000:.0f} mm "
           f"and charged {K_SLIDE*slid:.2f}")
     assert slid > 0.02 and 0.5 < slid / max(moved_while_held, 1e-9) < 2.0, (
         f"the hooks were dragged {moved_while_held*1000:.0f} mm under load but "
@@ -891,16 +913,17 @@ def main():
     # exactly that, with the hook never leaving the rung.
     t = ClimbTask(1)
     t.reset()
-    bank0, flick = t.anchor_d.sum(), [True]
+    paid, flick = 0.0, [True]
     t._holding = lambda: np.array([flick[0], True])   # left hold flickers on load
     for i in range(80):
         flick[0] = (i // 5) % 2 == 0
         _, _, te, tr, info = t.step(np.zeros(17))
+        paid += abs(info['bank'])
         if te or tr:
             break
-    moved = abs(float(t.anchor_d.sum() - bank0))
+    moved = paid
     print(f"let-go test: a hold flickering {8} times without the hook leaving the "
-          f"rung moved the anchor {moved*1000:.1f} mm")
+          f"rung banked {moved*1000:.1f} mm")
     assert moved < 1e-9, (
         f"the anchor moved {moved*1000:.1f} mm on load flicker alone: a hand that "
         f"never let go is banking progress again")
@@ -965,67 +988,92 @@ def main():
           f"{np.linalg.norm(q - T1)*1e3:.4f} mm from a guess 157 mm off; across the "
           f"gap onto seg1 too; a guess on the far side picks the far side")
 
-    # A jump -- no hand holding, for even one physics substep -- must bank nothing,
-    # count no grab and be charged; a supported reach must still bank in full; and
-    # a tap after a jump must be worth nothing. That tap is the 21M policy's whole
-    # trick: the right hook jumped along the rung while the left hung in the air,
-    # and each brief touch of the left hand banked what the jump had covered.
+    # Progress must be paid for a supported reach, and for nothing else. Three ways
+    # policies moved the body without one, each of which banked under an earlier
+    # reward: a JUMP (no hand holding, for even one physics substep) -- the 21M
+    # policy's whole gait; a TAP right after one; and a DRAG -- the 2M local run's
+    # inchworm, the loaded right hook pulled along the rung while the free left hand
+    # tapped its way along. All three must bank 0; the reach banks in full.
     t = ClimbTask(1)
     t.reset()
-    real_con, real_d = t._contact, t._hand_dists
-    on = {s: real_con(s) for s in 'LR'}
-    st = {'L': on['L'], 'R': on['R'], 'd': real_d().copy()}
-    t._contact = lambda s: st[s]
+    real_con, real_d, real_thr = t._contact, t._hand_dists, t._throat_true
+    on = {s_: real_con(s_) for s_ in 'LR'}
+    st = {'L': on['L'], 'R': on['R'], 'd': real_d().copy(),
+          'thr': {s_: real_thr(s_).copy() for s_ in 'LR'}}
+    t._contact = lambda s_: st[s_]
     t._hand_dists = lambda: st['d'].copy()
+    t._throat_true = lambda s_: st['thr'][s_].copy()
     z = np.zeros(17)
+    uL = t.goals[0] - st['thr']['L']
+    uL /= np.linalg.norm(uL)
     # a supported reach: left off while the right holds, 0.3 m toward the goal
-    bank0 = t.anchor_d.sum()
     st['L'] = (0.0, set())
     for _ in range(3):
         st['d'][0] -= 0.1
+        st['thr']['L'] += 0.1 * uL
         _, _, _, _, info = t.step(z)
         assert info['flight'] == 0.0, "a one-handed hang is being called a jump"
     st['L'] = on['L']
     _, _, _, _, info = t.step(z)
-    assert list(info['grabs']) == [1, 0] and abs(bank0 - info['banked'] - 0.3) < 1e-9, (
-        f"a supported 0.3 m reach banked {(bank0 - info['banked'])*1000:.0f} mm "
-        f"and counted {info['grabs']} grabs")
+    assert list(info['grabs']) == [1, 0] and abs(info['bank'] - 0.3) < 1e-9, (
+        f"a supported 0.3 m reach banked {info['bank']*1000:.0f} mm and counted "
+        f"{info['grabs']} grabs")
     # a jump: both hands off, 0.3 m toward the goal, then both land
-    bank1, forf, charged = t.anchor_d.sum(), 0.0, 0.0
+    charged, paid = 0.0, 0.0
     st['L'] = st['R'] = (0.0, set())
     for _ in range(3):
         st['d'] -= 0.1
+        for s_ in 'LR':
+            st['thr'][s_] += 0.1 * uL
         _, _, _, _, info = t.step(z)
-        forf += info['forfeit']
         charged += info['flight']
+        paid += info['bank']
+        assert (info['credit'] <= 1e-12).all(), f"a jump was credited {info['credit']}"
     st['L'], st['R'] = on['L'], on['R']
-    _, r, _, _, info = t.step(z)
+    _, _, _, _, info = t.step(z)
+    paid += info['bank']
     assert charged == 3.0, f"3 jump steps charged {charged:.0f}"
-    assert abs(forf - 0.6) < 1e-9, f"a 0.6 m jump forfeited {forf*1000:.0f} mm"
     assert list(info['grabs']) == [1, 0], f"landing from a jump counted a grab: {info['grabs']}"
-    assert abs(bank1 - info['banked'] - 0.6) < 1e-9 and info['forfeit'] == 0.0
+    assert abs(paid) < 1e-9 and info['banked'] <= 1e-9, (
+        f"a 0.6 m jump banked {paid*1000:.0f} mm, {info['banked']*1000:.0f} pending")
     # the tap: the left hand touches the rung right after the jump -- worth nothing
     st['L'] = (0.0, set())
-    _, _, _, _, _ = t.step(z)
+    t.step(z)
     st['L'] = on['L']
-    b = t.anchor_d.sum()
     _, _, _, _, info = t.step(z)
     assert list(info['grabs']) == [2, 0], "a supported let-go after a jump must count again"
-    assert abs(b - info['banked']) < 1e-9, (
-        f"a tap after a jump banked {(b - info['banked'])*1000:.0f} mm")
-    print("jump test: a supported 0.3 m reach banks 300 mm; a 0.6 m jump banks 0, "
-          "forfeits 600 mm, counts no grab and is charged; the tap after it banks 0")
+    assert abs(info['bank']) < 1e-9, f"a tap after a jump banked {info['bank']*1000:.0f} mm"
+    # the drag: the right hook stays loaded and is pulled 0.2 m along the rung,
+    # carrying the body and the free left hand with it; then the left hand taps
+    st['L'] = (0.0, set())
+    slid = 0.0
+    for _ in range(4):
+        st['d'] -= 0.05
+        for s_ in 'LR':
+            st['thr'][s_] += 0.05 * uL
+        _, _, _, _, info = t.step(z)
+        slid += info['slide']
+        assert abs(info['credit'][0]) < 1e-9 and abs(info['credit'][1]) < 1e-9, (
+            f"a drag was credited {info['credit']*1000} mm")
+    st['L'] = on['L']
+    _, _, _, _, info = t.step(z)
+    assert list(info['grabs']) == [3, 0] and abs(info['bank']) < 1e-9, (
+        f"the tap after a drag banked {info['bank']*1000:.0f} mm")
+    assert slid > 0.15, f"a 0.2 m drag of a loaded hook registered {slid*1000:.0f} mm of slide"
+    print("jump/drag test: a supported 0.3 m reach banks 300 mm; a 0.6 m jump banks 0, "
+          "counts no grab and is charged; the tap after it banks 0; a 0.2 m drag of "
+          f"the loaded hook credits 0, banks 0 on the next tap and is charged {K_SLIDE*slid:.1f}")
 
-    # No pump, proved rather than hoped. Both reward terms are differences of a
-    # stored quantity, so over any trajectory whatsoever they must telescope to the
-    # endpoint difference -- swing a hand out and back a hundred times and the sum
-    # is unchanged. The previous reward failed exactly here: it paid +27.28 over an
-    # episode that closed 0.000 m. Random actions, because a pump would show up as
-    # the accumulated total drifting away from the endpoints.
+    # No pump, proved rather than hoped. The live term is a potential and must
+    # telescope to the endpoints exactly; the bank pays credit that never exceeds
+    # the world approach, so what it pays plus what is still pending can never be
+    # more than the distance the trajectory actually closed. The first reward
+    # failed exactly here: it paid +27.28 over an episode that closed 0.000 m.
+    # Random actions, because a pump shows up as the total drifting away.
     t = ClimbTask(1)
     t.reset()
     rng = np.random.default_rng(3)
-    d0, bank0, acc, forfeit = t._dist(), t.anchor_d.sum(), 0.0, 0.0
+    d0, acc, paid = t._dist(), 0.0, 0.0
     for _ in range(400):
         a = rng.uniform(-1, 1, 17)
         _, r, te, tr, info = t.step(a)
@@ -1037,19 +1085,22 @@ def main():
                 + K_FIGHT * info['fight'] + K_TIME + K_FLIGHT * info['flight']
                 + K_SLIDE * info['slide']
                 + K_ACT * float(a @ a) + K_VEL * float(t.dq @ t.dq))
-        forfeit += info['forfeit']       # a jump's gains are dropped, never paid
+        paid += info['bank']
         if te or tr:
             # the terminal bonus is not a potential and is not meant to be
             acc -= SUCCESS_R if info.get('reason') == 'success' else FAIL_R
             break
-    expect = (K_BANK * (bank0 - info['banked'] - forfeit)
-              + K_REACH * (d0 - t._dist()))
-    print(f"telescoping test: {acc:+.4f} accumulated over the trajectory against "
-          f"{expect:+.4f} from the endpoints alone ({forfeit*1000:.0f} mm forfeited "
-          f"in jumps)")
+    closed = d0 - t._dist()
+    expect = K_BANK * paid + K_REACH * closed
+    print(f"no-pump test: {acc:+.4f} accumulated against {expect:+.4f} from the bank "
+          f"paid plus the endpoints; bank paid {paid*1000:+.0f} mm + pending "
+          f"{info['banked']*1000:+.0f} mm against {closed*1000:+.0f} mm actually closed")
     assert abs(acc - expect) < 1e-6, (
-        f"reward accumulated {acc:+.4f} but the endpoints say {expect:+.4f}: the "
-        f"terms are not potentials any more and the trajectory can be pumped")
+        f"reward accumulated {acc:+.4f} but the books say {expect:+.4f}: a term is "
+        f"missing from the strip list above")
+    assert paid + info['banked'] <= closed + 1e-9, (
+        f"credited {(paid + info['banked'])*1000:.0f} mm over a trajectory that closed "
+        f"{closed*1000:.0f} mm: the credit can be pumped")
     print("OK")
 
 

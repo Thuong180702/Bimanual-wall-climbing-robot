@@ -102,15 +102,19 @@ def _rx(name, x0, x1, z, y=-0.94):
 # Row spacing stays <= 0.50 m (the measured 0.671 m reach x 75 %) except lesson 9,
 # which is deliberately beyond static reach.
 LESSONS = {
-    # Two rungs below lesson 1, because lesson 1 cannot be found from scratch any
+    # Three rungs below lesson 1, because lesson 1 cannot be found from scratch any
     # more. Once dragging a loaded hook and jumping stopped paying, the only paid
     # move left was lift-and-place, and 1.1 m of it is five cycles per hand: the
     # 15M-step win5 run never completed one, settled into hanging from one hook
     # and fluttering the other, and its action noise collapsed from 1.0 to 0.13.
     #
-    # -1: ONE hand takes ONE step. The leading (left, +y) hand moves 0.30 m; the
-    #     trailing hand's goal is where it already is, so all it owes is one
-    #     supported let-go and re-seat for MIN_GRABS. Nothing is in anyone's way.
+    # -2: the LEFT hand takes one step of 0.30 m toward the goal side; the right
+    #     hand's goal is where it already is, so all it owes is one supported
+    #     let-go and re-seat for MIN_GRABS. Nothing is in anyone's way.
+    # -1: the RIGHT hand takes one step of 0.30 m -- the other way, because 0.30 m
+    #     toward the left hand would end 14 mm from it. Same skill, mirrored: this
+    #     arm lifts and places, that hand carries. Without it the 2M local run
+    #     reached lesson 1 with a right hand that had never lifted, and dragged it.
     #  0: both hands take one step of 0.40 m. Not 0.30: the first version of this
     #     put the right hand's goal 14 mm from where the left hand starts, and two
     #     65 mm hooks cannot share that span -- measured on a 600k-step policy, the
@@ -118,12 +122,18 @@ LESSONS = {
     #     100 mm (min 44) from the left hook, while the left hook, which had to
     #     move first, never let go. 0.40 m puts the goal 86 mm past the other
     #     hand's start.
-    -1: dict(name='step_one_hand', timeout=30.0,
-             title='one hand, one step: the left hand moves 0.30 m along a continuous rung',
+    -2: dict(name='step_left_hand', timeout=30.0,
+             title='the left hand alone takes one 0.30 m step along a continuous rung',
              walls=[WALL_FRONT],
              rungs=[_ry('start', -0.90, 1.50, 1.00)],
              goal_rungs=['rung_start'],
              goals=[[0.44, 0.457, 1.00], [0.44, -0.157, 1.00]]),
+    -1: dict(name='step_right_hand', timeout=30.0,
+             title='the right hand alone takes one 0.30 m step, away from the left',
+             walls=[WALL_FRONT],
+             rungs=[_ry('start', -0.90, 1.50, 1.00)],
+             goal_rungs=['rung_start'],
+             goals=[[0.44, 0.157, 1.00], [0.44, -0.457, 1.00]]),
     0: dict(name='step_both_hands', timeout=30.0,
             title='both hands, one step of 0.40 m along a continuous rung',
             walls=[WALL_FRONT],

@@ -1,6 +1,6 @@
 # PPO curriculum
 
-The frame for training PPO on the climbing tasks, as eleven lessons ordered by
+The frame for training PPO on the climbing tasks, as twelve lessons ordered by
 difficulty instead of the mixed scene.
 
 ```bash
@@ -9,7 +9,7 @@ python -m rl.climb_task     # smoke-check the task API on every lesson
 python -m rl.bench          # where the time actually goes on this machine
 python -m rl.train_ppo --self-check          # curriculum logic, trains nothing
 
-python -m rl.train_ppo --name climber        # train: all 11, curriculum on
+python -m rl.train_ppo --name climber        # train: all 12, curriculum on
 # Ctrl-C any time, then:
 python -m rl.train_ppo --name climber --resume
 
@@ -22,7 +22,7 @@ python -m rl.status --name climber --watch
 
 | file | what it is |
 |---|---|
-| `lessons.py` | the 11 lesson specs + scene generator (writes `urdf/lessons/`) |
+| `lessons.py` | the 12 lesson specs + scene generator (writes `urdf/lessons/`) |
 | `climb_task.py` | Gymnasium-shaped env: obs / action / reward / termination |
 | `train_ppo.py` | thin SB3 PPO entry point |
 | `bench.py` | simulator throughput vs env count, and cpu vs mps for the policy |
@@ -32,15 +32,16 @@ python -m rl.status --name climber --watch
 
 ## Lessons
 
-−1. one hand, one step (0.30 m) → 0. both hands, one step (0.40 m) → 1. traverse,
-continuous rung → 2. traverse, gaps → 3. climb up → 4. up-over-down → 5. climb down
-→ 6. staggered heights → 7. perpendicular wall → 8. wall behind the back → 9. row
-beyond static reach (needs a dynamic move).
+−2. left hand, one step (0.30 m) → −1. right hand, one step (0.30 m, the other way)
+→ 0. both hands, one step (0.40 m) → 1. traverse, continuous rung → 2. traverse,
+gaps → 3. climb up → 4. up-over-down → 5. climb down → 6. staggered heights →
+7. perpendicular wall → 8. wall behind the back → 9. row beyond static reach (needs
+a dynamic move).
 
-Lessons −1 and 0 are one lift-and-place cycle. They exist because lesson 1 — five
-such cycles per hand — stopped being findable from scratch once dragging and jumping
-stopped paying; the `win5` section below has the numbers, and why the step is one
-hand first and 0.40 m, not 0.30, after.
+Lessons −2, −1 and 0 are one lift-and-place cycle. They exist because lesson 1 —
+five such cycles per hand — stopped being findable from scratch once dragging and
+jumping stopped paying; the `win5` section below has the numbers, and why the step
+is one hand at a time first, each hand in turn, and 0.40 m rather than 0.30 after.
 
 Every lesson keeps the robot, sensors, actuators and the verified hanging keyframe
 of `urdf/scene.xml` verbatim and swaps only walls + rungs, so all start states are
@@ -232,7 +233,7 @@ asserts all of it.
 
 | term | why |
 |---|---|
-| `K_BANK` on a per-hand **anchor** | paying live distance paid for the phase-7 slide: the first policy crossed 0.75 m with a hook that never opened its finger |
+| `K_BANK` on progress credited **relative to the holding hand** | paying live world distance paid for the phase-7 slide: the first policy crossed 0.75 m with a hook that never opened its finger. A per-hand *anchor* — bank how far the hold travelled in the world between supported grabs — fixed that and was beaten by the drag (the `win5` section): a free hand is now credited its approach **minus the holder's own forward motion**, a loaded hand approaching is credited nothing, and every retreat debits in full. Credit never exceeds the world approach, so over any closed loop it sums to ≤ 0 — a drag, a tap, a jump and a slide all earn exactly nothing |
 | anchor moves only after the hand got `CLEAR_OF` the rung | without it, a wrist-load dip counted as taking a new hold — on the 5.1M policy **every** re-anchor was that, with the hook never leaving the rung |
 | both terms charged **both ways** | paying only in the good direction is a pump: measured **+27.28 paid for 0.000 m of travel** and 99 release/reseat cycles in one episode |
 | `K_DANGLE` with a `DANGLE_GRACE` | the flat version taxed the release climbing is made of, −15.25 against +5.57 of progress |
@@ -244,8 +245,8 @@ asserts all of it.
 | `STALE_AFTER` 8 s → **2.5 s** | the threshold was longer than the episode it policed. The winning lesson-1 run is 5.8 s, so the hand that never released was charged exactly 0.00 |
 | `MIN_GRABS` in `_success` | the task was completable with **neither hand ever leaving the rung**: 1 m traversed with the right hook never further than 24 mm from the rail and the left hand carrying under 10 N for 89 % of the episode. Alternating grips is not one way of doing this task, it is the task |
 | finger setpoint clamped at `GRIP_CLIFF` | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N. Nothing above the cliff is useful, so it is a mechanical stop — 45° of pure self-destruct removed from the search. Opening is untouched |
-| `K_FLIGHT`, and a jump **forfeits** its gain | the 21M policy's whole lesson-1 gait was jumps: the right hook let go and re-caught within 1–5 control steps while the left hung in the air — off **96 %** of the time, **0.0** load swaps per episode — and each brief tap of the left hand then banked what the jump had covered. A control step in which, for even one physics substep, no hook bore `HOLD_LOAD` is a jump: charged, whatever ground it gained is taken off the anchor so no later hold pays for it, and the landing is no cycle. Replayed: that policy drops from 5/5 to **0/12**, 2.0 m forfeited per episode |
-| `K_SLIDE` | sliding stays legal — the rung is smooth on purpose — but a **loaded** hook dragged along it pays 10/m against progress's 7. Measured in shadow on the alternating policy: the anchored hook was dragged **100–724 mm per tenure**, both hooks seated, and that is a distance the sensors cannot see (next section) |
+| `K_FLIGHT`, and a jump earns nothing | the 21M policy's whole lesson-1 gait was jumps: the right hook let go and re-caught within 1–5 control steps while the left hung in the air — off **96 %** of the time, **0.0** load swaps per episode — and each brief tap of the left hand then banked what the jump had covered. A control step in which, for even one physics substep, no hook bore `HOLD_LOAD` is a jump: charged, nobody is loaded so nothing is credited, and the landing is no cycle. Replayed: that policy drops from 5/5 to **0/12** |
+| `K_SLIDE` | sliding stays legal — the rung is smooth on purpose — but a **loaded** hook dragged along it pays 10/m, because it is friction work and because it is invisible: measured in shadow on the alternating policy, the anchored hook was dragged **100–724 mm per tenure**, both hooks seated (next section). This is *not* what makes dragging unprofitable — the relative credit is. Raising it to 20 was tried when the drag appeared and it stalled learning outright: 3M steps at 30 % on the very first lesson, std 0.42, because the same charge lands on the few centimetres the holding hook settles by during every honest reach. It only has to beat the live shaping term: `assert K_SLIDE > 2 K_REACH` |
 | `K_EFFORT`, `K_FIGHT`, `K_TIME` | the gait was legal but nothing like climbing. Measured against a still hang (29.6 N·m, 107 N): the stuck episode ran 145 N·m and **202 N of grip on a 109 N robot** — ~95 N of the two arms pulling against each other. All three price the *excess* over hanging still, never the absolute, so existing stays free |
 
 Replayed on the audited policies the set does what it should. The 10.4M run's
@@ -376,13 +377,25 @@ hands start 0.314 m apart, so the right hand's goal landed 14 mm from where the 
 hand starts, and two 65 mm hooks cannot share that span. A 600k-step policy on it
 had the right hook in its goal region on 42 % of steps, hovering 100 mm (min 44)
 from the left hook, banking +0.96 and never seating; the left hook, which had to
-move first, never let go. Hence lesson −1 (the left hand alone moves 0.30 m; the
-right owes only a supported re-grip where it is) and lesson 0 (both hands 0.40 m,
-the goal 86 mm past the other hand's start).
+move first, never let go. Hence lessons −2 and −1 (one hand alone moves 0.30 m — the left toward the goal,
+then the right the other way, so each arm learns to lift and place and each hand
+learns to carry; the other hand owes only a supported re-grip where it is) and
+lesson 0 (both hands 0.40 m, the goal 86 mm past the other hand's start).
 
-Checked locally before shipping (8 envs on the M4 Pro, 400k steps): lesson −1 at
-52 % by 250k and 75 % by 400k, lesson 0 unlocked at about 300k and had its first
-success by 400k, action std still 0.90.
+Checked locally before shipping (8 envs on the M4 Pro, then numbered −1/0): the
+left-hand step at 52 % by 250k and 75 % by 400k, both-hands unlocked at about 300k
+with its first success by 400k, action std still 0.90. By 2M the pool had opened to
+lesson 2 — and lesson 1 was being solved by a drag: the right hook, which no lesson
+had yet asked to lift, pulled along the rung 864 mm per episode while the left hand
+tapped its way forward, 20 % success and the map 0.2–0.8 m off again. Decomposed:
+bank +7.9, reach +3.3 against slide −8.8 — every tap re-seated the left hand where it
+already was *relative* to the right and banked what the drag had carried, so one
+drag advanced both anchors and the slide charge could not keep up. Doubling the
+charge did not help, it hurt: the run at 20/m never left the first lesson in 3M
+steps (30 %, std 0.42), because a holding hook settles by a few centimetres during
+every honest reach and paid for it. The fix is the credit itself: progress is
+measured the way the sensors measure it, relative to the hand that holds — and a
+lesson that makes the right hand lift too.
 
 Skipped: domain randomization, best-checkpoint keeping. Reward weights are
 first-guess knobs — `rl.eval` plus the diagnostics are how you tell.
