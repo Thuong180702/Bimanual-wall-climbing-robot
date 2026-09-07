@@ -159,7 +159,7 @@ class Estimator:
                       not in ('world', '')]
         self.anchor = 'L'
 
-    def update(self, q, imu, anchor_side, anchor_pos, anchor_R=None):
+    def update(self, q, imu, anchor_side, anchor_pos, anchor_R=None, R_torso=None):
         """q: 17 encoder angles. imu: dict(accel=, mag=). anchor_pos: world point on the
         rung axis where the anchored hook's throat sits.
 
@@ -178,10 +178,14 @@ class Estimator:
         d.qvel[:] = 0.0
         mujoco.mj_kinematics(self.m, d)
 
-        if anchor_R is None:
-            R_off = triad(imu['accel'], imu['mag']) @ d.xmat[self.torso].reshape(3, 3).T
-        else:
+        if anchor_R is not None:
             R_off = anchor_R @ d.xmat[self.hook[anchor_side]].reshape(3, 3).T
+        elif R_torso is not None:
+            # a filtered world<-torso attitude (the RL task's gyro complementary
+            # filter); the bare triad below is what the classical controller uses
+            R_off = R_torso @ d.xmat[self.torso].reshape(3, 3).T
+        else:
+            R_off = triad(imu['accel'], imu['mag']) @ d.xmat[self.torso].reshape(3, 3).T
         p_off = np.asarray(anchor_pos) - R_off @ self._throat(anchor_side)
 
         quat = np.zeros(4)

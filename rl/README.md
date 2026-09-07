@@ -233,7 +233,7 @@ asserts all of it.
 
 | term | why |
 |---|---|
-| `K_BANK` on progress credited **relative to the holding hand** | paying live world distance paid for the phase-7 slide: the first policy crossed 0.75 m with a hook that never opened its finger. A per-hand *anchor* — bank how far the hold travelled in the world between supported grabs — fixed that and was beaten by the drag (the `win5` section): a free hand is now credited its approach **minus the holder's own forward motion**, a loaded hand approaching is credited nothing, and every retreat debits in full. Credit never exceeds the world approach, so over any closed loop it sums to ≤ 0 — a drag, a tap, a jump and a slide all earn exactly nothing |
+| `K_BANK` on progress credited **relative to the holding hand** | paying live world distance paid for the phase-7 slide: the first policy crossed 0.75 m with a hook that never opened its finger. A per-hand *anchor* — bank how far the hold travelled in the world between supported grabs — fixed that and was beaten by the drag (the `win5` section): a light hand (under `HOLD_LOAD`) whose partner is loaded is credited its approach **minus the partner's own motion toward that goal, both ways**; a loaded hook is credited nothing either way (its motion along the rung is a slide, `K_SLIDE`'s business); a hand nobody carries is credited nothing forward and debited in full back. A drag, a tap and a jump earn exactly nothing; the one loop that would pay — reach free, get dragged back loaded — costs `K_SLIDE > K_BANK`. The first draft was one-sided to be safe (every retreat debited, only the partner's *forward* motion subtracted) and it charged a known-good one-hand step **−220 mm per episode** for ordinary settling: −7.5 m of debits against +6.3 m of credit over ten episodes. One-sided rules charge for noise |
 | anchor moves only after the hand got `CLEAR_OF` the rung | without it, a wrist-load dip counted as taking a new hold — on the 5.1M policy **every** re-anchor was that, with the hook never leaving the rung |
 | both terms charged **both ways** | paying only in the good direction is a pump: measured **+27.28 paid for 0.000 m of travel** and 99 release/reseat cycles in one episode |
 | `K_DANGLE` with a `DANGLE_GRACE` | the flat version taxed the release climbing is made of, −15.25 against +5.57 of progress |
@@ -246,7 +246,8 @@ asserts all of it.
 | `MIN_GRABS` in `_success` | the task was completable with **neither hand ever leaving the rung**: 1 m traversed with the right hook never further than 24 mm from the rail and the left hand carrying under 10 N for 89 % of the episode. Alternating grips is not one way of doing this task, it is the task |
 | finger setpoint clamped at `GRIP_CLIFF` | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N. Nothing above the cliff is useful, so it is a mechanical stop — 45° of pure self-destruct removed from the search. Opening is untouched |
 | `K_FLIGHT`, and a jump earns nothing | the 21M policy's whole lesson-1 gait was jumps: the right hook let go and re-caught within 1–5 control steps while the left hung in the air — off **96 %** of the time, **0.0** load swaps per episode — and each brief tap of the left hand then banked what the jump had covered. A control step in which, for even one physics substep, no hook bore `HOLD_LOAD` is a jump: charged, nobody is loaded so nothing is credited, and the landing is no cycle. Replayed: that policy drops from 5/5 to **0/12** |
-| `K_SLIDE` | sliding stays legal — the rung is smooth on purpose — but a **loaded** hook dragged along it pays 10/m, because it is friction work and because it is invisible: measured in shadow on the alternating policy, the anchored hook was dragged **100–724 mm per tenure**, both hooks seated (next section). This is *not* what makes dragging unprofitable — the relative credit is. Raising it to 20 was tried when the drag appeared and it stalled learning outright: 3M steps at 30 % on the very first lesson, std 0.42, because the same charge lands on the few centimetres the holding hook settles by during every honest reach. It only has to beat the live shaping term: `assert K_SLIDE > 2 K_REACH` |
+| `K_SLIDE` | sliding stays legal — the rung is smooth on purpose — but a **loaded** hook dragged along it pays 10/m, because it is friction work and because it is invisible: measured in shadow on the alternating policy, the anchored hook was dragged **100–724 mm per tenure**, both hooks seated (next section). This is *not* what makes dragging unprofitable — the relative credit is. Raising it to 20 was tried when the drag appeared and it stalled learning outright: 3M steps at 30 % on the very first lesson, std 0.42, because the same charge lands on the few centimetres the holding hook settles by during every honest reach. It has to beat the live shaping term and the bank: `assert K_SLIDE > K_BANK and K_SLIDE > 2 K_REACH` |
+| `K_GRAB`, once per hand per episode | seating a hook from the air is the one skill the reach credit cannot teach by itself. Under the relative credit the 600k policy carried the free hand to within 40 mm of its goal and **hovered there for the whole episode** — 0.2 grabs per episode, paying the dangle charge rather than come down, because the grab that would have banked its credit was a rare event with a small payoff. The earlier world-anchored reward had taught seating by accident, by paying shuffles *on* the rung first. One bonus for each hand's first supported hold: flutter cannot farm it, and it is a partial payment of `MIN_GRABS`, not a goal of its own |
 | `K_EFFORT`, `K_FIGHT`, `K_TIME` | the gait was legal but nothing like climbing. Measured against a still hang (29.6 N·m, 107 N): the stuck episode ran 145 N·m and **202 N of grip on a 109 N robot** — ~95 N of the two arms pulling against each other. All three price the *excess* over hanging still, never the absolute, so existing stays free |
 
 Replayed on the audited policies the set does what it should. The 10.4M run's
@@ -333,7 +334,16 @@ and 43 grabs, with the free hand's estimate rooted at the anchor's **true** hold
 | perfect | **0 / 0** | **0 / 0** |
 
 The kinematics are exact. All of it is the attitude, which the body's own
-acceleration bends. So holds are now placed by **reach** (`_reach_point`): the
+acceleration bends — the bare triad (accelerometer + magnetometer, no state) reads
+the swing as tilt and is **26.5° rms** off while the body moves. The robot has a
+gyro, so the torso attitude is now a complementary filter: the gyro carries it
+across each control step, the triad pins the drift with a 2 s time constant
+(`AHRS_TAU`). Measured on the same trajectories: 3.6° / 2.1° rms on lessons 1 / 2,
+free hand **16 / 12 mm** against 91 / 130 for the triad; the pure gyro (no
+correction) drifts to 83 mm, and a swing-angle model of the seated hook — rung
+frame from the map, one angle from the IMU — was tried first and came out *worse*
+than the triad (181 mm even with the true angle: a loaded hook does not sit still
+in its throat). Holds are placed by **reach** (`_reach_point`): the
 distance between the two throats is exact from the encoders whatever the attitude,
 both throats sit on rung axes the map knows, and the new hold is the point on a rung
 at that distance from the anchor's hold — a sphere cut by a line. The map-rooted
@@ -396,6 +406,15 @@ steps (30 %, std 0.42), because a holding hook settles by a few centimetres duri
 every honest reach and paid for it. The fix is the credit itself: progress is
 measured the way the sensors measure it, relative to the hand that holds — and a
 lesson that makes the right hand lift too.
+
+With the relative credit, the right-hand step and `K_GRAB` (3M local steps): −2 at
+100 %, −1 at 73 %, 0 at 63 %, **lesson 1 at 80 %** with both hands lifting — right
+hook off the rung 28 % of the time against 2 % in the drag, 42 load swaps per
+episode, 87 % success in audit — and lesson 2 unlocked at about 2.5M. What remained
+was the map: 447 mm of loaded slide per episode, two thirds of it millimetre-scale
+settling under load rather than dragging, plus the triad's 25° — enough to put
+`seg1` at 230–630 mm in the estimate when it was 65–120 mm away. Hence the attitude
+filter above; the settling stays, and the reach odometry absorbs what it can.
 
 Skipped: domain randomization, best-checkpoint keeping. Reward weights are
 first-guess knobs — `rl.eval` plus the diagnostics are how you tell.

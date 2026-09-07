@@ -17,7 +17,7 @@ fingers included.
     python -m rl.climb_task   # smoke check: every lesson hangs stable, API runs
 """
 import numpy as np, mujoco
-from controller.kinematics import Estimator, JOINTS, THROAT_PT
+from controller.kinematics import Estimator, JOINTS, THROAT_PT, triad, rotvec
 from .lessons import LESSONS, xml_path, rung_segments
 from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET, GRIP_CLIFF
 
@@ -25,6 +25,16 @@ FRAME_SKIP = 20          # sim steps per control step: 0.002 s x 20 = 25 Hz
 ACT_SCALE = 0.06         # rad of setpoint travel per control step (1.5 rad/s max)
 LATCH_TOL = 0.15         # m from the goal point that still counts, given a latch
 RUNG_TOL = 0.06          # m: estimated throat this close to a rung axis = that rung
+AHRS_TAU = 2.0           # s: how slowly the torso attitude leans on the accelerometer.
+                         # The bare triad (accel + mag, no state) is what the classical
+                         # controller uses, and while the body swings it is wrong by
+                         # 26.5 deg rms -- the accelerometer reads the swing as tilt --
+                         # which put the free hand 91-130 mm from where it was. The
+                         # gyro integrated across the control step and corrected
+                         # toward the triad at this time constant reads 3.6 / 2.1 deg
+                         # rms on lessons 1 / 2, and the free hand 16 / 12 mm. Measured
+                         # over tau: 0.5 s 24 mm, 2 s 16, 5 s 18, 20 s 37, gyro alone
+                         # 83 -- the accelerometer still has to pin the drift.
 REACH_TOL = 0.35         # m: a hold placed by arm reach (see `_reach_point`) may sit
                          # this far from the IMU-based guess and still be believed.
                          # The guess is only asked which side of the anchor the hand
@@ -40,24 +50,16 @@ N_NEAR = 3               # nearest rungs reported per hand. Without these the po
 FAR = np.array([9.0, 9.0, 9.0])   # padding for a scene with fewer than N_NEAR rungs
 
 
-def _pivot_only(R_tri, R_seat, axis):
-    """the rotation of the form Rot(axis, th) @ R_seat nearest R_tri, and how far
-    off it still is (rad). A seated hook can only turn about its rung, so this is
-    the family its true orientation lives in; the IMU picks the member."""
-    a = axis / np.linalg.norm(axis)
-    D = R_tri @ R_seat.T
-    v = np.cross(a, [1.0, 0.0, 0.0])
-    if np.linalg.norm(v) < 0.1:
-        v = np.cross(a, [0.0, 0.0, 1.0])
-    v /= np.linalg.norm(v)
-    w = D @ v
-    w -= (w @ a) * a
-    w /= np.linalg.norm(w)
-    th = np.arctan2(np.cross(v, w) @ a, v @ w)
-    K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
-    R = (np.eye(3) + np.sin(th) * K + (1 - np.cos(th)) * K @ K) @ R_seat
-    miss = np.arccos(np.clip((np.trace(R_tri.T @ R) - 1) / 2, -1.0, 1.0))
-    return R, float(miss)
+def _rotm(v):
+    """rotation vector -> matrix (Rodrigues)"""
+    th = float(np.linalg.norm(v))
+    if th < 1e-12:
+        return np.eye(3)
+    a = v / th
+    K = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+    return np.eye(3) + np.sin(th) * K + (1.0 - np.cos(th)) * K @ K
+
+
 # A hand is on its hold when its hook is in CONTACT with a rung and bearing force --
 # see `_contact`. Two distance thresholds used to do this job and both were wrong in
 # a way that was measured: 80 mm for "unambiguously off" and 20 mm for "on". A seated
@@ -157,7 +159,19 @@ K_SLIDE = 10.0           # per metre a LOADED hook (contact > HOLD_LOAD) moves a
                          # every honest reach, and the 3M-step local run at 20 never
                          # left the first lesson (30 %, std 0.42) where 10 had it at
                          # 75 % by 400k. It only has to beat the live shaping term.
-assert K_SLIDE > 2 * K_REACH, "a drag must not be paid for by the live shaping alone"
+assert K_SLIDE > K_BANK and K_SLIDE > 2 * K_REACH, (
+    "a loaded hook moving along its rung is credited nothing either way, so the only "
+    "thing that stops 'reach free, drag back loaded' from being a pump is this charge")
+K_GRAB = 1.0             # once per hand per episode, for its first supported hold.
+                         # Seating a hook from the air is the one skill the reach
+                         # credit cannot teach by itself: the 600k policy carried
+                         # the free hand to within 40 mm of its goal and hovered
+                         # there for the whole episode -- 0.2 grabs per episode,
+                         # paying the dangle charge rather than come down, because
+                         # the grab that would have banked its credit was a rare
+                         # event with a small payoff. Once per hand, so flutter
+                         # cannot farm it: a partial payment of the success
+                         # condition (MIN_GRABS), not a goal of its own.
 SUCCESS_R = 10.0
 FAIL_R = -10.0
 
@@ -206,13 +220,20 @@ FAIL_R = -10.0
 # few centimetres the holding hook settles by during every honest reach.
 #
 # So progress is measured the way the sensors measure it: relative to the hand that
-# holds. Per step a free hand with the other hand loaded is credited its approach
-# MINUS the holder's own displacement toward that goal; a loaded hand approaching is
-# credited nothing; and every retreat -- free or loaded, supported or in flight --
-# debits in full. Credit never exceeds the world approach, so over any closed loop
-# it sums to <= 0 and cannot be pumped, and a drag, a tap, a jump and a slide all
-# earn exactly nothing. A small live-distance term stays as shaping, charged
-# symmetrically so it telescopes; K_SLIDE > 2 K_REACH keeps a drag a loss even there.
+# holds. Per step a light hand (under HOLD_LOAD) whose partner is loaded is credited
+# its approach MINUS the partner's own displacement toward that goal, both ways, so
+# the partner settling back and forth cancels out; a loaded hook is credited nothing
+# either way -- its motion along the rung is a slide and K_SLIDE's business; and a
+# hand nobody is carrying (a jump) is credited nothing forward and debited in full
+# back. The first draft debited every retreat and subtracted only the partner's
+# forward motion, both one-sided to be safe, and both bled on ordinary physics: a
+# known-good one-hand step came out at -220 mm banked per episode, -7.5 m of debits
+# against +6.3 m of credits over ten of them, because a holding hook settles by
+# millimetres every step. One-sided rules charge for noise. A drag, a tap and a jump
+# earn exactly nothing here; the one loop that would pay -- reach free, get dragged
+# back loaded -- costs K_SLIDE > K_BANK, and the no-pump test holds the books to
+# that. A small live-distance term stays as shaping, charged symmetrically so it
+# telescopes.
 #
 # The dangle penalty is the other half, and its first version was WRONG in an
 # instructive way: charged flat, every step a hand was off, it taxed the release
@@ -272,6 +293,10 @@ class ClimbTask:
             self._hook_geoms[sd] = {g for g in range(m.ngeom)
                                     if m.geom_bodyid[g] in ids and m.geom_contype[g]}
         self._flight = 0
+        sid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, 'imu_gyro')
+        self._gyro_adr = m.sensor_adr[sid]
+        self._w_sum = np.zeros(3)          # body rates summed over the substeps
+        self._Rf = None                    # filtered world<-torso attitude
         self.obs_dim = len(self.reset()[0])
 
     # ---- hardware-legal sensing -------------------------------------------
@@ -299,7 +324,16 @@ class ClimbTask:
         self.dq = np.array([enc[j][1] for j in JOINTS])
         self.tau = np.array([enc[j][2] for j in JOINTS])
         self.imu_s = self.env.imu(raw_only=True)
-        self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1])
+        # Attitude: the gyro carries it across the step, the triad pins the drift.
+        # The triad alone reads the body's own swing as tilt -- 26.5 deg rms, and
+        # the free hand 91-130 mm off; this reads 3.6 deg and 16 mm (AHRS_TAU).
+        dt = FRAME_SKIP * self.dt
+        self._Rf = self._Rf @ _rotm(self._w_sum * (dt / FRAME_SKIP))
+        self._w_sum[:] = 0.0
+        R_tri = triad(self.imu_s['accel'], self.imu_s['mag'])
+        self._Rf = self._Rf @ _rotm((dt / AHRS_TAU) * rotvec(self._Rf.T @ R_tri))
+        self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1],
+                        R_torso=self._Rf)
         # The anchor's hold is left alone while it holds: re-projecting a hand's
         # own estimate onto its own rung learns nothing. The OTHER hand's hold,
         # while both are seated, comes from arm reach -- exact along the rung,
@@ -309,10 +343,10 @@ class ClimbTask:
         if both:
             pA = self.hold[self.anchor][1]
             delta = self.est.throat(other) - self.est.throat(self.anchor)
-            # which side: at the moment of the grab, the map-rooted guess; after
+            # which side: at the moment of the grab, the filtered estimate; after
             # that, wherever this hand was a step ago -- the branch never flips
             # under a hand that has not moved
-            guess = self.hold[other][1] if self._both_conf else self._side_guess(pA, delta)
+            guess = self.hold[other][1] if self._both_conf else self.est.throat(other)
             hit = (self._reach_point(pA, float(np.linalg.norm(delta)), guess)
                    or self._nearest_rung(self.est.throat(other)))
             if hit:
@@ -321,27 +355,8 @@ class ClimbTask:
         elif not self._confirmed(self.anchor) and self._confirmed(other):
             self.anchor = other
             self.est.update(self.q, self.imu_s, self.anchor,
-                            self.hold[self.anchor][1])
+                            self.hold[self.anchor][1], R_torso=self._Rf)
         self._both_conf = both
-
-    def _side_guess(self, anchor_pt, delta):
-        """where the other throat is, trusting the IMU for the swing alone.
-
-        The anchored hook's world orientation is the rung's frame turned about the
-        rung's axis by the swing angle. Everything but the swing is the map's, so
-        along the rung this guess does not depend on the IMU at all -- measured at
-        the moment of a grab, 16 mm mean and 139 mm worst, against 29 and 250 for
-        the raw IMU attitude, which the body's own acceleration bends. It is only
-        ever asked which side of the anchor the hand is on. A hook seated on a rung
-        of another direction (lesson 7's corner) does not fit the family; then the
-        raw estimate is used as it was.
-        """
-        A = self.anchor
-        R_tri = self.est.hook_R(A)
-        R, miss = _pivot_only(R_tri, self.R_seat[A], self.segs[self.hold[A][0]][1])
-        if miss > np.radians(30):
-            return anchor_pt + delta
-        return anchor_pt + R @ (R_tri.T @ delta)
 
     def _reach_point(self, anchor_pt, L, guess):
         """(rung name, point) for a seated hand exactly L from the anchor's hold.
@@ -350,8 +365,8 @@ class ClimbTask:
         them -- is exact from the encoders whatever the attitude: relative poses
         inside the scratch tree do not depend on where the tree is put. So the new
         hold is a sphere of radius L about the anchor's hold cut by a rung's axis:
-        two candidates per rung, and `guess` (the IMU-rooted estimate) is asked only
-        which one -- the single question it can answer mid-swing.
+        two candidates per rung, and `guess` (the filtered estimate) is asked only
+        which one.
 
         Why this exists: rooting everything in the IMU attitude put the free hand
         148 mm off on average (up to 1.4 m) while the body swung, and with an
@@ -506,6 +521,7 @@ class ClimbTask:
         episode alive longer than the old rule did.
         """
         con = [self._contact(s)[0] for s in 'LR']
+        self._w_sum += self.env.data.sensordata[self._gyro_adr:self._gyro_adr + 3]
         # Sampled every physics substep, because a jump can start and end inside
         # one control step: the 21M policy let go and re-caught in 1-5 steps.
         if not any(c > HOLD_LOAD for c in con):
@@ -582,12 +598,10 @@ class ClimbTask:
         self.hold = {s: self._nearest_rung(self._throat_true(s)) for s in 'LR'}
         assert all(self.hold.values()), "keyframe hooks are not on a rung"
         self.anchor = 'L'
-        # the hooks' orientation when seated: what a hook on a rung of this
-        # direction looks like, up to a turn about the rung. Known for the same
-        # reason the initial holds are -- you hung it there.
-        self.R_seat = {s: self.env.data.xmat[self.env.hook[s]].reshape(3, 3).copy()
-                       for s in 'LR'}
         self._both_conf = False
+        imu = self.env.imu(raw_only=True)
+        self._Rf = triad(imu['accel'], imu['mag'])   # at rest the triad is right
+        self._w_sum[:] = 0.0
         self._sense()
         self.prev_d = self._hand_dists()
         self.credit = np.zeros(2)            # relative approach earned since the last hold
@@ -642,20 +656,23 @@ class ClimbTask:
         took = held & ~self.held & self.let_go
         self.let_go &= ~took
         self.grabs += took
+        first = took & (self.grabs == 1)        # each hand's first real hold this episode
         # Progress, RELATIVE to the hand that holds (see the block above the class).
-        # A free hand whose partner is loaded is credited its approach minus the
-        # partner's own forward motion; a loaded hand approaching is credited
-        # nothing; any retreat debits in full. A jump (nobody loaded) therefore
-        # credits nothing and, since let_go is not granted during one, lands as no
-        # cycle. Banked when the hand next takes a supported hold.
+        # A light hand whose partner is loaded is credited its approach minus the
+        # partner's own motion toward that goal, both ways; a loaded hook is
+        # credited nothing either way; a hand nobody carries (a jump) is credited
+        # nothing forward and debited in full back, and since let_go is not granted
+        # during a jump it lands as no cycle. Banked at the next supported hold.
         approach = self.prev_d - d
-        credit = np.minimum(0.0, approach)
+        credit = np.zeros(2)
         for k in (0, 1):
             o = 1 - k
-            if free[k] and loaded[o]:
+            if not loaded[k] and loaded[o]:
                 u = self.goals[k] - thr[k]
                 u /= max(float(np.linalg.norm(u)), 1e-9)
-                credit[k] = approach[k] - max(0.0, float(dp[o] @ u))
+                credit[k] = approach[k] - float(dp[o] @ u)
+            elif not loaded[k]:
+                credit[k] = min(0.0, approach[k])
         self.credit += credit
         bank = float(self.credit[took].sum())
         self.credit[took] = 0.0
@@ -663,7 +680,7 @@ class ClimbTask:
         effort = max(0.0, float(np.abs(self.tau).sum()) - TAU_IDLE)
         grip = sum(float(np.linalg.norm(self.env.hand(s)['force'])) for s in 'LR')
         fight = max(0.0, grip - WEIGHT)
-        r = (K_BANK * bank
+        r = (K_BANK * bank + K_GRAB * float(first.sum())
              + K_REACH * float(approach.sum())
              - K_DANGLE * parked - K_STALE * stale - K_SEP * sep_err
              - K_EFFORT * effort - K_FIGHT * fight - K_TIME - K_FLIGHT * flight
@@ -673,9 +690,10 @@ class ClimbTask:
         info = {'dist': float(d.sum()), 'lesson': self.lesson,
                 'off': float(free.sum()), 'parked': parked, 'stale': stale,
                 'touch': touch.copy(), 'flight': float(flight), 'bank': bank,
+                'first': float(first.sum()),
                 'credit': credit.copy(), 'slide': slide,
                 'effort': effort, 'fight': fight,
-                'banked': float(self.credit.sum()), 'sep_err': sep_err,
+                'banked': float(self.credit.sum()), 'd': d.copy(), 'sep_err': sep_err,
                 'grabs': self.grabs.copy()}
         terminated, truncated = False, False
         if self._success():
@@ -773,9 +791,12 @@ def main():
         f"K_SLIDE saw {slid*1000:.0f} mm")
     assert held > 100, (f"only {held}/{n} steps with both hooks seated: 25 N should "
                         f"not take a hook off the rung, so something else is")
-    assert abs(banked) < 1e-6, (
-        f"sliding banked {banked*1000:+.1f} mm: an anchor moved without a hold "
-        f"being taken, so the slide is being paid for again")
+    assert paid == 0.0 and abs(info['banked']) <= max(0.01, 0.2 * moved_while_held), (
+        f"sliding with both hooks on banked {paid*1000:+.1f} mm and left "
+        f"{info['banked']*1000:+.1f} mm of credit pending against {moved_while_held*1000:.0f} mm "
+        f"of body motion: the shove is being paid for again. The lighter hook may be "
+        f"credited what it moved RELATIVE to the heavier one, which reverses with the "
+        f"shove; the body's motion itself must not be")
 
     # The dangle penalty must charge a hand PARKED off the wall and leave a hand
     # that is mid-reach alone -- the flat version of this taxed every release and
@@ -952,6 +973,26 @@ def main():
         f"{MIN_SEP*1000:.0f} -- this is the case that made the second grab fail")
     assert inverted > together, "swapping the hands must cost more than merging them"
 
+    # The attitude filter must beat the bare triad while the body moves, and must
+    # not drift while it hangs still. Random actions swing the body hard.
+    t = ClimbTask(1)
+    t.reset()
+    torso = mujoco.mj_name2id(t.env.model, mujoco.mjtObj.mjOBJ_BODY, 'torso_upper')
+    rng = np.random.default_rng(5)
+    e_f, e_t = [], []
+    for k in range(200):
+        _, _, te, tr, _ = t.step(rng.uniform(-0.7, 0.7, 17) if k < 150 else np.zeros(17))
+        R_true = t.env.data.xmat[torso].reshape(3, 3)
+        e_f.append(np.linalg.norm(rotvec(t._Rf.T @ R_true)))
+        e_t.append(np.linalg.norm(rotvec(triad(t.imu_s['accel'], t.imu_s['mag']).T @ R_true)))
+        if te or tr:
+            break
+    rf, rt = np.degrees(np.sqrt(np.mean(np.square(e_f)))), np.degrees(np.sqrt(np.mean(np.square(e_t))))
+    print(f"ahrs test: over {len(e_f)} steps of random swinging the torso attitude is "
+          f"{rf:.1f} deg rms off filtered against {rt:.1f} from the triad alone")
+    assert rf < 0.5 * rt, f"the filter ({rf:.1f} deg) is not clearly better than the triad ({rt:.1f})"
+    assert np.degrees(e_f[-1]) < 3.0, f"still hanging, the filter reads {np.degrees(e_f[-1]):.1f} deg off"
+
     # Odometry by reach: the point on a rung exactly L from the anchor's hold, with
     # the IMU guess deciding only which side. Exact where the guess is 148 mm off.
     t = ClimbTask(2)
@@ -970,20 +1011,6 @@ def main():
     nm2, q2 = t._reach_point(pA, 0.25, T - 0.5 * a)
     assert np.linalg.norm(q2 - T) > 0.4, "the guess must be able to choose the other side"
     assert t._reach_point(pA, 0.25, T + 0.6 * a) is None, "a guess 0.6 m off was believed"
-    ax = np.array([0.0, 1.0, 0.0])
-    Rs = t.R_seat['L']
-    Kx = np.array([[0, 0, 0], [0, 0, -1.0], [0, 1.0, 0]])      # a turn about x
-    R_true = _pivot_only(np.eye(3), np.eye(3), ax)[0]           # identity, sanity
-    swing = (np.eye(3) + np.sin(0.7) * np.array([[0, 0, 1.0], [0, 0, 0], [-1.0, 0, 0]])
-             + (1 - np.cos(0.7)) * np.array([[0, 0, 1.0], [0, 0, 0], [-1.0, 0, 0]]) @
-             np.array([[0, 0, 1.0], [0, 0, 0], [-1.0, 0, 0]])) @ Rs
-    tilt = (np.eye(3) + np.sin(0.1) * Kx + (1 - np.cos(0.1)) * Kx @ Kx) @ swing
-    R, miss = _pivot_only(tilt, Rs, ax)
-    # the tilt is applied after the swing, so the nearest pure swing is 0.7 rad to a
-    # couple of mrad -- a side question, not a survey
-    assert np.abs(R - swing).max() < 0.01 and abs(miss - 0.1) < 1e-3, (miss, np.abs(R - swing).max())
-    print(f"pivot test: a 0.7 rad swing plus a 0.1 rad tilt is read back as the swing "
-          f"alone, {miss:.3f} rad off")
     print(f"reach test: a hold 0.25 m along the rung is placed to "
           f"{np.linalg.norm(q - T1)*1e3:.4f} mm from a guess 157 mm off; across the "
           f"gap onto seg1 too; a guess on the far side picks the far side")
@@ -1060,9 +1087,35 @@ def main():
     assert list(info['grabs']) == [3, 0] and abs(info['bank']) < 1e-9, (
         f"the tap after a drag banked {info['bank']*1000:.0f} mm")
     assert slid > 0.15, f"a 0.2 m drag of a loaded hook registered {slid*1000:.0f} mm of slide"
+    # ordinary physics must not bleed: the holder settling back and forth under a
+    # stationary free hand, and two loaded hooks settling together, both net 0.
+    # The one-sided draft of this rule charged a known-good one-hand step -220 mm
+    # per episode for exactly these.
+    st['L'] = (0.0, set())
+    net = 0.0
+    for j in range(6):
+        sgn = 1.0 if j % 2 == 0 else -1.0
+        st['thr']['R'] += sgn * 0.02 * uL
+        st['d'][1] -= sgn * 0.02
+        _, _, _, _, info = t.step(z)
+        net += info['credit'][0]
+    st['L'] = on['L']
+    _, _, _, _, info = t.step(z)
+    assert abs(net) < 1e-9 and abs(info['bank']) < 1e-9, (
+        f"a holder settling +-20 mm under a stationary free hand credited it {net*1000:+.1f} mm")
+    net = 0.0
+    for j in range(6):
+        sgn = 1.0 if j % 2 == 0 else -1.0
+        for s_ in 'LR':
+            st['thr'][s_] += sgn * 0.02 * uL
+        st['d'] -= sgn * 0.02
+        _, _, _, _, info = t.step(z)
+        net += float(info['credit'].sum())
+    assert abs(net) < 1e-9, f"two loaded hooks settling +-20 mm were credited {net*1000:+.1f} mm"
     print("jump/drag test: a supported 0.3 m reach banks 300 mm; a 0.6 m jump banks 0, "
           "counts no grab and is charged; the tap after it banks 0; a 0.2 m drag of "
-          f"the loaded hook credits 0, banks 0 on the next tap and is charged {K_SLIDE*slid:.1f}")
+          f"the loaded hook credits 0, banks 0 on the next tap and is charged {K_SLIDE*slid:.1f}; "
+          "a holder settling +-20 mm credits the free hand 0, two loaded hooks settling credit 0")
 
     # No pump, proved rather than hoped. The live term is a potential and must
     # telescope to the endpoints exactly; the bank pays credit that never exceeds
@@ -1073,7 +1126,8 @@ def main():
     t = ClimbTask(1)
     t.reset()
     rng = np.random.default_rng(3)
-    d0, acc, paid = t._dist(), 0.0, 0.0
+    d0, acc, paid, forgiven, slid = t._dist(), 0.0, 0.0, 0.0, 0.0
+    prev_dh = t._hand_dists().copy()
     for _ in range(400):
         a = rng.uniform(-1, 1, 17)
         _, r, te, tr, info = t.step(a)
@@ -1085,7 +1139,14 @@ def main():
                 + K_FIGHT * info['fight'] + K_TIME + K_FLIGHT * info['flight']
                 + K_SLIDE * info['slide']
                 + K_ACT * float(a @ a) + K_VEL * float(t.dq @ t.dq))
+        acc -= K_GRAB * info['first']    # a bounded bonus, two per episode, not a potential
         paid += info['bank']
+        slid += info['slide']
+        # a loaded hook retreating is credited nothing, so that much of the world's
+        # retreat is forgiven by the credit -- and charged by K_SLIDE instead
+        loaded_ = info['touch'] > HOLD_LOAD
+        forgiven += float(np.maximum(0.0, info['d'] - prev_dh)[loaded_].sum())
+        prev_dh = info['d'].copy()
         if te or tr:
             # the terminal bonus is not a potential and is not meant to be
             acc -= SUCCESS_R if info.get('reason') == 'success' else FAIL_R
@@ -1094,13 +1155,17 @@ def main():
     expect = K_BANK * paid + K_REACH * closed
     print(f"no-pump test: {acc:+.4f} accumulated against {expect:+.4f} from the bank "
           f"paid plus the endpoints; bank paid {paid*1000:+.0f} mm + pending "
-          f"{info['banked']*1000:+.0f} mm against {closed*1000:+.0f} mm actually closed")
+          f"{info['banked']*1000:+.0f} mm against {closed*1000:+.0f} mm actually closed "
+          f"+ {forgiven*1000:.0f} mm of loaded retreat forgiven (charged {K_SLIDE*slid:.2f} "
+          f"by K_SLIDE against {K_BANK*forgiven:.2f} it could have bought)")
     assert abs(acc - expect) < 1e-6, (
         f"reward accumulated {acc:+.4f} but the books say {expect:+.4f}: a term is "
         f"missing from the strip list above")
-    assert paid + info['banked'] <= closed + 1e-9, (
+    assert paid + info['banked'] <= closed + forgiven + 1e-9, (
         f"credited {(paid + info['banked'])*1000:.0f} mm over a trajectory that closed "
         f"{closed*1000:.0f} mm: the credit can be pumped")
+    assert K_SLIDE * slid >= K_BANK * forgiven - 1e-9, (
+        "the slide charge no longer covers what the credit forgives a loaded hook")
     print("OK")
 
 
