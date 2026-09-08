@@ -244,13 +244,14 @@ asserts all of it.
 | `K_STALE` | across every run, **the left hand never once let go**. The hands deadlock — the right is airborne 79–84 % of the time, so the left never gets a safe moment. `K_DANGLE` says do not stay off, `K_STALE` says do not stay on. Now **0.001**, not 0.01: at 0.01 two hands hanging for 60 s cost 28.6 — three times a fall — and that is the landscape `win5` settled into (below). Nudges must never add up to more than the fall they exist to prevent; the incentive test asserts a full idle episode (−7.4) stays above `FAIL_R` |
 | finger inside `GRIP_BAND` gates `_holding` and `_success` | nothing ever asked a finger to close, and the simulator lets an open hook carry the whole robot. The 10M policy held with the finger at +20° for most of an episode. There are **two** ways out of the band and it used both — the left hand opened, the right ratcheted −36 → −46 → −37, past the −45° cliff where pull-off drops from >1200 N to 72 N |
 | every hold test reads **contact force** (`_contact`) | see the section below — this replaced `ON_RUNG`, `CLEAR_OF` and `env.latched`, all three of which were proxies a policy could satisfy without holding, or *fail* while holding |
+| progress measured **at the rung** (`_route`, `_cost`) | the straight-line distance to a goal 1.4 m along the wall paid the `win9` policy +0.3–0.4 m for dropping half a metre under the far segment — the nearest it could get to the goal with the other hand parked — and it hung there for 58 s in 20/20 episodes: lesson 1.5 at 0 % for 5.3M steps with every earlier lesson above 80 % (the `win9` section). The bank now measures each hand at its **rung point** (nearest point on any rung) to the goal, which a loaded hook can move only by sliding, and sliding is charged; the live reach adds the detour off the rung, both hands, both ways. Identical along a rung (lesson 1 replays to the same reward); a dive is charged live and refunded on the way back up. The detour must stay out of the bank: a loaded hook's throat sits 30–80 mm off its line under load, uncharged, and with the detour banked that was refunded on every re-seat — the first check run banked 56 m per episode on it. Route test: the same dive is +137 mm straight-line, −146 mm at the rung; a loaded hook pulled 30 mm off its line moves the bank 0 |
 | `STALE_AFTER` 8 s → **2.5 s** | the threshold was longer than the episode it policed. The winning lesson-1 run is 5.8 s, so the hand that never released was charged exactly 0.00 |
 | `MIN_GRABS` in `_success` | the task was completable with **neither hand ever leaving the rung**: 1 m traversed with the right hook never further than 24 mm from the rail and the left hand carrying under 10 N for 89 % of the episode. Alternating grips is not one way of doing this task, it is the task |
 | finger setpoint stopped at the **band's edge** | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N, so the stop went to the cliff. That left a 5° trap: a policy that squeezes as hard as it can sits at −40…−44° under load — a fine hold physically (98–179 N) that neither the reward nor the estimator recognised, because both ask for `GRIP_BAND`. On the 10.8M `win8` policy **90 %** of loaded steps on lesson 1.5 (34 % on lesson 1) were "not gripping" for that reason alone; the estimator kept its anchor on a hand that was moving and saw the far ledge 240–500 mm from where it was. The stop is now the band's edge, −40°: squeeze as hard as you like, it is in band (375/382 loaded steps while swinging, asserted) |
 | `K_FLIGHT`, and a jump earns nothing | the 21M policy's whole lesson-1 gait was jumps: the right hook let go and re-caught within 1–5 control steps while the left hung in the air — off **96 %** of the time, **0.0** load swaps per episode — and each brief tap of the left hand then banked what the jump had covered. A control step in which, for even one physics substep, no hook bore `HOLD_LOAD` is a jump: charged, nobody is loaded so nothing is credited, and the landing is no cycle. Replayed: that policy drops from 5/5 to **0/12** |
 | `K_SLIDE` | sliding stays legal — the rung is smooth on purpose — but a **loaded** hook dragged along it pays 10/m, because it is friction work and because it is invisible: measured in shadow on the alternating policy, the anchored hook was dragged **100–724 mm per tenure**, both hooks seated (next section). This is *not* what makes dragging unprofitable — the relative credit is. Raising it to 20 was tried when the drag appeared and it stalled learning outright: 3M steps at 30 % on the very first lesson, std 0.42, because the same charge lands on the few centimetres the holding hook settles by during every honest reach. It has to beat the live shaping term and the bank: `assert K_SLIDE > K_BANK and K_SLIDE > 2 K_REACH` |
 | a hold counts only while the **other hand is loaded** | three points of contact. A hold taken with nothing else on the wall was a jump's landing or a hand-over with a gap in it, and the gap is where the map goes wrong: 86 of 129 anchor switches on the 3M policy had no step with both hands confirmed and baked in 62 mm each. Gated, the same curriculum unlocks at the same pace (lesson 2 at 0.94M against 0.89M), hand-overs with overlap go from 30 % to 53 %, and the anchor's error at the end of a lesson-1 traverse drops from 540–980 mm to 27–320 mm. What is paid is what can be seen |
-| credit classified by the load at the **start** of the step | the pump the finger-stop fix uncovered: with every touch now in band, a 3M local policy took **578 holds per episode** with the right hand — 97 % of its lifts one or two steps long — and banked **20 m** of credit on a body that moved 0.4 m, +78 per episode against +25 for actually crossing the gap. Lift (free at the end of the step): the 30 mm forward credited. Touch down (loaded at the end): the 30 mm back credited nothing, and not a slide either. Two closures were tried first and were the wrong tools — charging a slide with load at *either* end taxed every seat and unseat of an honest gait (the 95 % lesson-1 policy paid 1.5 m per episode of it and fell to 50 %), and requiring three steps clear before a hold refused the 1–2-step hops honest hands take 70–90 % of the time, so the first lesson stayed at 0 % for 3M steps. Classified by the load at the *start* of the step, the lift is worth 0 and the touch-down debits the 30 mm; and the partner's motion is subtracted only while the partner is loaded at both ends. Replayed: the 95 % policy is back to 15/16 and 13/16, the pumping policy nets −122 |
+| credit classified by the load at **both ends** of the step | the pump the finger-stop fix uncovered: with every touch now in band, a 3M local policy took **578 holds per episode** with the right hand — 97 % of its lifts one or two steps long — and banked **20 m** of credit on a body that moved 0.4 m, +78 per episode against +25 for actually crossing the gap. Lift (free at the end of the step): the 30 mm forward credited. Touch down (loaded at the end): the 30 mm back credited nothing, and not a slide either. Two closures were tried first and were the wrong tools — charging a slide with load at *either* end taxed every seat and unseat of an honest gait (the 95 % lesson-1 policy paid 1.5 m per episode of it and fell to 50 %), and requiring three steps clear before a hold refused the 1–2-step hops honest hands take 70–90 % of the time, so the first lesson stayed at 0 % for 3M steps. Classified by the load at the *start* of the step, the lift is worth 0 and the touch-down debits the 30 mm; and the partner's motion is subtracted only while the partner is loaded at both ends. Replayed: the 95 % policy is back to 15/16 and 13/16, the pumping policy nets −122. That closure had a mirror, and `mac14` found it: classified by the start, the lift is the free step, so it rocked the hook on the rung at 12.5 Hz — throat 32 mm *back* on the lift (ignored), 31 mm *forward* on the touch-down (credited): 698 holds and 23 m per episode, +241. Classifying by either end of a step leaves the other end open. Now a step is a slide's business only with load at **both** ends of it — the slide charge's own test — and every other step is a potential difference, both ways; so every motion of a rung point is either a charged slide or a two-way credit, and no cycle between the two pays. Both one-step cycles are in the jump/drag test and net exactly nothing; the rocking policy replays to −38, the two 95 % lesson-1 policies to 11/12 |
 | `K_GRAB`, once per hand per episode | seating a hook from the air is the one skill the reach credit cannot teach by itself. Under the relative credit the 600k policy carried the free hand to within 40 mm of its goal and **hovered there for the whole episode** — 0.2 grabs per episode, paying the dangle charge rather than come down, because the grab that would have banked its credit was a rare event with a small payoff. The earlier world-anchored reward had taught seating by accident, by paying shuffles *on* the rung first. One bonus for each hand's first supported hold: flutter cannot farm it, and it is a partial payment of `MIN_GRABS`, not a goal of its own |
 | `K_EFFORT`, `K_FIGHT`, `K_TIME` | the gait was legal but nothing like climbing. Measured against a still hang (29.6 N·m, 107 N): the stuck episode ran 145 N·m and **202 N of grip on a 109 N robot** — ~95 N of the two arms pulling against each other. All three price the *excess* over hanging still, never the absolute, so existing stays free |
 
@@ -360,6 +361,55 @@ and every jump adds more. `K_SLIDE` and `K_FLIGHT` exist so that the gait the po
 is paid for is the one the sensors can track — one hand holds still while the other
 moves, which is also the one that was asked for.
 
+## `win9`: everything before lesson 1.5 passes, and the reach paid for hanging below the rung
+
+5.3M steps with the draw weights and the start-of-step credit: −2 80 %, −1 92 %,
+0 92 %, lesson 1 88 % (10/12 in audit, two hands alternating, 1.0 m in 480 steps),
+no collapse — and lesson 1.5 at 0/40 the whole way, best checkpoint at 1.8M. Not
+blindness this time: the estimate at the far ledge is right to 30–50 mm. Not the
+pool: the four lessons behind it held. The action std is 0.62.
+
+What the policy does, every episode (20/20 in audit, and 7/8 for the mac13 policy
+of the previous section): the left hook hops along the start segment as it does on
+lesson 1 (first hop 87 mm, then 26 mm) until it is past the end, level with it at
+y 0.39 — the segment ends at 0.35 and the far one begins at 0.47 — and then, within
+one second, drops 0.34–0.47 m below the far segment and hangs there for the
+remaining 58 s, 0.9 m from the right hand, which never moves. Off the wall 98 % of
+the episode, −13.8 of `K_DANGLE`, −24 per episode against −7.4 for hanging still.
+
+The drop was *paid*. Progress was the straight-line distance from the hook to a
+goal 1.4 m along the wall, and from level with the gap a hand hanging half a metre
+under the far segment is 0.14 m nearer that goal than one level with it:
++0.30–0.44 m of "approach" over the dive on replay, +0.6–0.9 of reach inside three
+seconds, for arriving in a state no lesson had taught it to leave. Every earlier
+lesson has one continuous rung, so straight-line and along-the-rung had always
+agreed, and the seam only opened at the first gap.
+
+Progress is now measured at the rung. A hand's rung point is the nearest point on
+any rung (`_route`); the bank measures that point to the goal, and the live reach
+adds the detour off the rung, both hands, both ways (`_cost`). Along a rung nothing
+changes — 0.30 m of reach still pays 0.30 and lesson 1 replays to the same reward.
+Off the rung the detour is charged and refunded on the way back; it is a function
+of the state, so it telescopes and cannot be pumped. The route test asserts the
+win9 dive itself: +137 mm in a straight line, −146 mm at the rung.
+
+The first check run of it (`mac14`, 3M) scored **+241 per episode on lesson 1.5**
+with a body that never moved — the right hand taking 698 "holds" per episode and
+banking 56 m — and it taught two things. The detour cannot be in the bank: a loaded
+hook's throat is pulled 30–80 mm off its line by the load, uncharged, and that was
+refunded on every re-seat. And under it a second seam that had been there since the
+win8 fix: the credit was classified by the load at the *start* of the step, which
+leaves the lift-off step free, so the hook rocked on the rung at 12.5 Hz — throat
+32 mm back on the lift (ignored), 31 mm forward on the touch-down (credited). The
+win8 pump was the same cycle the other way round, and classifying by either end of
+a step leaves the other end open. Now a step is a slide's business only with load
+at *both* ends — the slide charge's own test — and every other step is a potential
+difference both ways, so every motion of a rung point is either a charged slide or
+a two-way credit and no cycle between the two pays. Both one-step cycles are in the
+jump/drag test and net exactly nothing. Replayed: the rocking policy nets −38, the
+win9 and win8 lesson-1 policies 11/12 at +19 and +17, win9 on lesson 1.5 −25 as
+before.
+
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 
 10.8M steps on the curriculum with lessons −2 … 1.5. The best checkpoint, at 2.66M:
@@ -389,7 +439,8 @@ every touch in band, the 3M check run learnt to lift the right hand for one step
 neither debited nor, since the slide charge wanted load at both ends of the step,
 charged) — 578 "holds" and 20 m of bank per episode. It is closed where it lives:
 the credit is classified by the load at the *start* of the step, so the lift is
-worth nothing and the touch-down debits its 30 mm. Two harsher closures were tried
+worth nothing and the touch-down debits its 30 mm (which left the mirror open — the
+`win9` section). Two harsher closures were tried
 first and each broke an honest gait — the reward table has them. Every gate a policy
 can saturate its way past, it will; and every fine aimed at a pump lands on the
 physics too.

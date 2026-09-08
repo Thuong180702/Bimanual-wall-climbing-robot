@@ -474,8 +474,50 @@ class ClimbTask:
         b = self.env.hook[side]
         return self.env.data.xpos[b] + self.env.data.xmat[b].reshape(3, 3) @ THROAT_PT
 
+    def _route(self, p):
+        """(how far p is off the nearest rung, the point on it) -- the wall map"""
+        best = None
+        for c, a, h in self.segs.values():
+            q = c + np.clip(float((p - c) @ a), -h, h) * a
+            d = float(np.linalg.norm(p - q))
+            if best is None or d < best[0]:
+                best = (d, q)
+        return best
+
+    def _cost(self, p, goal):
+        """metres to go for a hand at p, LIVE: to the nearest point on any rung, then
+        from that point to the goal. Progress is measured AT THE RUNG, not at the hand.
+
+        The plain distance |p - goal| paid for leaving the rung. On lesson 1.5 the
+        left hook walked off the end of its segment, and with the goal 1.4 m along
+        the wall the cheapest way to get "closer" was to hang 0.4 m below the far
+        segment: +0.14 m of straight-line progress, +0.3 of reach, and a state no
+        lesson had taught it to leave -- win9 (5.3M steps, lesson 1.5 at 0 %) and
+        mac13 both: 20/20 and 7/8 episodes hanging there for 58 s. Measured at the
+        rung the same drop is a 0.15 m LOSS. Along a rung the two agree exactly; off
+        a rung this one charges the detour and refunds it on the way back -- still
+        a function of where the hand is, so it telescopes and cannot be pumped.
+
+        Live only. The detour must stay out of the bank: the bank credits a free
+        hand and a loaded hook nothing, and a loaded hook's throat is pulled 30-80 mm
+        off its rung by the load (the README's 31 mm under a 50 N side pull). With
+        the detour in the bank that uncharged distortion was refunded on every
+        lift-and-reseat: the first check run (mac14, 3M) fluttered the right hand
+        698 times per episode, banked 56 m and scored +241 on a body that never
+        moved. `_hand_dists`, which the bank uses, is measured at the rung point,
+        which a loaded hook can move only by sliding -- and sliding is charged.
+        """
+        off, q = self._route(p)
+        return off + float(np.linalg.norm(q - goal))
+
     def _hand_dists(self):
-        return np.array([float(np.linalg.norm(self._throat_true(s) - self.goals[i]))
+        """the bank's potential: each hand's rung point to its goal"""
+        return np.array([float(np.linalg.norm(self._route(self._throat_true(s))[1] - self.goals[i]))
+                         for i, s in enumerate('LR')])
+
+    def _live(self):
+        """the live potential: the same plus the detour off the rung"""
+        return np.array([self._cost(self._throat_true(s), self.goals[i])
                          for i, s in enumerate('LR')])
 
     def _contact(self, side):
@@ -637,7 +679,7 @@ class ClimbTask:
         self._Rf = triad(imu['accel'], imu['mag'])   # at rest the triad is right
         self._w_sum[:] = 0.0
         self._sense()
-        self.prev_d = self._hand_dists()
+        self.prev_d, self.prev_live = self._hand_dists(), self._live()
         self.credit = np.zeros(2)            # relative approach earned since the last hold
         self.held = self._holding()
         self.prev_thr = np.array([self._throat_true(s) for s in 'LR'])
@@ -664,7 +706,8 @@ class ClimbTask:
         self._sense()
         con = [self._contact(s) for s in 'LR']
         touch = np.array([c[0] for c in con])
-        d, free, held = self._hand_dists(), touch <= 0.0, self._holding()
+        d, live = self._hand_dists(), self._live()
+        free, held = touch <= 0.0, self._holding()
         # a loaded hook dragged along its rung: metres, either direction, truth
         thr = np.array([self._throat_true(s) for s in 'LR'])
         dp = thr - self.prev_thr
@@ -705,26 +748,33 @@ class ClimbTask:
         # nothing forward and debited in full back, and since let_go is not granted
         # during a jump it lands as no cycle. Banked at the next supported hold.
         #
-        # Classified by the load at the START of the step. Classified by the end,
-        # a one-step lift was a pump: lift (free at the end: the 30 mm forward
-        # credited), touch down (loaded at the end: the 30 mm back credited
-        # nothing, and not a slide either, since a slide wants load at both ends)
-        # -- 578 such "holds" and 20 m of bank per episode on a body that moved
-        # 0.4 m. By the start of the step the lift is worth 0 and the touch-down
-        # debits the 30 mm. And the partner's motion counts only while the
-        # partner is loaded at BOTH ends -- a hook that loads and unloads on
+        # "Loaded" here means loaded at BOTH ends of the step -- the same test the
+        # slide charge uses, on purpose: every motion of a hand's rung point is then
+        # either a charged slide or a two-way potential difference, and no cycle
+        # between the two pays (back as a slide costs K_SLIDE, forward as credit
+        # earns K_BANK, K_SLIDE > K_BANK). Classifying by ONE end of the step always
+        # leaves a mirror pump: by the end, a one-step lift (forward on the lift,
+        # credited; back on the touch-down, ignored) paid 578 holds and 20 m per
+        # episode; by the start, the mac14 rock (back on the lift, ignored; forward
+        # on the touch-down, credited) paid 698 holds and 23 m -- the hook rocking
+        # on the rung at 12.5 Hz, its throat 31 mm along per step. Both are in the
+        # jump/drag test. And the partner's motion is subtracted only while the
+        # partner is loaded at both ends -- a hook that loads and unloads on
         # alternate steps could otherwise creep backwards and credit the other
         # hand the difference.
         approach = self.prev_d - d
         was = was_loaded
+        both = was & loaded
         credit = np.zeros(2)
         for k in (0, 1):
             o = 1 - k
-            if not was[k] and was[o]:
+            if both[k]:
+                continue
+            if both[o]:
                 u = self.goals[k] - thr[k]
                 u /= max(float(np.linalg.norm(u)), 1e-9)
-                credit[k] = approach[k] - (float(dp[o] @ u) if loaded[o] else 0.0)
-            elif not was[k]:
+                credit[k] = approach[k] - float(dp[o] @ u)
+            else:
                 credit[k] = min(0.0, approach[k])
         self.credit += credit
         bank = float(self.credit[took].sum())
@@ -734,13 +784,13 @@ class ClimbTask:
         grip = sum(float(np.linalg.norm(self.env.hand(s)['force'])) for s in 'LR')
         fight = max(0.0, grip - WEIGHT)
         r = (K_BANK * bank + K_GRAB * float(first.sum())
-             + K_REACH * float(approach.sum())
+             + K_REACH * float((self.prev_live - live).sum())
              - K_DANGLE * parked - K_STALE * stale - K_SEP * sep_err
              - K_EFFORT * effort - K_FIGHT * fight - K_TIME - K_FLIGHT * flight
              - K_SLIDE * slide
              - K_ACT * float(a @ a) - K_VEL * float(self.dq @ self.dq))
-        self.held, self.prev_d = held, d
-        info = {'dist': float(d.sum()), 'lesson': self.lesson,
+        self.held, self.prev_d, self.prev_live = held, d, live
+        info = {'dist': float(d.sum()), 'live': float(live.sum()), 'lesson': self.lesson,
                 'off': float(free.sum()), 'parked': parked, 'stale': stale,
                 'touch': touch.copy(), 'flight': float(flight), 'bank': bank,
                 'loaded_start': was.copy(),
@@ -1083,6 +1133,30 @@ def main():
           f"{np.linalg.norm(q - T1)*1e3:.4f} mm from a guess 157 mm off; across the "
           f"gap onto seg1 too; a guess on the far side picks the far side")
 
+    # Progress is measured at the rung. The win9 dive: the left hook off the end of
+    # its segment, level with it (y 0.39), then hanging 0.47 m below the far segment
+    # at y 0.65 -- nearer the goal in a straight line, further along the wall.
+    t = ClimbTask(1.5)
+    t.reset()
+    g = t.goals[0]
+    c0, a0, h0 = t.segs['rung_start']
+    a0 = a0 if a0 @ (g - c0) > 0 else -a0        # along the rung, toward the goal
+    edge = c0 + h0 * a0
+    hover = edge + 0.04 * a0
+    hang = edge + 0.30 * a0 - np.array([0.134, 0.0, 0.467])
+    assert np.linalg.norm(hang - g) < np.linalg.norm(hover - g), "the dive is no longer nearer in 3D"
+    assert t._cost(hang, g) > t._cost(hover, g) + 0.10, (t._cost(hang, g), t._cost(hover, g))
+    on = c0 - 0.10 * a0
+    assert abs((t._cost(on, g) - t._cost(on + 0.30 * a0, g)) - 0.30) < 1e-9, "progress along the rung must be paid in full"
+    assert t._cost(hover, g) < t._cost(edge, g) + 0.05, "hovering just past the edge is charged the air, nothing more"
+    pulled = on + np.array([0.0, 0.0, -0.03])           # a loaded hook's throat, off its line
+    assert abs(np.linalg.norm(t._route(pulled)[1] - g) - np.linalg.norm(t._route(on)[1] - g)) < 1e-12, \
+        "the bank must not see a loaded hook pulled off its line (mac14: 698 holds and 56 m banked per episode when it did)"
+    assert abs(t._cost(pulled, g) - t._cost(on, g) - 0.03) < 1e-9, "the live term sees the whole detour"
+    print(f"route test: the win9 dive is {(np.linalg.norm(hover - g) - np.linalg.norm(hang - g))*1e3:+.0f} mm "
+          f"of straight-line progress and {(t._cost(hover, g) - t._cost(hang, g))*1e3:+.0f} mm at the rung; "
+          f"0.30 m along the rung pays 0.30; a loaded hook pulled 30 mm off its line moves the bank 0")
+
     # Progress must be paid for a supported reach, and for nothing else. Three ways
     # policies moved the body without one, each of which banked under an earlier
     # reward: a JUMP (no hand holding, for even one physics substep) -- the 21M
@@ -1159,24 +1233,32 @@ def main():
     assert list(info['grabs']) == [3, 0] and abs(info['bank']) < 1e-9, (
         f"the tap after a drag banked {info['bank']*1000:.0f} mm")
     assert slid > 0.15, f"a 0.2 m drag of a loaded hook registered {slid*1000:.0f} mm of slide"
-    # the one-step lift: the right hand lifts for one step, moving 30 mm toward
-    # its goal, and sets down the next, moving 30 mm back. Classified by the end
-    # of the step this was a pump (+30 mm per cycle); by the start it is a loss.
-    st['L'] = on['L']
-    t.step(z)
-    g0 = t.grabs.copy(); paid = 0.0; cr = 0.0
-    for j in range(10):
-        up = j % 2 == 0
-        st['R'] = (0.0, set()) if up else on['R']
-        st['thr']['R'] += (0.03 if up else -0.03) * uL
-        st['d'][1] -= (0.03 if up else -0.03)
-        _, _, _, _, info = t.step(z)
-        paid += info['bank']; cr += info['credit'][1]
-    assert paid <= 1e-9 and cr <= -0.14, (
-        f"the one-step lift banked {paid*1000:+.0f} mm and was credited {cr*1000:+.0f} mm")
-    st['R'] = on['R']
-    t.step(z)
-    t.credit[:] = 0.0
+    # the one-step lift, both ways round: the right hand lifts for one step, moving
+    # 30 mm toward its goal, and sets down the next, moving 30 mm back -- a pump
+    # when the credit was classified by the load at the END of the step (+30 mm per
+    # cycle, 578 holds and 20 m per episode). And its mirror, the mac14 rock: back
+    # on the lift, forward on the touch-down -- a pump when classified by the
+    # START (+31 mm per cycle, 698 holds and 23 m per episode). A step is a slide's
+    # business only with load at both ends; every other step is a potential
+    # difference both ways, so both cycles net exactly nothing.
+    for fwd_on_lift in (True, False):
+        st['L'] = on['L']
+        t.step(z)
+        paid = 0.0; cr = 0.0
+        for j in range(10):
+            up = j % 2 == 0
+            st['R'] = (0.0, set()) if up else on['R']
+            dm = 0.03 if (up == fwd_on_lift) else -0.03
+            st['thr']['R'] += dm * uL
+            st['d'][1] -= dm
+            _, _, _, _, info = t.step(z)
+            paid += info['bank']; cr += info['credit'][1]
+        assert paid <= 1e-9 and cr <= 1e-9, (
+            f"the one-step lift ({'forward' if fwd_on_lift else 'back'} on the lift) banked "
+            f"{paid*1000:+.0f} mm and was credited {cr*1000:+.0f} mm")
+        st['R'] = on['R']
+        t.step(z)
+        t.credit[:] = 0.0
     # the flutter drag: the holder loads on alternate steps only while creeping
     # backwards; the free hand must not be credited the relative gain, because
     # the partner's motion counts only while it is loaded at both ends of a step
@@ -1224,7 +1306,7 @@ def main():
           "counts no grab and is charged; the tap after it banks 0; a 0.2 m drag of "
           f"the loaded hook credits 0, banks 0 on the next tap and is charged {K_SLIDE*slid:.1f}; "
           "a holder settling +-20 mm credits the free hand 0, two loaded hooks settling credit 0; "
-          "the one-step lift is a loss; a holder creeping on alternate loads credits nothing")
+          "a one-step lift nets nothing either way round; a holder creeping on alternate loads credits nothing")
 
     # No pump, proved rather than hoped. The live term is a potential and must
     # telescope to the endpoints exactly; the bank pays credit that never exceeds
@@ -1236,6 +1318,7 @@ def main():
     t.reset()
     rng = np.random.default_rng(3)
     d0, acc, paid, forgiven, slid = t._dist(), 0.0, 0.0, 0.0, 0.0
+    live0 = float(t._live().sum())
     prev_dh = t._hand_dists().copy()
     for _ in range(400):
         a = rng.uniform(-1, 1, 17)
@@ -1260,7 +1343,7 @@ def main():
             acc -= SUCCESS_R if info.get('reason') == 'success' else FAIL_R
             break
     closed = d0 - t._dist()
-    expect = K_BANK * paid + K_REACH * closed
+    expect = K_BANK * paid + K_REACH * (live0 - float(t._live().sum()))
     print(f"no-pump test: {acc:+.4f} accumulated against {expect:+.4f} from the bank "
           f"paid plus the endpoints; bank paid {paid*1000:+.0f} mm + pending "
           f"{info['banked']*1000:+.0f} mm against {closed*1000:+.0f} mm actually closed "
