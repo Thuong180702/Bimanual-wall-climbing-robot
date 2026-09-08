@@ -25,6 +25,9 @@ FRAME_SKIP = 20          # sim steps per control step: 0.002 s x 20 = 25 Hz
 ACT_SCALE = 0.06         # rad of setpoint travel per control step (1.5 rad/s max)
 LATCH_TOL = 0.15         # m from the goal point that still counts, given a latch
 RUNG_TOL = 0.06          # m: estimated throat this close to a rung axis = that rung
+SLAM_TAU = 1.0           # s: how slowly the anchor's map point follows the SLAM position
+                         # along its rung. 2 cm of SLAM noise at 25 Hz averages to ~3 mm
+                         # over this; the creep it tracks runs a few mm/s (`_sense`)
 AHRS_TAU = 2.0           # s: how slowly the torso attitude leans on the accelerometer.
                          # The bare triad (accel + mag, no state) is what the classical
                          # controller uses, and while the body swings it is wrong by
@@ -40,15 +43,6 @@ SEAT_IN = 0.0325         # m: half the hook's width along the rung. A hook centr
                          # is this far in. The map the policy sees, and the potential it
                          # is paid on, describe SEATS, not geometry -- the user's point on
                          # the win9 video: it reached for the end itself and got half a hold
-TIP_AHEAD = 0.038        # m from the throat to where the hook's mouth meets the END of a
-                         # rung: measured 24-48 mm over 416 such contacts (`_end_contact`).
-                         # ponytail: one number for the hook's mouth; calibrate on the real hook
-TIP_TOUCH = 2.0          # N on the LIP pad (`tip_L/R`, a second touch zone on the hook's
-                         # underside, z < -103 mm in the hook frame) that says the mouth is on
-                         # something. Measured: an end face touches the hook at z = -110 mm
-                         # in every one of 252 such contacts; every seat, loaded or light,
-                         # touches at z >= -98. One pad, two zones -- the same sensor, split
-TIP_LOAD = 1.0           # N along the rung through the wrist: which way the push goes
 REACH_TOL = 0.35         # m: a hold placed by arm reach (see `_reach_point`) may sit
                          # this far from the IMU-based guess and still be believed.
                          # The guess is only asked which side of the anchor the hand
@@ -363,8 +357,22 @@ class ClimbTask:
         self._Rf = self._Rf @ _rotm((dt / AHRS_TAU) * rotvec(self._Rf.T @ R_tri))
         self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1],
                         R_torso=self._Rf)
-        # The anchor's hold is left alone while it holds: re-projecting a hand's
-        # own estimate onto its own rung learns nothing. The OTHER hand's hold,
+        # The loaded hook creeps along its rung while it holds -- 85-210 mm per
+        # episode on the mac16 policy, 100 mm by the first hand-over -- and nothing
+        # on the arm can see it: two hooks on a smooth rung have no world reference,
+        # so the anchor's map point went stale by exactly that and at the gap the far
+        # segment read 60-210 mm further than it was (0/40 for 3M steps). The lidar
+        # SLAM on the real robot sees the body move against the wall. Its position,
+        # low-passed over SLAM_TAU, says where along the rung the anchor has crept
+        # to; off the axis the discrepancy is throat distortion and noise, ignored.
+        dp = self.env.slam() - self.est.body_pos(self.est.base)
+        nm, pt = self.hold[self.anchor]
+        ax = self.segs[nm][1]
+        self.hold[self.anchor] = (nm, pt + (dt / SLAM_TAU) * float(dp @ ax) * ax)
+        self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1],
+                        R_torso=self._Rf)
+        # The anchor's hold is otherwise left alone while it holds: re-projecting a
+        # hand's own estimate onto its own rung learns nothing. The OTHER hand's hold,
         # while both are seated, comes from arm reach -- exact along the rung,
         # which the IMU-rooted estimate is not (see `_reach_point`).
         other = 'R' if self.anchor == 'L' else 'L'
@@ -394,16 +402,6 @@ class ClimbTask:
                             self.hold[self.anchor][1], R_torso=self._Rf)
             cA = True
         self._both_conf = both
-        # the free hand's mouth on a rung end moves the ANCHOR's map point: the
-        # free hand is where the map says the end is, so the anchor is wherever
-        # makes that true (its creep, see `_end_contact`)
-        shift = self._end_contact('R' if self.anchor == 'L' else 'L')
-        if shift is not None:
-            nm, pt = self.hold[self.anchor]
-            ax = self.segs[nm][1]
-            self.hold[self.anchor] = (nm, pt + float(shift @ ax) * ax)
-            self.est.update(self.q, self.imu_s, self.anchor,
-                            self.hold[self.anchor][1], R_torso=self._Rf)
         self._anchor_fresh = cA
 
     def _reach_point(self, anchor_pt, L, guess):
@@ -438,54 +436,6 @@ class ClimbTask:
                 if best is None or err < best[0]:
                     best = (err, nm, q)
         return (best[1], best[2]) if best and best[0] < REACH_TOL else None
-
-    def _end_contact(self, side):
-        """the one thing on the map a free hand can FEEL: its mouth on the end face of
-        a rung. Returns how far the anchor's map point must move along its rung so
-        that this hand's estimated mouth sits on that end, or None.
-
-        Why it is needed: the loaded hook creeps along the rung while it holds --
-        85-210 mm per episode on mac16, 100 mm by the first hand-over -- and the
-        anchor's map point does not, so every estimate rooted in it is that far
-        off. Two hooks on a smooth rung have no other world reference; on one
-        continuous rung the creep is invisible and harmless, at a gap it put the
-        far segment 60-210 mm further than it was and the policy pushed its hook
-        into the end face believing it still had that far to go (0/40 for 3M).
-
-        Hardware-legal: the lip pad, the wrist F/T for the direction of the push,
-        the estimated hook frame and the map. A hand that is not holding, whose lip
-        pad is pressed, with an end of some rung FACING the push within REACH_TOL
-        ahead of the estimated throat, has its mouth on that end. The first version
-        gated on the throat pad and the force instead: exact to 3 mm when the mouth
-        really was on an end (80 firings, silent on lesson 1) but a light hand
-        pushed along its OWN rung fired it twice as often, 65-116 mm wrong, and
-        neither the wrist torque's lever arm, the axial fraction of the force nor
-        the hand's speed told the two apart -- the contact POSITION on the hook
-        does, hence the second pad zone (TIP_TOUCH).
-        """
-        h = self.env.hand(side)
-        if h['tip'] <= TIP_TOUCH or self._confirmed(side):
-            return None
-        f = self.est.hook_R(side) @ np.asarray(h['force'])
-        p = self.est.throat(side)
-        best = None
-        for c, a, hh in self.segs.values():
-            fa = float(f @ a)
-            if abs(fa) < TIP_LOAD:
-                continue
-            push = np.sign(fa) * a
-            for e, n in ((c + hh * a, a), (c - hh * a, -a)):
-                if n @ push >= 0:                  # only an end facing the push can be hit
-                    continue
-                ahead = float((e - p) @ push)
-                if ahead <= 0.0 or ahead > REACH_TOL:
-                    continue
-                if best is None or ahead < best[0]:
-                    best = (ahead, push)
-        if best is None:
-            return None
-        ahead, push = best
-        return (ahead - TIP_AHEAD) * push
 
     def _near_rungs(self, p):
         """the N_NEAR rungs closest to p: offset to each one's axis, and its direction;
@@ -538,8 +488,8 @@ class ClimbTask:
         return np.concatenate([
             self.q, self.dq, self.tau, self.ctrl,
             self.imu_s['accel'], self.imu_s['gyro'], self.imu_s['mag'],
-            hl['force'], hl['torque'], [hl['pad'], hl['tip']],
-            hr['force'], hr['torque'], [hr['pad'], hr['tip']],
+            hl['force'], hl['torque'], [hl['pad']],
+            hr['force'], hr['torque'], [hr['pad']],
             goal, near, other, conf]).astype(np.float32)
 
     # ---- training-time oracle (reward / success only) ----------------------
@@ -1207,6 +1157,36 @@ def main():
     print(f"reach test: a hold 0.25 m along the rung is placed to "
           f"{np.linalg.norm(q - T1)*1e3:.4f} mm from a guess 157 mm off; across the "
           f"gap onto seg1 too; a guess on the far side picks the far side")
+
+    # SLAM keeps the anchor honest. The loaded hook creeps along the rung under a
+    # side load and the arm cannot see it: hang, then pull the body 25 N along the
+    # rung for 150 steps (the slide test's scenario, the hooks drag 25-50 mm).
+    from urdf.climbing_env import SLAM_SIG
+    t = ClimbTask(1)
+    t.reset()
+    z = np.zeros(17)
+    ax = t.segs['rung_start'][1]
+    stale = lambda: float((t._throat_true(t.anchor) - t.hold[t.anchor][1]) @ ax)
+    for _ in range(50):
+        t.step(z)
+    wander = []
+    for _ in range(100):
+        t.step(z)
+        wander.append(abs(stale()))
+    p0 = t._throat_true(t.anchor).copy()
+    for _ in range(150):
+        t.env.data.xfrc_applied[t.env.base, :3] = 25.0 * ax
+        t.step(z)
+    t.env.data.xfrc_applied[t.env.base, :3] = 0.0
+    crept = float((t._throat_true(t.anchor) - p0) @ ax)
+    # (the wander is mostly the filtered attitude's ~1 deg on the 0.5 m lever from
+    # the anchor to the base, ~9 mm, plus ~3 mm of averaged SLAM noise)
+    assert max(wander) < 0.020, f"hanging still, the anchor wandered {max(wander)*1e3:.0f} mm"
+    assert abs(crept) > 0.015, f"the pull crept the hook only {crept*1e3:.0f} mm; the test proves nothing"
+    assert abs(stale()) < 0.020, f"after {crept*1e3:+.0f} mm of creep the anchor is {stale()*1e3:+.0f} mm stale"
+    print(f"slam test: hanging still the anchor wanders {max(wander)*1e3:.1f} mm under {SLAM_SIG*1e3:.0f} mm "
+          f"of SLAM noise; a 25 N pull creeps the loaded hook {crept*1e3:+.0f} mm along the rung and the "
+          f"anchor follows to within {stale()*1e3:+.0f} mm")
 
     # Progress is measured at the rung. The win9 dive: the left hook off the end of
     # its segment, level with it (y 0.39), then hanging 0.47 m below the far segment

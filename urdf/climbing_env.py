@@ -5,6 +5,10 @@ All thresholds here were measured on this model, not guessed - see README.
 """
 import numpy as np, mujoco
 
+SLAM_SIG = 0.02   # m, one sigma per axis per reading: what the lidar SLAM's base position
+                  # is off by. ponytail: white noise; a real SLAM drifts slowly instead,
+                  # calibrate this (and the RL task's SLAM_TAU) against the real stack
+
 # --- measured on this model -------------------------------------------------
 GRIP_BAND = (np.radians(-40), np.radians(-10))   # finger angle where pull-off > 1200 N
 GRIP_SET  = np.radians(-25)                      # recommended hold-on setpoint
@@ -30,6 +34,7 @@ class ClimbingEnv:
         self.held_fn = held_fn or (lambda: self.latched('L')[0] or self.latched('R')[0])
         self.success_z, self.timeout_s, self.qvel_max = success_z, timeout_s, qvel_max
         self.base = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, 'base_link')
+        self._slam_rng = np.random.default_rng()
         self.hook = {s: mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, 'hook_'+s)
                      for s in 'LR'}
         self.rungs = [g for g in range(self.model.ngeom)
@@ -53,6 +58,13 @@ class ClimbingEnv:
             out[j] = (self.sensor('enc_'+j)[0], self.sensor('vel_'+j)[0],
                       self.sensor('tau_'+j)[0])
         return out
+
+    def slam(self):
+        """where the lidar SLAM says the base is (world, m): the true position with
+        SLAM_SIG of noise. The one world-referenced sensor on the real robot -- and
+        without one, two hooks on a smooth rung cannot tell that the loaded hook is
+        creeping along it (rl/climb_task.py, `_sense`)."""
+        return self.data.xpos[self.base] + self._slam_rng.normal(0.0, SLAM_SIG, 3)
 
     def imu(self, raw_only=False):
         """9-DOF IMU. raw_only=True returns just what real hardware outputs."""
@@ -80,13 +92,9 @@ class ClimbingEnv:
         return out
 
     def hand(self, side):
-        try:
-            tip = float(self.sensor('tip_'+side)[0])   # the RL scenes' lip pad (rl/lessons.py)
-        except KeyError:
-            tip = 0.0
         return dict(force=self.sensor('ft_force_'+side),
                     torque=self.sensor('ft_torque_'+side),
-                    pad=self.sensor('grip_'+side)[0], tip=tip)
+                    pad=self.sensor('grip_'+side)[0])
 
     # ---- latch detection --------------------------------------------------
     def seat(self, side, geom):
