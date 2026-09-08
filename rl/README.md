@@ -410,6 +410,33 @@ jump/drag test and net exactly nothing. Replayed: the rocking policy nets −38,
 win9 and win8 lesson-1 policies 11/12 at +19 and +17, win9 on lesson 1.5 −25 as
 before.
 
+Checked locally with both (`mac16`, 3M steps, 8 envs): the dive is gone — the left
+hook spends 0–6 steps below the far segment instead of 1400 — and it now reaches the
+far segment in every episode and touches it for 13–295 steps, but never takes a
+seated hold there; lesson 1.5 stays at 0/40. Measured at those contacts: the throat
+is 38 mm short of the segment's end (min 24, max 48), 30 mm below its axis, the tip
+pressing the end face with 7–22 N — and the estimator has the hand 60–210 mm
+*behind* where it is, so the policy believes the segment is still that far away and
+keeps pushing. The whole of that error is the anchor: the loaded hook **creeps along
+the rung while it holds**, 85–210 mm per episode and 100 mm already at the first
+hand-over, and the estimator's anchor point does not move. Two hooks on a smooth
+rung have no world reference, so this creep is unobservable on a continuous rung
+(where it does not matter) and fatal at a gap. It is not the solver's tangential
+slip: `noslip_iterations` removes the drift under a static 25 N pull (25 → 0 mm) but
+the policy's own loading still slides the hook 489 mm per episode with it on. The one
+hardware-legal world reference at a gap is the free hook's tip on the far segment's
+end face, and a rule on the sensors the loop has (pad loaded, finger in band, not
+holding, wrist force along the rung, a facing rung end within `REACH_TOL`) is exact
+when the tip really is there — 80 firings, correction within 3 mm — and silent on
+lesson 1, but it also fires when a light hand is pushed along its own rung, 2× as
+often, 65–116 mm wrong; neither the wrist torque's lever arm nor the axial fraction
+of the force separates the two. Unresolved: a touch sensor on the hook's mouth
+would, and is a hardware decision. And lesson −1 collapsed to 0–2 % late in both
+check runs of the both-ends rule (80 % under the start-of-step rule, 92 % in win9):
+on it the policy flutters the left hand 35 times per episode and never moves the
+right — the hand that has to step. Not yet diagnosed; treat a 20M run on this
+revision as a test of that, not of lesson 1.5.
+
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 
 10.8M steps on the curriculum with lessons −2 … 1.5. The best checkpoint, at 2.66M:
