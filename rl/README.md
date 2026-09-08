@@ -394,6 +394,15 @@ first and each broke an honest gait — the reward table has them. Every gate a 
 can saturate its way past, it will; and every fine aimed at a pump lands on the
 physics too.
 
+Checked locally with all of it (3M steps, 8 envs): −1 at 0.14M, 0 at 0.25M, 1 at
+0.46M, 1.5 at 0.68M; at 3M lesson 1 at 88 % in training and **12/12** in audit —
+1.03 m in 138 steps, both hands alternating — with no collapse through 2.3M steps of
+lesson 1.5 in the pool. On lesson 1.5 the pump is gone (−21 per episode, 2 holds by
+the right hand), the estimate at the far ledge is right to ~50 mm, a hand seats on
+the ledge in 11 of 20 episodes and one episode crossed both gaps. The holding hand
+still sits 335–520 mm from its edge when the free hand reaches — the climber's order
+is not learnt yet — but the events the credit needs are now happening.
+
 ## `win5`: the map became exact, and nothing moved
 
 15.3M steps under the three rules above, lesson 1 only, **0 / 40** — the best
