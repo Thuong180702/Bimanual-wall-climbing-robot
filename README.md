@@ -7,7 +7,7 @@ Two subsystems share one model:
 |---|---|
 | [`urdf/`](urdf/README.md) | the robot, the scene, 86 sensors, and the measured properties of both — start here |
 | [`controller/`](controller/README.md) | a classical controller: anchor-rooted state estimate, relative Jacobians, hold graph, A\* routing |
-| [`rl/`](rl/README.md) | a PPO curriculum: thirteen lesson scenes ordered by difficulty, and the task/reward around them |
+| [`rl/`](rl/README.md) | a PPO curriculum: sixteen lesson scenes ordered by difficulty, and the task/reward around them |
 
 ```bash
 python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate

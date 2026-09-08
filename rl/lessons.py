@@ -156,6 +156,43 @@ LESSONS = {
     # the edge itself was not in the observation (it is now, see `_near_rungs`).
     # A 0.12 m gap is crossed by the ordinary 0.30 m step the policy already has,
     # so the first crossings happen by accident and the credit does the rest.
+    # Stop at the end. Every seat on a continuous rung is as good as the next, so
+    # nothing before this asks a hand to land SHORT of somewhere -- and at a gap that
+    # is the whole move: lead hand to the last seat, trailing hand up beside it, then
+    # across (the user's description of the climb). Four local runs at 0 % on lesson
+    # 1.5 each ended with the lead hook past its last seat, brushing the end, never
+    # retreating the 5-10 cm to a seat, the trailing hand never moving. Here the rung
+    # ends 3 cm past the left hand's goal, and its goal is one ordinary opener from
+    # its start (mac19's hops: p50 226 mm): land there, or hang half off the end.
+    1.1: dict(name='stop_at_the_end', timeout=30.0,
+              title='one step each along a rung that ends just past the goal',
+              walls=[WALL_FRONT],
+              rungs=[_ry('start', -0.90, 0.42, 1.00)],
+              goal_rungs=['rung_start'],
+              goals=[[0.44, 0.3875, 1.00], [0.44, 0.0755, 1.00]]),
+    # Then the gaps, in the order of the reach they ask of a hand that crosses from
+    # the last seat with its partner still at the start (0.54 m + gap, against the
+    # 0.67 m static limit): 0.58, 0.62, 0.66 for lesson 1.5 -- the mac16 policy
+    # pushed its hook into the far segment's end 38 mm short there -- and 0.79 for
+    # lesson 2, which cannot be lunged at all: the trailing hand has to come up first.
+    # (with the map describing SEATS, half a hook-width in from each end --
+    # climb_task.SEAT_IN -- the seat-to-seat jumps are 105, 145, 185 and 315 mm)
+    1.2: dict(name='traverse_hairline_gaps', timeout=60.0,
+              title='traverse a broken rung: segments with 0.04 m gaps',
+              walls=[WALL_FRONT],
+              rungs=[_ry('start', -0.45, 0.35, 1.00),
+                     _ry('seg1', 0.39, 0.95, 1.00),
+                     _ry('seg2', 0.99, 1.65, 1.00)],
+              goal_rungs=['rung_seg2'],
+              goals=[[0.44, 1.55, 1.00], [0.44, 1.24, 1.00]]),
+    1.35: dict(name='traverse_narrow_gaps', timeout=60.0,
+               title='traverse a broken rung: segments with 0.08 m gaps',
+               walls=[WALL_FRONT],
+               rungs=[_ry('start', -0.45, 0.35, 1.00),
+                      _ry('seg1', 0.43, 0.95, 1.00),
+                      _ry('seg2', 1.03, 1.65, 1.00)],
+               goal_rungs=['rung_seg2'],
+               goals=[[0.44, 1.55, 1.00], [0.44, 1.24, 1.00]]),
     1.5: dict(name='traverse_small_gaps', timeout=60.0,
               title='traverse a broken rung: segments with 0.12 m gaps',
               walls=[WALL_FRONT],

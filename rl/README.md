@@ -1,6 +1,6 @@
 # PPO curriculum
 
-The frame for training PPO on the climbing tasks, as thirteen lessons ordered by
+The frame for training PPO on the climbing tasks, as sixteen lessons ordered by
 difficulty instead of the mixed scene.
 
 ```bash
@@ -24,7 +24,7 @@ python -m rl.status --name climber --watch
 
 | file | what it is |
 |---|---|
-| `lessons.py` | the 13 lesson specs + scene generator (writes `urdf/lessons/`) |
+| `lessons.py` | the 16 lesson specs + scene generator (writes `urdf/lessons/`) |
 | `climb_task.py` | Gymnasium-shaped env: obs / action / reward / termination |
 | `train_ppo.py` | thin SB3 PPO entry point |
 | `bench.py` | simulator throughput vs env count, and cpu vs mps for the policy |
