@@ -465,6 +465,14 @@ end); and **1.2** and **1.35**, gaps of 0.04 and 0.08 m, so the reach a lunge ne
 rises 0.58 → 0.62 → 0.66 → 0.79 instead of jumping from a continuous rung to the
 limit.
 
+Checked (`mac20`, 4M, 8 envs): −2 100 %, −1 95 %, 0 92 %, 1 90 %, **1.1 at 98 %**
+within 0.4M steps of its unlock (the left hook lands at 0.35–0.41 for a last seat
+at 0.388), and lesson 1.2, unlocked at 3.7M, at 0/40 in training but with the climb
+the user described on the replay after 0.3M steps of exposure: left hand to the
+last seat (+0.32), right hand up beside it (+0.02), left across the gap (+0.39,
++0.47, +0.57), right following (+0.08, +0.20, +0.28) — one full success in 10, a
+hand seated on the far segment in 3 of 12. Out of steps, not stuck.
+
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 
 10.8M steps on the curriculum with lessons −2 … 1.5. The best checkpoint, at 2.66M:
