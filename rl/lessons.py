@@ -241,8 +241,22 @@ def lesson_tag(lesson):
     return f"lesson{lesson:02d}" if isinstance(lesson, int) else f"lesson{lesson:g}"
 
 
-def xml_path(lesson):
+def _path(lesson):
     return os.path.join(OUT, f"{lesson_tag(lesson)}_{LESSONS[lesson]['name']}.xml")
+
+
+def xml_path(lesson):
+    """the lesson's scene file, written on demand if it is not there.
+
+    `urdf/lessons/` is generated from `scene.xml` and gitignored, so a fresh clone
+    -- or a pull that adds a lesson -- has no scene for it, and MuJoCo reports that
+    as a bare ParseXML error once per worker process. Nothing is regenerated that
+    already exists: edit `scene.xml` or a spec and you still run `rl.lessons`.
+    """
+    p = _path(lesson)
+    if not os.path.exists(p):
+        write(lesson)
+    return p
 
 
 def write(lesson):
@@ -260,9 +274,15 @@ def write(lesson):
         [f'    <!-- lesson {lesson}: {spec["title"]} -->']
         + spec['walls'] + spec['rungs'])
     out = head + mid + '\n\n    <!-- ===== robot ===== -->' + tail
+    # via a temp file and an atomic rename: the 8 SubprocVecEnv workers build their
+    # environments at the same moment, and without it one of them parses the file
+    # while another is still writing it
     os.makedirs(OUT, exist_ok=True)
-    open(xml_path(lesson), 'w').write(out)
-    return xml_path(lesson)
+    p = _path(lesson)
+    tmp = f'{p}.{os.getpid()}.tmp'
+    open(tmp, 'w').write(out)
+    os.replace(tmp, p)
+    return p
 
 
 def rung_segments(model):

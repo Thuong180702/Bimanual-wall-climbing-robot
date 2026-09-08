@@ -5,6 +5,8 @@ difficulty instead of the mixed scene.
 
 ```bash
 python -m rl.lessons        # regenerate urdf/lessons/*.xml + smoke-check each
+                            # (training writes a missing one itself; run this after
+                            #  editing scene.xml or a lesson spec)
 python -m rl.climb_task     # smoke-check the task API on every lesson
 python -m rl.bench          # where the time actually goes on this machine
 python -m rl.train_ppo --self-check          # curriculum logic, trains nothing
