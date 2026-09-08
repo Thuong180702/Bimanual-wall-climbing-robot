@@ -51,7 +51,7 @@ from .lessons import LESSONS, lesson_key
 WINDOW = 40          # episodes per lesson the success rate is measured over
 UNLOCK_AT = 0.60     # success rate on the newest lesson that unlocks the next one
 UNLOCK_MIN = 20      # episodes needed before that rate is believed
-NEW_SHARE = 0.25     # of the draws the newest lesson gets until it is being passed
+NEW_SHARE = 0.25     # of the STEPS the newest lesson gets until it is being passed
 WARM_RATE = 0.20     # ...which means this success rate over UNLOCK_MIN episodes.
                      # A freshly unlocked lesson is, at first, a stream of failures,
                      # and drawn as often as the rest it is half the pool's gradient
@@ -103,6 +103,7 @@ class Curriculum(BaseCallback):
         self.pool = list(pool)
         self.active = list(active or ([self.pool[0]] if enabled else self.pool))
         self.hist = {lesson_key(k): list(v) for k, v in (history or {}).items()}
+        self.lens = {}                   # episode lengths per lesson, for the draw weights
         self.enabled = enabled
 
     def rate(self, lesson):
@@ -127,11 +128,30 @@ class Curriculum(BaseCallback):
         return True
 
     def weights(self):
-        """draw weights over the active pool, or None for uniform"""
-        if not self.warming():
-            return None
-        k = len(self.active) - 1
-        return [(1.0 - NEW_SHARE) / k] * k + [NEW_SHARE]
+        """draw probabilities over the active pool: each lesson's share of the STEPS.
+
+        Drawn by episodes, a lesson that times out owns the gradient: on lesson 1.5
+        a stuck episode runs 1490 steps against ~200 for a one-step lesson, so at a
+        quarter of the draws it was 60 % of the samples -- and the behaviour it
+        learnt there (left hand sweeping the rung, right hand never moving) was
+        learnt in the very states lesson -1 starts from, which needs the opposite,
+        and lesson -1 went from 90 % to 0 % in two runs of three million steps.
+        The share is divided by each lesson's mean episode length over its window,
+        so a long lesson is drawn less often and every lesson gets its share of
+        the samples; a lesson with no lengths yet is taken to be as long as the rest.
+        """
+        k = len(self.active)
+        share = [1.0 / k] * k
+        if self.warming():
+            share = [(1.0 - NEW_SHARE) / (k - 1)] * (k - 1) + [NEW_SHARE]
+        lens = []
+        for lesson in self.active:
+            v = [x for x in self.lens.get(lesson, [])[-WINDOW:] if x > 0]
+            lens.append(sum(v) / len(v) if v else None)
+        known = [x for x in lens if x is not None]
+        fill = sum(known) / len(known) if known else 1.0
+        w = [sh / (ln if ln is not None else fill) for sh, ln in zip(share, lens)]
+        return [x / sum(w) for x in w]
 
     def state(self):
         return {'active': self.active,
@@ -142,6 +162,8 @@ class Curriculum(BaseCallback):
             if done and 'reason' in info:
                 self.hist.setdefault(info['lesson'], []).append(
                     info['reason'] == 'success')
+                if info.get('steps'):
+                    self.lens.setdefault(info['lesson'], []).append(info['steps'])
         if not self.enabled:
             return True
         warm = self.warming()
@@ -151,7 +173,10 @@ class Curriculum(BaseCallback):
             self.training_env.env_method('set_active', self.active, self.weights())
             if not warm and len(self.active) > 1:
                 print(f"\n[curriculum] lesson {self.active[-1]} is being passed; the pool "
-                      f"{self.active} is drawn evenly now\n")
+                      f"{self.active} shares the steps evenly now\n")
+        elif any(done for done in self.locals['dones']):
+            # the lengths moved: keep the step shares honest (cheap; a list of floats)
+            self.training_env.env_method('set_active', self.active, self.weights())
         if self.active[-1] == self.pool[-1]:
             return True
         n, r = self.rate(self.active[-1])
@@ -163,7 +188,7 @@ class Curriculum(BaseCallback):
             print(f"\n[curriculum] lesson {self.active[-2]} at {r:.0%} over {n} "
                   f"episodes -> unlocking lesson {self.active[-1]} "
                   f"({LESSONS[self.active[-1]]['name']}); pool now {self.active}, "
-                  f"the new one drawn {NEW_SHARE:.0%} of the time until it passes "
+                  f"the new one gets {NEW_SHARE:.0%} of the steps until it passes "
                   f"{WARM_RATE:.0%}\n")
         return True
 
@@ -248,9 +273,9 @@ def self_check():
         def get_env(self):
             return self.env
 
-    def feed(c, lesson, reason, n=1):
+    def feed(c, lesson, reason, n=1, steps=0):
         for _ in range(n):
-            c.locals = {'infos': [{'reason': reason, 'lesson': lesson}],
+            c.locals = {'infos': [{'reason': reason, 'lesson': lesson, 'steps': steps}],
                         'dones': [True]}
             c._on_step()
 
@@ -263,7 +288,8 @@ def self_check():
     assert c.active == [1], f"unlocked on {UNLOCK_MIN - 1} episodes, below UNLOCK_MIN"
     feed(c, 1, 'success')
     assert c.active == [1, 2], f"did not unlock at {UNLOCK_MIN} successes: {c.active}"
-    assert env.calls[-1] == ('set_active', ([1, 2], [1 - NEW_SHARE, NEW_SHARE])), env.calls[-1]
+    assert env.calls[-1][0] == 'set_active' and env.calls[-1][1][0] == [1, 2] and \
+        np.allclose(env.calls[-1][1][1], [1 - NEW_SHARE, NEW_SHARE]), env.calls[-1]
     # the point of mixing: unlocking must never drop a lesson from the pool
     assert 1 in c.active, "lesson 1 left the pool -- that is the forgetting bug"
 
@@ -271,15 +297,24 @@ def self_check():
     assert c.active == [1, 2], "unlocked lesson 3 while lesson 2 was failing"
     # ...and while it fails it is drawn NEW_SHARE of the time, not half: the 10.8M
     # run spent 8M steps on a lesson at 0 % and lost the one before it to it
-    assert c.weights() == [1 - NEW_SHARE, NEW_SHARE], c.weights()
+    assert np.allclose(c.weights(), [1 - NEW_SHARE, NEW_SHARE]), c.weights()
     feed(c, 2, 'success', WINDOW)
     assert c.active == [1, 2, 3], "never unlocked lesson 3 despite a clean window"
-    assert any(call[1][1] is None for call in env.calls), (
+    assert any(len(call[1][1]) == 2 and np.allclose(call[1][1], [0.5, 0.5]) for call in env.calls), (
         "the pool was never re-drawn evenly once lesson 2 started passing")
-    assert c.weights() == [(1 - NEW_SHARE) / 2] * 2 + [NEW_SHARE], c.weights()
-    feed(c, 3, 'success', WINDOW)
+    assert np.allclose(c.weights(), [(1 - NEW_SHARE) / 2] * 2 + [NEW_SHARE]), c.weights()
+    # ...and the share is of the STEPS: a failing lesson whose episodes run 1490
+    # steps against 200 is drawn rarely enough that it still gets NEW_SHARE of them
+    feed(c, 1, 'success', 5, steps=200)
+    feed(c, 2, 'success', 5, steps=200)
+    feed(c, 3, 'fell', 5, steps=1490)
+    w = c.weights()
+    steps_share = w[2] * 1490 / (w[0] * 200 + w[1] * 200 + w[2] * 1490)
+    assert abs(steps_share - NEW_SHARE) < 1e-9 and w[2] < 0.06, (w, steps_share)
+    feed(c, 3, 'success', WINDOW, steps=400)
     assert c.active == [1, 2, 3], "unlocked past the end of the pool"
-    assert c.weights() is None, "a pool whose newest lesson passes must be drawn evenly"
+    w = c.weights()
+    assert abs(w[0] * 200 - w[2] * 400) < 1e-9, f"a pool whose newest lesson passes must share the steps evenly: {w}"
 
     n, r = c.rate(2)
     assert n == WINDOW and r == 1.0, (n, r)
@@ -307,8 +342,9 @@ def self_check():
     assert after >= before, (f"unlocking a lesson dropped the score {before:.2f} -> "
                              f"{after:.2f}; best_model.zip will freeze at the old one")
     print(f"curriculum: unlocks at {UNLOCK_AT:.0%} over {UNLOCK_MIN}+ episodes, "
-          f"keeps every lesson in the pool, draws a failing new lesson {NEW_SHARE:.0%} of "
-          f"the time until it passes {WARM_RATE:.0%}, survives a save/load. OK")
+          f"keeps every lesson in the pool, gives a failing new lesson {NEW_SHARE:.0%} of "
+          f"the STEPS until it passes {WARM_RATE:.0%} (drawn by length, not by episode), "
+          f"survives a save/load. OK")
 
 
 def main():

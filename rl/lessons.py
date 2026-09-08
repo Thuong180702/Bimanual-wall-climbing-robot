@@ -85,6 +85,26 @@ PAD = [
 ]
 
 
+# A second touch zone on each hook: the LIP, the underside of the mouth. The one
+# thing on the wall map a free hand can feel is the END of a rung, and it touches
+# the hook there and only there -- measured over 252 end contacts, every one at
+# z = -110 mm in the hook frame, while every seat, loaded or light, touches at
+# z >= -98 (the top face of the lip). Same sensor as the grip pad, split in two:
+# the throat says "on a rung", the lip says "against the end of one". The
+# estimator uses it to find out how far the holding hook has crept (`_end_contact`).
+TIP = [
+    ('<site name="s_grip_L" type="box" pos="0.02600 0 -0.05900" size="0.02400 0.03250 0.06300"/>',
+     '<site name="s_grip_L" type="box" pos="0.02600 0 -0.05900" size="0.02400 0.03250 0.06300"/>\n'
+     '                            <site name="s_tip_L" type="box" pos="0.01000 0 -0.11100" size="0.02200 0.03500 0.00600"/>'),
+    ('<site name="s_grip_R" type="box" pos="0.02600 0 -0.05900" size="0.02400 0.03250 0.06300"/>',
+     '<site name="s_grip_R" type="box" pos="0.02600 0 -0.05900" size="0.02400 0.03250 0.06300"/>\n'
+     '                            <site name="s_tip_R" type="box" pos="0.01000 0 -0.11100" size="0.02200 0.03500 0.00600"/>'),
+    ('<touch  name="grip_L"      site="s_grip_L"/>',
+     '<touch  name="grip_L"      site="s_grip_L"/>\n    <touch  name="tip_L"       site="s_tip_L"/>'),
+    ('<touch  name="grip_R"      site="s_grip_R"/>',
+     '<touch  name="grip_R"      site="s_grip_R"/>\n    <touch  name="tip_R"       site="s_tip_R"/>'),
+]
+
 def _ry(name, y0, y1, z, x=0.44):
     """a front/back-wall rung, axis along y"""
     return (f'    <geom name="rung_{name}" class="hold" size="0.0150" '
@@ -265,7 +285,7 @@ def write(lesson):
     xml = xml.replace('<mujoco model="bimanual_wall_climber_scene">',
                       f'<mujoco model="{lesson_tag(lesson)}_{spec["name"]}">')
     xml = xml.replace('meshdir="meshes/"', 'meshdir="../meshes/"')
-    for old, new in WIDEN + PAD:
+    for old, new in WIDEN + PAD + TIP:
         assert old in xml, f"scene.xml changed; patch target not found: {old}"
         xml = xml.replace(old, new)
     head, rest = xml.split('    <!-- ===== walls ===== -->')

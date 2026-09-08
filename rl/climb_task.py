@@ -35,6 +35,20 @@ AHRS_TAU = 2.0           # s: how slowly the torso attitude leans on the acceler
                          # rms on lessons 1 / 2, and the free hand 16 / 12 mm. Measured
                          # over tau: 0.5 s 24 mm, 2 s 16, 5 s 18, 20 s 37, gyro alone
                          # 83 -- the accelerometer still has to pin the drift.
+SEAT_IN = 0.0325         # m: half the hook's width along the rung. A hook centred on the
+                         # geometric end of a rung hangs half off it; the last full seat
+                         # is this far in. The map the policy sees, and the potential it
+                         # is paid on, describe SEATS, not geometry -- the user's point on
+                         # the win9 video: it reached for the end itself and got half a hold
+TIP_AHEAD = 0.038        # m from the throat to where the hook's mouth meets the END of a
+                         # rung: measured 24-48 mm over 416 such contacts (`_end_contact`).
+                         # ponytail: one number for the hook's mouth; calibrate on the real hook
+TIP_TOUCH = 2.0          # N on the LIP pad (`tip_L/R`, a second touch zone on the hook's
+                         # underside, z < -103 mm in the hook frame) that says the mouth is on
+                         # something. Measured: an end face touches the hook at z = -110 mm
+                         # in every one of 252 such contacts; every seat, loaded or light,
+                         # touches at z >= -98. One pad, two zones -- the same sensor, split
+TIP_LOAD = 1.0           # N along the rung through the wrist: which way the push goes
 REACH_TOL = 0.35         # m: a hold placed by arm reach (see `_reach_point`) may sit
                          # this far from the IMU-based guess and still be believed.
                          # The guess is only asked which side of the anchor the hand
@@ -380,6 +394,16 @@ class ClimbTask:
                             self.hold[self.anchor][1], R_torso=self._Rf)
             cA = True
         self._both_conf = both
+        # the free hand's mouth on a rung end moves the ANCHOR's map point: the
+        # free hand is where the map says the end is, so the anchor is wherever
+        # makes that true (its creep, see `_end_contact`)
+        shift = self._end_contact('R' if self.anchor == 'L' else 'L')
+        if shift is not None:
+            nm, pt = self.hold[self.anchor]
+            ax = self.segs[nm][1]
+            self.hold[self.anchor] = (nm, pt + float(shift @ ax) * ax)
+            self.est.update(self.q, self.imu_s, self.anchor,
+                            self.hold[self.anchor][1], R_torso=self._Rf)
         self._anchor_fresh = cA
 
     def _reach_point(self, anchor_pt, L, guess):
@@ -415,6 +439,54 @@ class ClimbTask:
                     best = (err, nm, q)
         return (best[1], best[2]) if best and best[0] < REACH_TOL else None
 
+    def _end_contact(self, side):
+        """the one thing on the map a free hand can FEEL: its mouth on the end face of
+        a rung. Returns how far the anchor's map point must move along its rung so
+        that this hand's estimated mouth sits on that end, or None.
+
+        Why it is needed: the loaded hook creeps along the rung while it holds --
+        85-210 mm per episode on mac16, 100 mm by the first hand-over -- and the
+        anchor's map point does not, so every estimate rooted in it is that far
+        off. Two hooks on a smooth rung have no other world reference; on one
+        continuous rung the creep is invisible and harmless, at a gap it put the
+        far segment 60-210 mm further than it was and the policy pushed its hook
+        into the end face believing it still had that far to go (0/40 for 3M).
+
+        Hardware-legal: the lip pad, the wrist F/T for the direction of the push,
+        the estimated hook frame and the map. A hand that is not holding, whose lip
+        pad is pressed, with an end of some rung FACING the push within REACH_TOL
+        ahead of the estimated throat, has its mouth on that end. The first version
+        gated on the throat pad and the force instead: exact to 3 mm when the mouth
+        really was on an end (80 firings, silent on lesson 1) but a light hand
+        pushed along its OWN rung fired it twice as often, 65-116 mm wrong, and
+        neither the wrist torque's lever arm, the axial fraction of the force nor
+        the hand's speed told the two apart -- the contact POSITION on the hook
+        does, hence the second pad zone (TIP_TOUCH).
+        """
+        h = self.env.hand(side)
+        if h['tip'] <= TIP_TOUCH or self._confirmed(side):
+            return None
+        f = self.est.hook_R(side) @ np.asarray(h['force'])
+        p = self.est.throat(side)
+        best = None
+        for c, a, hh in self.segs.values():
+            fa = float(f @ a)
+            if abs(fa) < TIP_LOAD:
+                continue
+            push = np.sign(fa) * a
+            for e, n in ((c + hh * a, a), (c - hh * a, -a)):
+                if n @ push >= 0:                  # only an end facing the push can be hit
+                    continue
+                ahead = float((e - p) @ push)
+                if ahead <= 0.0 or ahead > REACH_TOL:
+                    continue
+                if best is None or ahead < best[0]:
+                    best = (ahead, push)
+        if best is None:
+            return None
+        ahead, push = best
+        return (ahead - TIP_AHEAD) * push
+
     def _near_rungs(self, p):
         """the N_NEAR rungs closest to p: offset to each one's axis, and its direction;
         and for the nearest one, how far p is from each of its two ends along it.
@@ -432,6 +504,7 @@ class ClimbTask:
         """
         cand = []
         for c, a, h in self.segs.values():
+            h = max(h - SEAT_IN, 0.0)              # the span a hook can actually sit on
             s = float((p - c) @ a)
             q = c + np.clip(s, -h, h) * a
             cand.append((float(np.linalg.norm(p - q)), q - p, a, s, h))
@@ -465,8 +538,8 @@ class ClimbTask:
         return np.concatenate([
             self.q, self.dq, self.tau, self.ctrl,
             self.imu_s['accel'], self.imu_s['gyro'], self.imu_s['mag'],
-            hl['force'], hl['torque'], [hl['pad']],
-            hr['force'], hr['torque'], [hr['pad']],
+            hl['force'], hl['torque'], [hl['pad'], hl['tip']],
+            hr['force'], hr['torque'], [hr['pad'], hr['tip']],
             goal, near, other, conf]).astype(np.float32)
 
     # ---- training-time oracle (reward / success only) ----------------------
@@ -478,7 +551,8 @@ class ClimbTask:
         """(how far p is off the nearest rung, the point on it) -- the wall map"""
         best = None
         for c, a, h in self.segs.values():
-            q = c + np.clip(float((p - c) @ a), -h, h) * a
+            hs = max(h - SEAT_IN, 0.0)
+            q = c + np.clip(float((p - c) @ a), -hs, hs) * a
             d = float(np.linalg.norm(p - q))
             if best is None or d < best[0]:
                 best = (d, q)
@@ -791,6 +865,7 @@ class ClimbTask:
              - K_ACT * float(a @ a) - K_VEL * float(self.dq @ self.dq))
         self.held, self.prev_d, self.prev_live = held, d, live
         info = {'dist': float(d.sum()), 'live': float(live.sum()), 'lesson': self.lesson,
+                'steps': self.n_steps,
                 'off': float(free.sum()), 'parked': parked, 'stale': stale,
                 'touch': touch.copy(), 'flight': float(flight), 'bank': bank,
                 'loaded_start': was.copy(),
@@ -1145,7 +1220,9 @@ def main():
     hover = edge + 0.04 * a0
     hang = edge + 0.30 * a0 - np.array([0.134, 0.0, 0.467])
     assert np.linalg.norm(hang - g) < np.linalg.norm(hover - g), "the dive is no longer nearer in 3D"
-    assert t._cost(hang, g) > t._cost(hover, g) + 0.10, (t._cost(hang, g), t._cost(hover, g))
+    # (the hover is itself 72 mm from the last SEAT of the segment, SEAT_IN, so the
+    # dive's loss against it is ~80 mm, not the 146 against the geometric end)
+    assert t._cost(hang, g) > t._cost(hover, g) + 0.05, (t._cost(hang, g), t._cost(hover, g))
     on = c0 - 0.10 * a0
     assert abs((t._cost(on, g) - t._cost(on + 0.30 * a0, g)) - 0.30) < 1e-9, "progress along the rung must be paid in full"
     assert t._cost(hover, g) < t._cost(edge, g) + 0.05, "hovering just past the edge is charged the air, nothing more"

@@ -80,9 +80,13 @@ class ClimbingEnv:
         return out
 
     def hand(self, side):
+        try:
+            tip = float(self.sensor('tip_'+side)[0])   # the RL scenes' lip pad (rl/lessons.py)
+        except KeyError:
+            tip = 0.0
         return dict(force=self.sensor('ft_force_'+side),
                     torque=self.sensor('ft_torque_'+side),
-                    pad=self.sensor('grip_'+side)[0])
+                    pad=self.sensor('grip_'+side)[0], tip=tip)
 
     # ---- latch detection --------------------------------------------------
     def seat(self, side, geom):
