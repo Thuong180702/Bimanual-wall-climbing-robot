@@ -498,6 +498,21 @@ the free hand's error was the attitude (see the reward table): the IMU triad the
 filter leaned on reads 18–30° under the impacts of a climb. The SLAM attitude now
 pins the filter: 0.2° / 1–3°, the hand 13 / 40 mm, the false seat 2.7 %.
 
+Resumed to 13M with that estimator: 1.35 unlocked and reached 28 % — and then
+lesson 1 fell from 92 % to **5 %** in 2M steps, 1.2 from 90 to 52 %, the third
+such swing in one run. Not the estimate (15 / 25 mm, 0.2° on this policy) and not
+one lesson's exploit: on lesson 1 the right hand was off the wall 68 % of the time
+taking the 40–66 mm lifts lesson 1.35 was teaching, and half the episodes fell.
+Seven lessons of a 145-dim observation in SB3's default 64×64 network, updated on
+2048 steps at a time (one to four episodes of a 60 s lesson), and the policy swings
+between the lessons instead of holding them. The network is 256×256 and an update
+sees 8192 steps now. Two more things the 13M replays showed, both the policy's:
+on lesson 1.2 the left hand sometimes seats on the very edge of the far segment
+(0.40–0.45) and holds, which leaves no room for the right hand's goal at 0.45
+behind it, and the pair waits out the episode; and on 1.35 the left hand reaches
+across (83 % off the wall) without landing — the right hand up beside it first,
+which it does on 1.2, it does not yet do on 1.35.
+
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 
 10.8M steps on the curriculum with lessons −2 … 1.5. The best checkpoint, at 2.66M:

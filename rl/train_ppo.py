@@ -399,9 +399,16 @@ def main():
               f"pool {state.get('active')}")
     else:
         venv = VecNormalize(base, norm_reward=False)
+        # 256x256 and 8192 steps per update, not SB3's 64x64 on 2048: one policy
+        # carries seven lessons of a 145-dim observation, and on the small net with
+        # short rollouts (1-4 episodes of a 60 s lesson per update) it oscillated --
+        # lesson 1 went 92 % -> 5 % in 2M steps three times in one run (mac20)
+        # while the gap lessons were being learnt, the estimator measured right
+        # throughout. ponytail: two knobs from the locomotion literature, no sweep
         model = PPO('MlpPolicy', venv, device=a.device, verbose=1,
-                    n_steps=256, batch_size=512, gamma=0.995, gae_lambda=0.95,
-                    learning_rate=3e-4, ent_coef=a.ent_coef)
+                    n_steps=1024, batch_size=512, gamma=0.995, gae_lambda=0.95,
+                    learning_rate=3e-4, ent_coef=a.ent_coef,
+                    policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])))
 
     # A resume may narrow the pool -- dropping a mastered lesson is the point of
     # `--lessons` on a resume -- so the restored active set has to be filtered to it
