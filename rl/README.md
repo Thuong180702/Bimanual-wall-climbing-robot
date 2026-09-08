@@ -245,6 +245,9 @@ asserts all of it.
 | finger inside `GRIP_BAND` gates `_holding` and `_success` | nothing ever asked a finger to close, and the simulator lets an open hook carry the whole robot. The 10M policy held with the finger at +20° for most of an episode. There are **two** ways out of the band and it used both — the left hand opened, the right ratcheted −36 → −46 → −37, past the −45° cliff where pull-off drops from >1200 N to 72 N |
 | every hold test reads **contact force** (`_contact`) | see the section below — this replaced `ON_RUNG`, `CLEAR_OF` and `env.latched`, all three of which were proxies a policy could satisfy without holding, or *fail* while holding |
 | progress measured **at the rung** (`_route`, `_cost`) | the straight-line distance to a goal 1.4 m along the wall paid the `win9` policy +0.3–0.4 m for dropping half a metre under the far segment — the nearest it could get to the goal with the other hand parked — and it hung there for 58 s in 20/20 episodes: lesson 1.5 at 0 % for 5.3M steps with every earlier lesson above 80 % (the `win9` section). The bank now measures each hand at its **rung point** (nearest point on any rung) to the goal, which a loaded hook can move only by sliding, and sliding is charged; the live reach adds the detour off the rung, both hands, both ways. Identical along a rung (lesson 1 replays to the same reward); a dive is charged live and refunded on the way back up. The detour must stay out of the bank: a loaded hook's throat sits 30–80 mm off its line under load, uncharged, and with the detour banked that was refunded on every re-seat — the first check run banked 56 m per episode on it. Route test: the same dive is +137 mm straight-line, −146 mm at the rung; a loaded hook pulled 30 mm off its line moves the bank 0 |
+| the map describes **seats**, not geometry (`SEAT_IN`) | the nearest-rung offsets and the end distances the policy sees, and the potential it is paid on, clip each rung half a hook-width (32.5 mm) in from its ends: a hook centred on the geometric end hangs half off it. On the `win9` video the hook ratcheted to the very end of its segment and let go — the user's reading of it |
+| a second touch zone on the hook's **lip** (`tip_L/R`) and the rung end as a landmark (`_end_contact`) | the loaded hook creeps along the rung while it holds — 85–210 mm per episode on `mac16`, 100 mm by the first hand-over — and the estimator's anchor cannot see it: two hooks on a smooth rung have no world reference. At a gap the far segment then read 60–210 mm too far and the hook was pushed into its end face 38 mm short. The end face is the one map feature a free hand can *feel*: every end contact touches the hook at z = −110 mm in its frame, every seat at z ≥ −98, so the pad is split in two zones and the lip's says "mouth on an end". The estimator then moves the anchor's map point so the estimated mouth sits on that end. Replayed on the mac16 policy: −5 mm at contact (was +89), silent on lesson 1. The F/T-only version of the rule was tried first — exact when true, but a light hand pushed along its own rung fired it 2× as often, 65–116 mm wrong, and no force feature separated the two; the contact position does |
+| draws by share of **steps**, not episodes | a stuck lesson-1.5 episode runs 1490 steps against ~200 for a one-step lesson, so at a quarter of the draws it was 60 % of the samples, and what it learnt there — left hand sweeping the rung, right hand still — was learnt in the states lesson −1 starts from, which needs the opposite: −1 fell from 90 % to 0–2 % in both check runs. Each lesson's share is divided by its mean episode length. `mac18`: −1 at 92 % |
 | `STALE_AFTER` 8 s → **2.5 s** | the threshold was longer than the episode it policed. The winning lesson-1 run is 5.8 s, so the hand that never released was charged exactly 0.00 |
 | `MIN_GRABS` in `_success` | the task was completable with **neither hand ever leaving the rung**: 1 m traversed with the right hook never further than 24 mm from the rail and the left hand carrying under 10 N for 89 % of the episode. Alternating grips is not one way of doing this task, it is the task |
 | finger setpoint stopped at the **band's edge** | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N, so the stop went to the cliff. That left a 5° trap: a policy that squeezes as hard as it can sits at −40…−44° under load — a fine hold physically (98–179 N) that neither the reward nor the estimator recognised, because both ask for `GRIP_BAND`. On the 10.8M `win8` policy **90 %** of loaded steps on lesson 1.5 (34 % on lesson 1) were "not gripping" for that reason alone; the estimator kept its anchor on a hand that was moving and saw the far ledge 240–500 mm from where it was. The stop is now the band's edge, −40°: squeeze as hard as you like, it is in band (375/382 loaded steps while swinging, asserted) |
@@ -423,19 +426,21 @@ hand-over, and the estimator's anchor point does not move. Two hooks on a smooth
 rung have no world reference, so this creep is unobservable on a continuous rung
 (where it does not matter) and fatal at a gap. It is not the solver's tangential
 slip: `noslip_iterations` removes the drift under a static 25 N pull (25 → 0 mm) but
-the policy's own loading still slides the hook 489 mm per episode with it on. The one
-hardware-legal world reference at a gap is the free hook's tip on the far segment's
-end face, and a rule on the sensors the loop has (pad loaded, finger in band, not
-holding, wrist force along the rung, a facing rung end within `REACH_TOL`) is exact
-when the tip really is there — 80 firings, correction within 3 mm — and silent on
-lesson 1, but it also fires when a light hand is pushed along its own rung, 2× as
-often, 65–116 mm wrong; neither the wrist torque's lever arm nor the axial fraction
-of the force separates the two. Unresolved: a touch sensor on the hook's mouth
-would, and is a hardware decision. And lesson −1 collapsed to 0–2 % late in both
-check runs of the both-ends rule (80 % under the start-of-step rule, 92 % in win9):
-on it the policy flutters the left hand 35 times per episode and never moves the
-right — the hand that has to step. Not yet diagnosed; treat a 20M run on this
-revision as a test of that, not of lesson 1.5.
+the policy's own loading still slides the hook 489 mm per episode with it on. Three
+things followed, each in the reward table: the rung end as a landmark felt through
+a second touch zone on the hook's lip; the map and the potential describing seats
+rather than geometry; and the curriculum drawing by share of steps, because lesson
+−1 had collapsed to 0–2 % in both check runs of the both-ends rule — a stuck
+1490-step lesson-1.5 episode was 60 % of the samples at 25 % of the draws, and its
+behaviour was learnt in lesson −1's own states.
+
+With all of it (`mac18`, 3M): −2 100 %, **−1 92 %**, 0 92 %, 1 60 %, 1.5 0/40 —
+but the far segment is reached and *held* now, in 12 of 16 episodes, by the wrong
+hand: the right hook crosses over the left, which never moves, and hangs on the far
+segment for ~1000 steps paying `K_SEP` −41 per episode for the crossing. The events
+lesson 1.5 needs are happening and the credit is paying them; the order the user
+described (lead hand to its last seat, trailing hand up beside it, then reach) is
+what the −41 has to teach next.
 
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 
