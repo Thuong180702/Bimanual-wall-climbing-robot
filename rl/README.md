@@ -513,7 +513,29 @@ standard PPO recipe the runs had been missing — the learning rate decays linea
 to zero over the run — so the early lessons learn at full speed and the late
 updates, where the pool is large, are small; and the `best_` checkpoint keeps the
 peak (mac20's, at 11.1M: −2 100, −1 98, 0 90, 1 92, 1.1 100, 1.2 90, 1.35 22 %).
-Two more things the 13M replays showed, both the policy's:
+And then the estimator that was right on replay turned out to be one a policy
+cannot learn *from*: six fresh runs with the SLAM attitude and/or `SLAM_TAU` 0.3 s
+never learnt lesson −1 (0 % for 1–4M steps), while the same code with the triad
+attitude and 1 s passes it in 0.3–0.4M. The bisect, 1M steps each:
+
+| estimator | lesson −1 |
+|---|---|
+| A: triad attitude, `SLAM_TAU` 0.3 | 0 % at 1M |
+| B: SLAM attitude, `SLAM_TAU` 1.0 | 0 % at 1M |
+| C: triad attitude, `SLAM_TAU` 1.0 | passed at 0.3M, lesson 1 by 1M |
+| D: as B + a variance floor in VecNormalize | 0 % at 1M |
+| E: as C + the floor | passed at 0.4M, **lesson 1.2 unlocked by 1M** |
+
+A trained policy (mac19) solves lesson −1 12/12 under all of them with the same
+reward; the reward is ground truth in all of them; the failing policies move the
+left hand forward and dangle the right, lesson −2's behaviour. The variance floor
+(1 cm; a feature whose std the estimator's accuracy had shrunk to 0.6 mm was
+being normalised to the ±10 clip) was the first hypothesis and is not it, though
+it stays, since E was the fastest early curriculum of any run. The mechanism is
+open. The training estimator is C's; the SLAM attitude remains available in
+`ClimbingEnv.slam()` and is the thing to try once a policy has passed the gap
+lessons, the way mac20 took it at 10M. Two more things the 13M replays showed,
+both the policy's:
 on lesson 1.2 the left hand sometimes seats on the very edge of the far segment
 (0.40–0.45) and holds, which leaves no room for the right hand's goal at 0.45
 behind it, and the pair waits out the episode; and on 1.35 the left hand reaches

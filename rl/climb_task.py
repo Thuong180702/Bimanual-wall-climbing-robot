@@ -25,11 +25,11 @@ FRAME_SKIP = 20          # sim steps per control step: 0.002 s x 20 = 25 Hz
 ACT_SCALE = 0.06         # rad of setpoint travel per control step (1.5 rad/s max)
 LATCH_TOL = 0.15         # m from the goal point that still counts, given a latch
 RUNG_TOL = 0.06          # m: estimated throat this close to a rung axis = that rung
-SLAM_TAU = 0.3           # s: how slowly the anchor's map point follows the SLAM position
-                         # along its rung. Swept on the mac20 policy's replays: at 1 s the
-                         # free hand's error was p90 69 mm on lesson 1.2 and 85 on lesson 1
-                         # (the anchor's creep and rocking outrun the filter); at 0.3 s,
-                         # 48 and 41, for ~5 mm more noise at the median (`_sense`)
+SLAM_TAU = 1.0           # s: how slowly the anchor's map point follows the SLAM position
+                         # along its rung. 0.3 s was better on replay (free hand p90 69 ->
+                         # 48 mm on lesson 1.2) and, alone, stopped a fresh policy from
+                         # learning lesson -1 (bisect A: 0 % for 1M steps; C at 1.0 s:
+                         # passed at 0.3M). Mechanism unknown; see `_sense` and the README
 AHRS_TAU = 2.0           # s: how slowly the torso attitude leans on the accelerometer.
                          # The bare triad (accel + mag, no state) is what the classical
                          # controller uses, and while the body swings it is wrong by
@@ -349,26 +349,24 @@ class ClimbTask:
         self.dq = np.array([enc[j][1] for j in JOINTS])
         self.tau = np.array([enc[j][2] for j in JOINTS])
         self.imu_s = self.env.imu(raw_only=True)
-        # Attitude: the gyro carries it across the step, the SLAM attitude pins the
-        # drift. The IMU triad did that first: alone it reads the body's own swing
-        # as tilt (26.5 deg rms; the free hand 91-130 mm off) and filtered it was
-        # 1.1 deg on a still hang -- but 4 deg p50 / 6 deg p90 / 15 max during the
-        # climb itself, where every hand-over is an impact, and on a 0.5 m lever
-        # that was 35-55 mm at the hand, the floor under everything else (mac20).
-        # The lidar SLAM's attitude does not care about accelerations.
+        # Attitude: the gyro carries it across the step, the IMU triad pins the
+        # drift. The triad alone reads the body's own swing as tilt -- 26.5 deg rms,
+        # the free hand 91-130 mm off; filtered it reads 1.1 deg on a still hang and
+        # 4 deg p50 / 6 p90 / 15 max during the climb, where every hand-over is an
+        # impact (35-55 mm at the hand on a 0.5 m lever). The SLAM's attitude fixed
+        # that on replay -- 0.2 deg, the hand 13/40 mm instead of 36/80 -- and a
+        # trained policy ran fine under it, but a policy trained FROM SCRATCH with it
+        # never learnt lesson -1 (0 % for 1-4M steps, six runs, two independent
+        # changes each sufficient: this and SLAM_TAU 0.3), against 0.3-0.4M with
+        # this filter. Not the observation's scale (a variance floor in VecNormalize
+        # did not help), mechanism unknown -- see the README. So this is what the
+        # policy trains under; the SLAM attitude is `self.env.slam()[1]`, unused.
         dt = FRAME_SKIP * self.dt
         self._Rf = self._Rf @ _rotm(self._w_sum * (dt / FRAME_SKIP))
         self._w_sum[:] = 0.0
-        p_slam, R_slam_base = self.env.slam()
-        # the SLAM reports the base; the filter tracks torso_upper, a waist away.
-        # Their relative rotation depends on the joint angles only, so read it off
-        # the scratch model posed with this step's encoders
-        self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1],
-                        R_torso=self._Rf)
-        d_ = self.est.d
-        R_slam = R_slam_base @ (d_.xmat[self.est.base].reshape(3, 3).T
-                                @ d_.xmat[self.est.torso].reshape(3, 3))
-        self._Rf = self._Rf @ _rotm((dt / AHRS_TAU) * rotvec(self._Rf.T @ R_slam))
+        p_slam, _ = self.env.slam()
+        R_tri = triad(self.imu_s['accel'], self.imu_s['mag'])
+        self._Rf = self._Rf @ _rotm((dt / AHRS_TAU) * rotvec(self._Rf.T @ R_tri))
         self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1],
                         R_torso=self._Rf)
         # The loaded hook creeps along its rung while it holds -- 85-210 mm per

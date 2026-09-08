@@ -398,7 +398,15 @@ def main():
         print(f"resumed {run} at {model.num_timesteps} steps, "
               f"pool {state.get('active')}")
     else:
-        venv = VecNormalize(base, norm_reward=False)
+        # epsilon 1e-4 puts a floor of 0.01 under every feature's normalising std: 1 cm
+        # on the map-relative features, 0.6 deg on a joint, nothing on forces. Without
+        # it the scale of the policy's input was set by the estimator's noise: the
+        # right hand never moves on lesson -2, so its map features had ~0 variance,
+        # and on lesson -1 its first motions were normalised to the +-10 clip -- a
+        # cliff -- and the lesson stayed at 0 % for 1-4M steps in five runs, all with
+        # a MORE accurate estimator (nearL[98] std 0.6 mm against 4.7 with the old
+        # one, which had learnt it in 0.3M). Accuracy below a centimetre is not signal.
+        venv = VecNormalize(base, norm_reward=False, epsilon=1e-4)
         # SB3's 64x64 and 256 x 8 envs = 2048 steps per update, with the learning
         # rate decaying linearly to zero over the run. With seven lessons in the
         # pool the policy swung between them -- lesson 1 went 92 % -> 5 % in 2M
