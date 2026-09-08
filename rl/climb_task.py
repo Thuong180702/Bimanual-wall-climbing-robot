@@ -125,6 +125,15 @@ K_FIGHT = 5e-5           # per step, per N of grip above body weight
 K_TIME = 0.003           # per step. A whole 1500-step episode costs 4.5 against
                          # SUCCESS_R's 10, so finishing early is worth real points
                          # and giving up early still loses (FAIL_R is -10).
+MIN_OFF = 3              # control steps (120 ms) a hand must be clear of the rung
+                         # before its next hold is a hold. A 3M local policy on the
+                         # 0.12 m gap took 578 "holds" per episode with the right
+                         # hand, one every 2-3 steps, and banked 20 m of credit on a
+                         # body that moved 0.4 m: the left hand crept backwards while
+                         # loading on alternate steps only -- dodging the slide charge,
+                         # which asked for load at both ends of a step -- and every
+                         # re-touch of the right hand banked the relative gain. A
+                         # re-grip inside 40 ms is not a climbing move; see step().
 MIN_GRABS = 1            # real holds each hand must take before success counts. A
                          # grab is the `took` event the anchor already uses: the hand
                          # lost contact with the rung entirely and then came back
@@ -649,6 +658,7 @@ class ClimbTask:
         sep = self._throat_true('L') - self._throat_true('R')
         self.cross_sign = float(np.sign(sep @ self.cross_axis)) or 1.0
         self.off_t = np.zeros(2)          # TOTAL control steps each hand has been off
+        self.off_run = np.zeros(2)        # consecutive control steps each hand has been off
         self.held_t = np.zeros(2)         # steps since each hand was last fully clear
         self.n_steps = 0
         self._flight = 0
@@ -669,12 +679,15 @@ class ClimbTask:
         dp = thr - self.prev_thr
         loaded, slide = touch > HOLD_LOAD, 0.0
         for k, (_, on) in enumerate(con):
-            if loaded[k] and self.prev_loaded[k] and on:
+            # loaded at EITHER end of the step: loading on alternate steps only was
+            # how a policy crept a holding hook backwards for free (MIN_OFF)
+            if (loaded[k] or self.prev_loaded[k]) and on:
                 ax = self.segs[next(iter(on))][1]
                 slide += abs(float(dp[k] @ ax))
         self.prev_thr, self.prev_loaded = thr, loaded
         self.n_steps += 1
         self.off_t += free                      # cumulative: never reset by a touch
+        self.off_run = np.where(free, self.off_run + 1, 0)   # consecutive steps clear
         self.held_t = np.where(free, 0.0, self.held_t + 1)
         grace = DANGLE_GRACE / (FRAME_SKIP * self.dt)
         parked = float(np.sum(free & (self.off_t > grace)
@@ -685,8 +698,8 @@ class ClimbTask:
         # taking a new hold, and a hand that never leaves the rung banks progress --
         # which is what the 5.1M policy was doing on both hands.
         flight = self._flight > 0
-        if not flight:
-            self.let_go |= free             # letting go while the other hand holds
+        if not flight:                      # letting go while the other hand holds --
+            self.let_go |= self.off_run >= MIN_OFF   # and staying off long enough to mean it
         # ...and while the OTHER hand still carries the weight: three points of
         # contact. A hold taken with nothing else loaded was a jump's landing or a
         # hand-over with a gap in it, and the gap is where the map goes wrong: on
@@ -1116,9 +1129,11 @@ def main():
     assert list(info['grabs']) == [1, 0], f"landing from a jump counted a grab: {info['grabs']}"
     assert abs(paid) < 1e-9 and info['banked'] <= 1e-9, (
         f"a 0.6 m jump banked {paid*1000:.0f} mm, {info['banked']*1000:.0f} pending")
-    # the tap: the left hand touches the rung right after the jump -- worth nothing
+    # the tap: the left hand lets go properly (MIN_OFF steps clear) and touches the
+    # rung again right after the jump -- a hold, worth nothing
     st['L'] = (0.0, set())
-    t.step(z)
+    for _ in range(MIN_OFF):
+        t.step(z)
     st['L'] = on['L']
     _, _, _, _, info = t.step(z)
     assert list(info['grabs']) == [2, 0], "a supported let-go after a jump must count again"
@@ -1140,6 +1155,30 @@ def main():
     assert list(info['grabs']) == [3, 0] and abs(info['bank']) < 1e-9, (
         f"the tap after a drag banked {info['bank']*1000:.0f} mm")
     assert slid > 0.15, f"a 0.2 m drag of a loaded hook registered {slid*1000:.0f} mm of slide"
+    # the flutter drag: the holder loads on alternate steps only while creeping
+    # backwards, the free hand is credited the relative gain and re-grips every
+    # other step. Must pay nothing: the creep is charged as a slide whichever end
+    # of the step the load is on, and a re-grip inside MIN_OFF steps is no hold.
+    st['L'] = on['L']
+    st['R'] = (0.0, set())
+    for _ in range(MIN_OFF + 1):                  # a clean let-go, then one honest hold
+        t.step(z)
+    st['R'] = on['R']
+    t.step(z)
+    g0 = t.grabs.copy(); paid = 0.0; charged = 0.0
+    for j in range(12):
+        st['L'] = on['L'] if j % 2 == 0 else (5.0, {'rung_start'})   # loaded / light, on the rung
+        st['thr']['L'] -= 0.02 * uL                                   # creeping back
+        st['d'][0] += 0.02
+        st['R'] = on['R'] if j % 2 == 0 else (0.0, set())              # lifted one step, back when L is loaded
+        _, r, _, _, info = t.step(z)
+        paid += info['bank']; charged += info['slide']
+    assert (t.grabs - g0).sum() == 0, f"re-grips after one-step lifts counted {t.grabs - g0} holds"
+    assert abs(paid) < 1e-9, f"the flutter drag banked {paid*1000:.0f} mm"
+    assert charged > 0.2, f"a 0.24 m creep with alternate loading was charged for {charged*1000:.0f} mm"
+    st['R'] = on['R']
+    t.credit[:] = 0.0                             # the creep's debit is not the next case's
+
     # ordinary physics must not bleed: the holder settling back and forth under a
     # stationary free hand, and two loaded hooks settling together, both net 0.
     # The one-sided draft of this rule charged a known-good one-hand step -220 mm
@@ -1168,7 +1207,8 @@ def main():
     print("jump/drag test: a supported 0.3 m reach banks 300 mm; a 0.6 m jump banks 0, "
           "counts no grab and is charged; the tap after it banks 0; a 0.2 m drag of "
           f"the loaded hook credits 0, banks 0 on the next tap and is charged {K_SLIDE*slid:.1f}; "
-          "a holder settling +-20 mm credits the free hand 0, two loaded hooks settling credit 0")
+          "a holder settling +-20 mm credits the free hand 0, two loaded hooks settling credit 0; "
+          "the flutter drag counts no hold, banks 0 and is charged")
 
     # No pump, proved rather than hoped. The live term is a potential and must
     # telescope to the endpoints exactly; the bank pays credit that never exceeds
