@@ -398,28 +398,19 @@ def main():
         print(f"resumed {run} at {model.num_timesteps} steps, "
               f"pool {state.get('active')}")
     else:
-        # epsilon 1e-4 puts a floor of 0.01 under every feature's normalising std: 1 cm
-        # on the map-relative features, 0.6 deg on a joint, nothing on forces. Without
-        # it the scale of the policy's input was set by the estimator's noise: the
-        # right hand never moves on lesson -2, so its map features had ~0 variance,
-        # and on lesson -1 its first motions were normalised to the +-10 clip -- a
-        # cliff -- and the lesson stayed at 0 % for 1-4M steps in five runs, all with
-        # a MORE accurate estimator (nearL[98] std 0.6 mm against 4.7 with the old
-        # one, which had learnt it in 0.3M). Accuracy below a centimetre is not signal.
-        venv = VecNormalize(base, norm_reward=False, epsilon=1e-4)
-        # SB3's 64x64 and 256 x 8 envs = 2048 steps per update, with the learning
-        # rate decaying linearly to zero over the run. With seven lessons in the
-        # pool the policy swung between them -- lesson 1 went 92 % -> 5 % in 2M
-        # steps three times in one run (mac20), the estimator right throughout --
-        # and the two obvious stabilisers both killed the early curriculum: 8192
-        # steps per update left lesson -1 at 0 % for 4M steps (mac21), a 256x256
-        # net left lesson -2 at 0 % for 1.5M (mac22), against 0.14M and 0.1M here.
-        # The decay leaves the early lessons at full speed and makes the late
-        # updates, where the pool is large, small. (On --resume the schedule
-        # restarts from the top over the additional steps.)
+        venv = VecNormalize(base, norm_reward=False)
+        # SB3's defaults, and every attempt to improve on them cost the early
+        # curriculum. With seven lessons in the pool the policy swings between
+        # them (lesson 1 went 92 % -> 5 % in 2M steps three times in mac20, the
+        # estimator right throughout), so: 8192 steps per update left lesson -1 at
+        # 0 % for 4M steps (mac21); a 256x256 net left lesson -2 at 0 % for 1.5M
+        # (mac22); a linear learning-rate decay plus a VecNormalize variance floor
+        # left -1 at 0 % for 1.1M (mac24) -- against 0.14M here. The swings are
+        # real and unsolved; `best_` keeps the peak. Do not change these three
+        # without a 1M run that reaches lesson 1: that is the cheap canary.
         model = PPO('MlpPolicy', venv, device=a.device, verbose=1,
                     n_steps=256, batch_size=512, gamma=0.995, gae_lambda=0.95,
-                    learning_rate=lambda f: 3e-4 * f, ent_coef=a.ent_coef)
+                    learning_rate=3e-4, ent_coef=a.ent_coef)
 
     # A resume may narrow the pool -- dropping a mastered lesson is the point of
     # `--lessons` on a resume -- so the restored active set has to be filtered to it
