@@ -505,8 +505,15 @@ one lesson's exploit: on lesson 1 the right hand was off the wall 68 % of the ti
 taking the 40–66 mm lifts lesson 1.35 was teaching, and half the episodes fell.
 Seven lessons of a 145-dim observation in SB3's default 64×64 network, updated on
 2048 steps at a time (one to four episodes of a 60 s lesson), and the policy swings
-between the lessons instead of holding them. The network is 256×256 and an update
-sees 8192 steps now. Two more things the 13M replays showed, both the policy's:
+between the lessons instead of holding them. The two obvious stabilisers were
+tried and both killed the early curriculum: 8192 steps per update left lesson −1
+at 0 % for 4M steps (`mac21`), a 256×256 network left lesson −2 at 0 % for 1.5M
+(`mac22`), against 0.14M and 0.1M with the defaults. What is in now is the
+standard PPO recipe the runs had been missing — the learning rate decays linearly
+to zero over the run — so the early lessons learn at full speed and the late
+updates, where the pool is large, are small; and the `best_` checkpoint keeps the
+peak (mac20's, at 11.1M: −2 100, −1 98, 0 90, 1 92, 1.1 100, 1.2 90, 1.35 22 %).
+Two more things the 13M replays showed, both the policy's:
 on lesson 1.2 the left hand sometimes seats on the very edge of the far segment
 (0.40–0.45) and holds, which leaves no room for the right hand's goal at 0.45
 behind it, and the pair waits out the episode; and on 1.35 the left hand reaches

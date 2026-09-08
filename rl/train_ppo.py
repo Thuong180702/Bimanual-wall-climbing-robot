@@ -399,16 +399,19 @@ def main():
               f"pool {state.get('active')}")
     else:
         venv = VecNormalize(base, norm_reward=False)
-        # 256x256 and 8192 steps per update, not SB3's 64x64 on 2048: one policy
-        # carries seven lessons of a 145-dim observation, and on the small net with
-        # short rollouts (1-4 episodes of a 60 s lesson per update) it oscillated --
-        # lesson 1 went 92 % -> 5 % in 2M steps three times in one run (mac20)
-        # while the gap lessons were being learnt, the estimator measured right
-        # throughout. ponytail: two knobs from the locomotion literature, no sweep
+        # SB3's 64x64 and 256 x 8 envs = 2048 steps per update, with the learning
+        # rate decaying linearly to zero over the run. With seven lessons in the
+        # pool the policy swung between them -- lesson 1 went 92 % -> 5 % in 2M
+        # steps three times in one run (mac20), the estimator right throughout --
+        # and the two obvious stabilisers both killed the early curriculum: 8192
+        # steps per update left lesson -1 at 0 % for 4M steps (mac21), a 256x256
+        # net left lesson -2 at 0 % for 1.5M (mac22), against 0.14M and 0.1M here.
+        # The decay leaves the early lessons at full speed and makes the late
+        # updates, where the pool is large, small. (On --resume the schedule
+        # restarts from the top over the additional steps.)
         model = PPO('MlpPolicy', venv, device=a.device, verbose=1,
-                    n_steps=1024, batch_size=512, gamma=0.995, gae_lambda=0.95,
-                    learning_rate=3e-4, ent_coef=a.ent_coef,
-                    policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])))
+                    n_steps=256, batch_size=512, gamma=0.995, gae_lambda=0.95,
+                    learning_rate=lambda f: 3e-4 * f, ent_coef=a.ent_coef)
 
     # A resume may narrow the pool -- dropping a mastered lesson is the point of
     # `--lessons` on a resume -- so the restored active set has to be filtered to it
