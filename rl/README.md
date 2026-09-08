@@ -35,8 +35,9 @@ python -m rl.status --name climber --watch
 ## Lessons
 
 −2. left hand, one step (0.30 m) → −1. right hand, one step (0.30 m, the other way)
-→ 0. both hands, one step (0.40 m) → 1. traverse, continuous rung → 1.5. traverse,
-small gaps (0.12 m) → 2. traverse, gaps (0.25 m) → 3. climb up → 4. up-over-down → 5. climb down → 6. staggered heights →
+→ 0. both hands, one step (0.40 m) → 1. traverse, continuous rung → 1.1. stop at the
+end of a rung → 1.2 / 1.35 / 1.5. traverse gaps of 0.04 / 0.08 / 0.12 m → 2. traverse,
+gaps (0.25 m) → 3. climb up → 4. up-over-down → 5. climb down → 6. staggered heights →
 7. perpendicular wall → 8. wall behind the back → 9. row beyond static reach (needs
 a dynamic move).
 
@@ -441,8 +442,28 @@ With the seats, the step draws and the (since removed) lip landmark (`mac18`,
 reached and *held*, in 12 of 16 episodes, by the wrong hand: the right hook crossed
 over the left, which never moved, and hung on the far segment for ~1000 steps paying
 `K_SEP` −41 per episode for the crossing. The events lesson 1.5 needs are happening
-and the credit is paying them; the order the user described (lead hand to its last
-seat, trailing hand up beside it, then reach) is what the −41 has to teach next.
+and the credit is paying them.
+
+With the SLAM tracking in place of the lip pad (`mac19`, 3M): −2, −1 and 0 at
+**100 %**, lesson 1 at **95 %** (11/12 in audit, 1.0 m in 184 steps, 106 mm of
+loaded slide — the cleanest gait so far), the anchor right to p50 4 mm / p90 16 mm
+on lesson 1.5 — and lesson 1.5 at 0/40 in a new basin: the left hook goes to the
+end of its segment, past its last seat, and hovers there brushing the end (−11 per
+episode, no dangle, no contact with the far segment), the right hand never moving.
+Two numbers explain it. This gait's hops are long — p50 226 mm, p90 307 on lesson 1
+— so the opener lands past the last seat (317 mm) into the gap every time, and the
+hand never retreats the 5–10 cm to a seat: no lesson had ever asked a hand to land
+*short* of somewhere. And crossing from the last seat with the partner still at its
+start asks the arms for 0.54 m plus the gap — 0.66 m on lesson 1.5 against the
+0.67 m static limit, which is why the mac16 hook stopped 38 mm short of the far
+segment, and 0.79 m on lesson 2, which cannot be lunged at all. The climb the user
+described — lead hand to its last seat, trailing hand up beside it, then across — is
+the only way through lesson 2, and it starts with stopping. Three lessons were
+added: **1.1**, one continuous rung ending 3 cm past the left hand's goal, which is
+one ordinary opener from its start (land on the last seat or hang half off the
+end); and **1.2** and **1.35**, gaps of 0.04 and 0.08 m, so the reach a lunge needs
+rises 0.58 → 0.62 → 0.66 → 0.79 instead of jumping from a continuous rung to the
+limit.
 
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 
