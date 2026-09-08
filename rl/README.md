@@ -246,7 +246,7 @@ asserts all of it.
 | every hold test reads **contact force** (`_contact`) | see the section below — this replaced `ON_RUNG`, `CLEAR_OF` and `env.latched`, all three of which were proxies a policy could satisfy without holding, or *fail* while holding |
 | `STALE_AFTER` 8 s → **2.5 s** | the threshold was longer than the episode it policed. The winning lesson-1 run is 5.8 s, so the hand that never released was charged exactly 0.00 |
 | `MIN_GRABS` in `_success` | the task was completable with **neither hand ever leaving the rung**: 1 m traversed with the right hook never further than 24 mm from the rail and the left hand carrying under 10 N for 89 % of the episode. Alternating grips is not one way of doing this task, it is the task |
-| finger setpoint clamped at `GRIP_CLIFF` | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N. Nothing above the cliff is useful, so it is a mechanical stop — 45° of pure self-destruct removed from the search. Opening is untouched |
+| finger setpoint stopped at the **band's edge** | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N, so the stop went to the cliff. That left a 5° trap: a policy that squeezes as hard as it can sits at −40…−44° under load — a fine hold physically (98–179 N) that neither the reward nor the estimator recognised, because both ask for `GRIP_BAND`. On the 10.8M `win8` policy **90 %** of loaded steps on lesson 1.5 (34 % on lesson 1) were "not gripping" for that reason alone; the estimator kept its anchor on a hand that was moving and saw the far ledge 240–500 mm from where it was. The stop is now the band's edge, −40°: squeeze as hard as you like, it is in band (375/382 loaded steps while swinging, asserted) |
 | `K_FLIGHT`, and a jump earns nothing | the 21M policy's whole lesson-1 gait was jumps: the right hook let go and re-caught within 1–5 control steps while the left hung in the air — off **96 %** of the time, **0.0** load swaps per episode — and each brief tap of the left hand then banked what the jump had covered. A control step in which, for even one physics substep, no hook bore `HOLD_LOAD` is a jump: charged, nobody is loaded so nothing is credited, and the landing is no cycle. Replayed: that policy drops from 5/5 to **0/12** |
 | `K_SLIDE` | sliding stays legal — the rung is smooth on purpose — but a **loaded** hook dragged along it pays 10/m, because it is friction work and because it is invisible: measured in shadow on the alternating policy, the anchored hook was dragged **100–724 mm per tenure**, both hooks seated (next section). This is *not* what makes dragging unprofitable — the relative credit is. Raising it to 20 was tried when the drag appeared and it stalled learning outright: 3M steps at 30 % on the very first lesson, std 0.42, because the same charge lands on the few centimetres the holding hook settles by during every honest reach. It has to beat the live shaping term and the bank: `assert K_SLIDE > K_BANK and K_SLIDE > 2 K_REACH` |
 | a hold counts only while the **other hand is loaded** | three points of contact. A hold taken with nothing else on the wall was a jump's landing or a hand-over with a gap in it, and the gap is where the map goes wrong: 86 of 129 anchor switches on the 3M policy had no step with both hands confirmed and baked in 62 mm each. Gated, the same curriculum unlocks at the same pace (lesson 2 at 0.94M against 0.89M), hand-overs with overlap go from 30 % to 53 %, and the anchor's error at the end of a lesson-1 traverse drops from 540–980 mm to 27–320 mm. What is paid is what can be seen |
@@ -358,6 +358,29 @@ moving. With both hooks seated the anchored hook was dragged 100–724 mm per te
 and every jump adds more. `K_SLIDE` and `K_FLIGHT` exist so that the gait the policy
 is paid for is the one the sensors can track — one hand holds still while the other
 moves, which is also the one that was asked for.
+
+## `win8`: lesson 1 passed, and a 5° trap under the far ledge
+
+10.8M steps on the curriculum with lessons −2 … 1.5. The best checkpoint, at 2.66M:
+−2 95 %, −1 98 %, 0 95 %, **lesson 1 95 %** — two hands alternating, 18/20 in audit,
+1.0 m in 194 steps — and lesson 1.5 at 1/40. Then 8M steps in which lesson 1.5 stayed
+at 0 % and, drawn as often as the rest, pulled lesson 1 down to 32 % and the action
+std to a floor of 0.04: the collapse the previous section warned about, at full
+scale. Two things were wrong, one in the task and one in the curriculum.
+
+On lesson 1.5 the free hand reached the far ledge — 35–78 mm from its axis by step
+25–47 — and then hovered there for the rest of the episode, 96 % of the time off the
+wall, while the estimate said the ledge was 200–320 mm away. The estimate was wrong
+because the estimator's anchor had stayed on a hand that was moving: the other hand
+was carrying 48–159 N and was not *confirmed*, and it was not confirmed because its
+finger read −40…−44°. The finger stop sat at the cliff, −45°, and a policy that
+squeezes as hard as it can lands just under the band's −40° edge — 90 % of loaded
+steps on that lesson, 34 % on lesson 1. Physically a fine hold; to the reward and
+the estimator, not a hold at all. The stop is now the band's edge.
+
+And a freshly unlocked lesson is drawn `NEW_SHARE` (25 %) of the time until it is
+being passed at `WARM_RATE` (20 %), so a lesson that fails for a while is a quarter
+of the gradient, not half, and the pool keeps what it has.
 
 ## `win5`: the map became exact, and nothing moved
 

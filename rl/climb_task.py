@@ -280,8 +280,16 @@ class ClimbTask:
         # so it is a mechanical stop, not a reward term -- 45 deg of pure
         # self-destruct removed from the search space. Opening is untouched: a hand
         # still has the full range up to +20 to let go.
+        # ...and not at the cliff itself but at the band's edge. With the stop at
+        # GRIP_CLIFF (-45) a policy that squeezes as hard as it can sits at -40..-44
+        # under load -- physically a fine hold (98-179 N of contact) that neither
+        # the reward nor the estimator recognised, because both ask for the band.
+        # Measured on the 10.8M policy: 90 % of loaded steps on lesson 1.5 and 34 %
+        # on lesson 1 were "not gripping" for that reason alone, the estimator's
+        # anchor stayed on a hand that was moving, and the far ledge was seen
+        # 240-500 mm from where it was. Squeeze as hard as you like: it is in band.
         for j in ('finger_L', 'finger_R'):
-            self.lo[JOINTS.index(j)] = GRIP_CLIFF
+            self.lo[JOINTS.index(j)] = GRIP_BAND[0]
         self.dt = self.env.model.opt.timestep
         m = self.env.model
         self._rung_name = {g: mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
@@ -918,24 +926,38 @@ def main():
     t.reset()
     fi = JOINTS.index('finger_L')
     assert t._holding()[0], "the hang keyframe should start out holding"
-    for edge, push in (('mở toang', +1.0), ('siết quá', -1.0)):
-        t.reset()
-        act = np.zeros(17)
-        act[fi] = push
-        gap = None
-        for _ in range(120):
-            _, _, te, tr, _ = t.step(act)
-            ang = np.degrees(t.env.sensor('enc_finger_L')[0])
-            gap = t._contact('L')[0]
-            if not (np.degrees(GRIP_BAND[0]) <= ang <= np.degrees(GRIP_BAND[1])):
-                break
-            if te or tr:
-                break
-        print(f"grip test ({edge}): ngón {ang:+.0f} deg, tiếp xúc {gap:.0f} N "
-              f"-> holding = {t._holding()[0]}")
-        assert not t._holding()[0], (
-            f"a hand at {ang:+.0f} deg still counts as holding; the band is "
-            f"{np.degrees(GRIP_BAND[0]):.0f}..{np.degrees(GRIP_BAND[1]):.0f}")
+    t.reset()
+    act = np.zeros(17)
+    act[fi] = +1.0
+    for _ in range(120):
+        _, _, te, tr, _ = t.step(act)
+        ang = np.degrees(t.env.sensor('enc_finger_L')[0])
+        if not (np.degrees(GRIP_BAND[0]) <= ang <= np.degrees(GRIP_BAND[1])) or te or tr:
+            break
+    print(f"grip test (mở toang): ngón {ang:+.0f} deg, tiếp xúc {t._contact('L')[0]:.0f} N "
+          f"-> holding = {t._holding()[0]}")
+    assert not t._holding()[0], f"a hand opened to {ang:+.0f} deg still counts as holding"
+    # squeezing as hard as possible must STAY in the band, loaded and swinging: the
+    # stop is at the band's edge, not at the cliff. Random actions on every other
+    # joint swing the body; only the fingers are held shut.
+    t.reset()
+    rng = np.random.default_rng(7)
+    inband, n_loaded = 0, 0
+    for k in range(200):
+        act = rng.uniform(-0.6, 0.6, 17)
+        act[fi] = -1.0
+        act[JOINTS.index('finger_R')] = -1.0
+        _, _, te, tr, _ = t.step(act)
+        for sd in 'LR':
+            if t._contact(sd)[0] > HOLD_LOAD:
+                n_loaded += 1
+                inband += t._gripping(sd)
+        if te or tr:
+            break
+    print(f"grip test (siết hết cỡ): {inband}/{n_loaded} loaded steps in band while swinging")
+    assert n_loaded > 50 and inband >= 0.97 * n_loaded, (
+        f"squeezing shut left the band on {n_loaded - inband} of {n_loaded} loaded "
+        f"steps: the finger stop is not at the band's edge")
 
     # And success must need real grabs, not just arriving. Geometry is stubbed to
     # the goal so only the grab count and the finger are left to decide.

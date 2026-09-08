@@ -51,6 +51,13 @@ from .lessons import LESSONS, lesson_key
 WINDOW = 40          # episodes per lesson the success rate is measured over
 UNLOCK_AT = 0.60     # success rate on the newest lesson that unlocks the next one
 UNLOCK_MIN = 20      # episodes needed before that rate is believed
+NEW_SHARE = 0.25     # of the draws the newest lesson gets until it is being passed
+WARM_RATE = 0.20     # ...which means this success rate over UNLOCK_MIN episodes.
+                     # A freshly unlocked lesson is, at first, a stream of failures,
+                     # and drawn as often as the rest it is half the pool's gradient
+                     # when there are two lessons. The 10.8M win8 run spent 8M steps
+                     # on a lesson at 0 % and took the one before it from 95 % down
+                     # to 32 %, and its action std from 0.67 to a floor of 0.04.
 
 
 
@@ -71,14 +78,16 @@ class MultiLesson(gym.Env):
                                                 (self.cur.obs_dim,), np.float32)
         self.action_space = gym.spaces.Box(-1.0, 1.0, (17,), np.float32)
 
-    def set_active(self, active):
+    def set_active(self, active, weights=None):
         """called from the training process by the curriculum callback"""
         self.active = list(active)
+        self.weights = None if weights is None else np.asarray(weights, float) / np.sum(weights)
         return self.active
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self.cur = self.tasks[self.active[int(self.rng.integers(len(self.active)))]]
+        i = int(self.rng.choice(len(self.active), p=getattr(self, 'weights', None)))
+        self.cur = self.tasks[self.active[i]]
         return self.cur.reset(seed)
 
     def step(self, a):
@@ -100,6 +109,20 @@ class Curriculum(BaseCallback):
         h = self.hist.get(lesson, [])[-WINDOW:]
         return (len(h), sum(h) / len(h) if h else 0.0)
 
+    def warming(self):
+        """is the newest lesson still failing? -- then it gets NEW_SHARE of the draws"""
+        if not self.enabled or len(self.active) < 2:
+            return False
+        n, r = self.rate(self.active[-1])
+        return n < UNLOCK_MIN or r < WARM_RATE
+
+    def weights(self):
+        """draw weights over the active pool, or None for uniform"""
+        if not self.warming():
+            return None
+        k = len(self.active) - 1
+        return [(1.0 - NEW_SHARE) / k] * k + [NEW_SHARE]
+
     def state(self):
         return {'active': self.active,
                 'history': {str(k): v[-WINDOW:] for k, v in self.hist.items()}}
@@ -109,16 +132,29 @@ class Curriculum(BaseCallback):
             if done and 'reason' in info:
                 self.hist.setdefault(info['lesson'], []).append(
                     info['reason'] == 'success')
-        if not self.enabled or self.active[-1] == self.pool[-1]:
+        if not self.enabled:
+            return True
+        warm = self.warming()
+        if warm != getattr(self, '_warm', None):
+            # the newest lesson just started being passed (or a resume): re-weight
+            self._warm = warm
+            self.training_env.env_method('set_active', self.active, self.weights())
+            if not warm and len(self.active) > 1:
+                print(f"\n[curriculum] lesson {self.active[-1]} is being passed; the pool "
+                      f"{self.active} is drawn evenly now\n")
+        if self.active[-1] == self.pool[-1]:
             return True
         n, r = self.rate(self.active[-1])
         if n >= UNLOCK_MIN and r >= UNLOCK_AT:
             self.active.append(self.pool[len(self.active)])
-            self.training_env.env_method('set_active', self.active)
+            self.hist.setdefault(self.active[-1], [])
+            self._warm = self.warming()
+            self.training_env.env_method('set_active', self.active, self.weights())
             print(f"\n[curriculum] lesson {self.active[-2]} at {r:.0%} over {n} "
                   f"episodes -> unlocking lesson {self.active[-1]} "
-                  f"({LESSONS[self.active[-1]]['name']}); pool now {self.active}\n")
-            self.hist.setdefault(self.active[-1], [])
+                  f"({LESSONS[self.active[-1]]['name']}); pool now {self.active}, "
+                  f"the new one drawn {NEW_SHARE:.0%} of the time until it passes "
+                  f"{WARM_RATE:.0%}\n")
         return True
 
 
@@ -217,16 +253,23 @@ def self_check():
     assert c.active == [1], f"unlocked on {UNLOCK_MIN - 1} episodes, below UNLOCK_MIN"
     feed(c, 1, 'success')
     assert c.active == [1, 2], f"did not unlock at {UNLOCK_MIN} successes: {c.active}"
-    assert env.calls == [('set_active', ([1, 2],))], env.calls
+    assert env.calls[-1] == ('set_active', ([1, 2], [1 - NEW_SHARE, NEW_SHARE])), env.calls[-1]
     # the point of mixing: unlocking must never drop a lesson from the pool
     assert 1 in c.active, "lesson 1 left the pool -- that is the forgetting bug"
 
     feed(c, 2, 'fell', WINDOW)
     assert c.active == [1, 2], "unlocked lesson 3 while lesson 2 was failing"
+    # ...and while it fails it is drawn NEW_SHARE of the time, not half: the 10.8M
+    # run spent 8M steps on a lesson at 0 % and lost the one before it to it
+    assert c.weights() == [1 - NEW_SHARE, NEW_SHARE], c.weights()
     feed(c, 2, 'success', WINDOW)
     assert c.active == [1, 2, 3], "never unlocked lesson 3 despite a clean window"
+    assert any(call[1][1] is None for call in env.calls), (
+        "the pool was never re-drawn evenly once lesson 2 started passing")
+    assert c.weights() == [(1 - NEW_SHARE) / 2] * 2 + [NEW_SHARE], c.weights()
     feed(c, 3, 'success', WINDOW)
     assert c.active == [1, 2, 3], "unlocked past the end of the pool"
+    assert c.weights() is None, "a pool whose newest lesson passes must be drawn evenly"
 
     n, r = c.rate(2)
     assert n == WINDOW and r == 1.0, (n, r)
@@ -254,7 +297,8 @@ def self_check():
     assert after >= before, (f"unlocking a lesson dropped the score {before:.2f} -> "
                              f"{after:.2f}; best_model.zip will freeze at the old one")
     print(f"curriculum: unlocks at {UNLOCK_AT:.0%} over {UNLOCK_MIN}+ episodes, "
-          f"keeps every lesson in the pool, survives a save/load. OK")
+          f"keeps every lesson in the pool, draws a failing new lesson {NEW_SHARE:.0%} of "
+          f"the time until it passes {WARM_RATE:.0%}, survives a save/load. OK")
 
 
 def main():
@@ -318,7 +362,7 @@ def main():
     # rather than carried over wholesale.
     active = [k for k in (state.get('active') or []) if k in pool] or None
     cur = Curriculum(pool, active, state.get('history'), a.curriculum)
-    venv.env_method('set_active', cur.active)
+    venv.env_method('set_active', cur.active, cur.weights())
     ckpt = Checkpoint(run, cur, a.ckpt_every, state.get('best'))
 
     # Ctrl-C during a rollout would otherwise lose everything since the last
