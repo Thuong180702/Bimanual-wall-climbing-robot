@@ -110,11 +110,21 @@ class Curriculum(BaseCallback):
         return (len(h), sum(h) / len(h) if h else 0.0)
 
     def warming(self):
-        """is the newest lesson still failing? -- then it gets NEW_SHARE of the draws"""
+        """is the newest lesson still failing? -- then it gets NEW_SHARE of the draws.
+        Once it has passed WARM_RATE it counts as passed for good, so a rate that
+        hovers around the threshold does not flip the draw weights back and forth."""
         if not self.enabled or len(self.active) < 2:
             return False
-        n, r = self.rate(self.active[-1])
-        return n < UNLOCK_MIN or r < WARM_RATE
+        newest = self.active[-1]
+        passed = getattr(self, '_passed', set())
+        if newest in passed:
+            return False
+        n, r = self.rate(newest)
+        if n >= UNLOCK_MIN and r >= WARM_RATE:
+            passed.add(newest)
+            self._passed = passed
+            return False
+        return True
 
     def weights(self):
         """draw weights over the active pool, or None for uniform"""
