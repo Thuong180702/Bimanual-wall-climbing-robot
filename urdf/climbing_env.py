@@ -5,9 +5,20 @@ All thresholds here were measured on this model, not guessed - see README.
 """
 import numpy as np, mujoco
 
-SLAM_SIG = 0.02   # m, one sigma per axis per reading: what the lidar SLAM's base position
-                  # is off by. ponytail: white noise; a real SLAM drifts slowly instead,
-                  # calibrate this (and the RL task's SLAM_TAU) against the real stack
+SLAM_SIG = 0.02        # m, one sigma per axis per reading: what the lidar SLAM's base
+                       # position is off by. ponytail: white noise; a real SLAM drifts slowly
+                       # instead, calibrate this (and the RL task's SLAM_TAU) on the real stack
+SLAM_ROT_SIG = 0.0175  # rad (1 deg), one sigma per axis: its attitude
+
+
+def _rotm(w):
+    """rotation matrix for a small rotation vector (Rodrigues)"""
+    th = float(np.linalg.norm(w))
+    if th < 1e-12:
+        return np.eye(3)
+    k = w / th
+    K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    return np.eye(3) + np.sin(th) * K + (1 - np.cos(th)) * K @ K
 
 # --- measured on this model -------------------------------------------------
 GRIP_BAND = (np.radians(-40), np.radians(-10))   # finger angle where pull-off > 1200 N
@@ -60,11 +71,14 @@ class ClimbingEnv:
         return out
 
     def slam(self):
-        """where the lidar SLAM says the base is (world, m): the true position with
-        SLAM_SIG of noise. The one world-referenced sensor on the real robot -- and
-        without one, two hooks on a smooth rung cannot tell that the loaded hook is
-        creeping along it (rl/climb_task.py, `_sense`)."""
-        return self.data.xpos[self.base] + self._slam_rng.normal(0.0, SLAM_SIG, 3)
+        """(position, attitude) of the base as the lidar SLAM reports it: the truth
+        with SLAM_SIG / SLAM_ROT_SIG of noise. The one world-referenced sensor on the
+        real robot -- and without one, two hooks on a smooth rung cannot tell that the
+        loaded hook is creeping along it, and an IMU triad under the climb's impacts
+        reads the torso 18-30 deg off (rl/climb_task.py, `_sense`)."""
+        p = self.data.xpos[self.base] + self._slam_rng.normal(0.0, SLAM_SIG, 3)
+        R = _rotm(self._slam_rng.normal(0.0, SLAM_ROT_SIG, 3)) @ self.data.xmat[self.base].reshape(3, 3)
+        return p, R
 
     def imu(self, raw_only=False):
         """9-DOF IMU. raw_only=True returns just what real hardware outputs."""

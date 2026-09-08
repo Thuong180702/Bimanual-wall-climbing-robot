@@ -249,6 +249,7 @@ asserts all of it.
 | the map describes **seats**, not geometry (`SEAT_IN`) | the nearest-rung offsets and the end distances the policy sees, and the potential it is paid on, clip each rung half a hook-width (32.5 mm) in from its ends: a hook centred on the geometric end hangs half off it. On the `win9` video the hook ratcheted to the very end of its segment and let go — the user's reading of it |
 | the anchor follows the **SLAM** position along its rung (`SLAM_TAU`) | the loaded hook creeps along the rung while it holds — 85–210 mm per episode on `mac16`, 100 mm by the first hand-over — and nothing on the arm can see it: two hooks on a smooth rung have no world reference. At a gap the far segment then read 60–210 mm too far and the hook was pushed into its end face 38 mm short. The real robot's lidar SLAM sees the body move against the wall; simulated as the base position with `SLAM_SIG` (2 cm) of noise, low-passed over 1 s, it moves the anchor's map point along its rung. Replayed on the mac16 policy: anchor error p50 20 mm / p90 34 everywhere (was 51 / 149 on lesson 1.5 and 145–179 / 300 on lesson 1), −18 ± 27 mm at the moment the hook meets the far segment (was +89, 60–210). The slam test creeps the loaded hook 25 mm under a pull and asserts the anchor follows. A second touch zone on the hook's lip was tried first and was exact (every end contact at z = −110 mm in the hook frame, every seat at z ≥ −98) — but the robot has no such sensor, and it is gone |
 | draws by share of **steps**, not episodes | a stuck lesson-1.5 episode runs 1490 steps against ~200 for a one-step lesson, so at a quarter of the draws it was 60 % of the samples, and what it learnt there — left hand sweeping the rung, right hand still — was learnt in the states lesson −1 starts from, which needs the opposite: −1 fell from 90 % to 0–2 % in both check runs. Each lesson's share is divided by its mean episode length. `mac18`: −1 at 92 % |
+| the **SLAM attitude** pins the gyro filter, not the IMU triad | measured on the mac20 policy *during the climb*: the triad-referenced filter was 4.0° p50 / 6.3° p90 / 15° max off (the triad itself 18–30°: every hand-over is an impact), which on the 0.5 m lever from the anchor to the hand was 35–55 mm — the floor under everything the SLAM position had fixed. Referenced to the SLAM attitude (1° of noise) it is 0.2° / 1.0–2.8°, the free hand's error falls from 36 / 80 mm to **13 / 40** on lesson 1.2 and from 44 / 85 to **16 / 23** on lesson 1, and the estimator says "on a seat" while the hand is in a gap on 2.7 % of steps instead of 7.5 %. `SLAM_TAU` 1 → 0.3 s from the same sweep (the anchor's creep and rocking outran a 1 s filter: p90 69 → 48). Correcting the anchor in all three axes was tried and was worse (36 → 46 mm): a translation at the base cannot stand in for the attitude's error at the hands |
 | `STALE_AFTER` 8 s → **2.5 s** | the threshold was longer than the episode it policed. The winning lesson-1 run is 5.8 s, so the hand that never released was charged exactly 0.00 |
 | `MIN_GRABS` in `_success` | the task was completable with **neither hand ever leaving the rung**: 1 m traversed with the right hook never further than 24 mm from the rail and the left hand carrying under 10 N for 89 % of the episode. Alternating grips is not one way of doing this task, it is the task |
 | finger setpoint stopped at the **band's edge** | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N, so the stop went to the cliff. That left a 5° trap: a policy that squeezes as hard as it can sits at −40…−44° under load — a fine hold physically (98–179 N) that neither the reward nor the estimator recognised, because both ask for `GRIP_BAND`. On the 10.8M `win8` policy **90 %** of loaded steps on lesson 1.5 (34 % on lesson 1) were "not gripping" for that reason alone; the estimator kept its anchor on a hand that was moving and saw the far ledge 240–500 mm from where it was. The stop is now the band's edge, −40°: squeeze as hard as you like, it is in band (375/382 loaded steps while swinging, asserted) |
@@ -482,6 +483,20 @@ lesson 1 took 1490 steps for its 1.1 m and timed out too, the right hand re-seat
 crawl kept teaching. Lessons 1.2 and 1.35 now ask for one crossing each — goals on
 the segment just across the gap, 0.6 m of travel — and leave the two-gap traverse to
 lesson 1.5.
+
+Resumed to 10M with that: −2 92 %, −1 98 %, 0 98 %, lesson 1 back to **85 %**,
+1.1 95 %, **1.2 at 90 %** (10/12 and 22/24 in two audits, 216 steps per crossing,
+the climber's order in every episode: left to the last seat +0.35, right up to
++0.11, left over +0.39 → +0.48, right following +0.27), 1.35 unlocked at 12 %. The
+user's read of the slow video — a hand grabbing the gap between the segments, a hand
+reaching without lifting — asked why a robot with SLAM, IMU and encoders does that.
+Measured at those moments: half is the policy (it *knew* the hook was in the gap,
+16 mm of error, and lifted 14–23 mm, not enough to clear the end), and half was the
+estimate, which during the climb — not on a still hang — was 36 / 80 mm off and put
+the hand "on a seat" while it was in the gap 7.5 % of the time. Split into parts,
+the free hand's error was the attitude (see the reward table): the IMU triad the
+filter leaned on reads 18–30° under the impacts of a climb. The SLAM attitude now
+pins the filter: 0.2° / 1–3°, the hand 13 / 40 mm, the false seat 2.7 %.
 
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 

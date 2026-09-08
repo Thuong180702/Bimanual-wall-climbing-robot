@@ -25,9 +25,11 @@ FRAME_SKIP = 20          # sim steps per control step: 0.002 s x 20 = 25 Hz
 ACT_SCALE = 0.06         # rad of setpoint travel per control step (1.5 rad/s max)
 LATCH_TOL = 0.15         # m from the goal point that still counts, given a latch
 RUNG_TOL = 0.06          # m: estimated throat this close to a rung axis = that rung
-SLAM_TAU = 1.0           # s: how slowly the anchor's map point follows the SLAM position
-                         # along its rung. 2 cm of SLAM noise at 25 Hz averages to ~3 mm
-                         # over this; the creep it tracks runs a few mm/s (`_sense`)
+SLAM_TAU = 0.3           # s: how slowly the anchor's map point follows the SLAM position
+                         # along its rung. Swept on the mac20 policy's replays: at 1 s the
+                         # free hand's error was p90 69 mm on lesson 1.2 and 85 on lesson 1
+                         # (the anchor's creep and rocking outrun the filter); at 0.3 s,
+                         # 48 and 41, for ~5 mm more noise at the median (`_sense`)
 AHRS_TAU = 2.0           # s: how slowly the torso attitude leans on the accelerometer.
                          # The bare triad (accel + mag, no state) is what the classical
                          # controller uses, and while the body swings it is wrong by
@@ -347,14 +349,26 @@ class ClimbTask:
         self.dq = np.array([enc[j][1] for j in JOINTS])
         self.tau = np.array([enc[j][2] for j in JOINTS])
         self.imu_s = self.env.imu(raw_only=True)
-        # Attitude: the gyro carries it across the step, the triad pins the drift.
-        # The triad alone reads the body's own swing as tilt -- 26.5 deg rms, and
-        # the free hand 91-130 mm off; this reads 3.6 deg and 16 mm (AHRS_TAU).
+        # Attitude: the gyro carries it across the step, the SLAM attitude pins the
+        # drift. The IMU triad did that first: alone it reads the body's own swing
+        # as tilt (26.5 deg rms; the free hand 91-130 mm off) and filtered it was
+        # 1.1 deg on a still hang -- but 4 deg p50 / 6 deg p90 / 15 max during the
+        # climb itself, where every hand-over is an impact, and on a 0.5 m lever
+        # that was 35-55 mm at the hand, the floor under everything else (mac20).
+        # The lidar SLAM's attitude does not care about accelerations.
         dt = FRAME_SKIP * self.dt
         self._Rf = self._Rf @ _rotm(self._w_sum * (dt / FRAME_SKIP))
         self._w_sum[:] = 0.0
-        R_tri = triad(self.imu_s['accel'], self.imu_s['mag'])
-        self._Rf = self._Rf @ _rotm((dt / AHRS_TAU) * rotvec(self._Rf.T @ R_tri))
+        p_slam, R_slam_base = self.env.slam()
+        # the SLAM reports the base; the filter tracks torso_upper, a waist away.
+        # Their relative rotation depends on the joint angles only, so read it off
+        # the scratch model posed with this step's encoders
+        self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1],
+                        R_torso=self._Rf)
+        d_ = self.est.d
+        R_slam = R_slam_base @ (d_.xmat[self.est.base].reshape(3, 3).T
+                                @ d_.xmat[self.est.torso].reshape(3, 3))
+        self._Rf = self._Rf @ _rotm((dt / AHRS_TAU) * rotvec(self._Rf.T @ R_slam))
         self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1],
                         R_torso=self._Rf)
         # The loaded hook creeps along its rung while it holds -- 85-210 mm per
@@ -364,8 +378,11 @@ class ClimbTask:
         # segment read 60-210 mm further than it was (0/40 for 3M steps). The lidar
         # SLAM on the real robot sees the body move against the wall. Its position,
         # low-passed over SLAM_TAU, says where along the rung the anchor has crept
-        # to; off the axis the discrepancy is throat distortion and noise, ignored.
-        dp = self.env.slam() - self.est.body_pos(self.est.base)
+        # to. Along the rung only: correcting all three axes was tried and made the
+        # free hand WORSE (p50 36 -> 46 mm, p90 80 -> 94 on the mac20 policy) -- a
+        # translation at the base cannot stand in for the attitude's error at the
+        # hands, and off the axis that is most of the discrepancy.
+        dp = p_slam - self.est.body_pos(self.est.base)
         nm, pt = self.hold[self.anchor]
         ax = self.segs[nm][1]
         self.hold[self.anchor] = (nm, pt + (dt / SLAM_TAU) * float(dp @ ax) * ax)
