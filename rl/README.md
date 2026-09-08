@@ -36,8 +36,8 @@ python -m rl.status --name climber --watch
 
 −2. left hand, one step (0.30 m) → −1. right hand, one step (0.30 m, the other way)
 → 0. both hands, one step (0.40 m) → 1. traverse, continuous rung → 1.1. stop at the
-end of a rung → 1.2 / 1.35 / 1.5. traverse gaps of 0.04 / 0.08 / 0.12 m → 2. traverse,
-gaps (0.25 m) → 3. climb up → 4. up-over-down → 5. climb down → 6. staggered heights →
+end of a rung → 1.2 / 1.35. cross one gap of 0.04 / 0.08 m → 1.5. traverse, two gaps
+of 0.12 m → 2. traverse, gaps (0.25 m) → 3. climb up → 4. up-over-down → 5. climb down → 6. staggered heights →
 7. perpendicular wall → 8. wall behind the back → 9. row beyond static reach (needs
 a dynamic move).
 
@@ -471,7 +471,17 @@ at 0.388), and lesson 1.2, unlocked at 3.7M, at 0/40 in training but with the cl
 the user described on the replay after 0.3M steps of exposure: left hand to the
 last seat (+0.32), right hand up beside it (+0.02), left across the gap (+0.39,
 +0.47, +0.57), right following (+0.08, +0.20, +0.28) — one full success in 10, a
-hand seated on the far segment in 3 of 12. Out of steps, not stuck.
+hand seated on the far segment in 3 of 12. Out of steps, not stuck — or so it
+looked. Resumed to 7M: 1.2 still 0/40 and **lesson 1 down to 20–38 %**. On the
+replay the climber's order is there in every episode (left to the last seat +0.32,
+right up to +0.02, left over +0.44, +0.51, +0.60, right +0.10, +0.16, +0.25) — in
+steps of 5–9 cm. The policy that had just learnt to land short took short steps
+everywhere: lesson 1.2 asked for 1.4 m over two gaps and it managed 0.5 m in 60 s;
+lesson 1 took 1490 steps for its 1.1 m and timed out too, the right hand re-seating
+57 times per episode. A lesson that never passes keeps its warm-up share, so the
+crawl kept teaching. Lessons 1.2 and 1.35 now ask for one crossing each — goals on
+the segment just across the gap, 0.6 m of travel — and leave the two-gap traverse to
+lesson 1.5.
 
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 

@@ -177,22 +177,28 @@ LESSONS = {
     # lesson 2, which cannot be lunged at all: the trailing hand has to come up first.
     # (with the map describing SEATS, half a hook-width in from each end --
     # climb_task.SEAT_IN -- the seat-to-seat jumps are 105, 145, 185 and 315 mm)
-    1.2: dict(name='traverse_hairline_gaps', timeout=60.0,
-              title='traverse a broken rung: segments with 0.04 m gaps',
+    # ONE gap each, goals on the segment just across it (0.6 m of travel, not 1.4 m
+    # over two): the first version asked for the full traverse and the policy that
+    # had just learnt to stop short crawled it in 5-9 cm steps -- the climber's
+    # order visible on every replay, the goals never reached in 60 s, 0/40 for
+    # 3.3M steps, and the crawl spread to lesson 1 (95 % -> 20 %). Teach the
+    # crossing on its own; lesson 1.5 asks for two gaps and the distance.
+    1.2: dict(name='cross_a_hairline_gap', timeout=60.0,
+              title='cross one 0.04 m gap: to the last seat, the other hand up, over',
               walls=[WALL_FRONT],
               rungs=[_ry('start', -0.45, 0.35, 1.00),
                      _ry('seg1', 0.39, 0.95, 1.00),
                      _ry('seg2', 0.99, 1.65, 1.00)],
-              goal_rungs=['rung_seg2'],
-              goals=[[0.44, 1.55, 1.00], [0.44, 1.24, 1.00]]),
-    1.35: dict(name='traverse_narrow_gaps', timeout=60.0,
-               title='traverse a broken rung: segments with 0.08 m gaps',
+              goal_rungs=['rung_seg1'],
+              goals=[[0.44, 0.76, 1.00], [0.44, 0.45, 1.00]]),
+    1.35: dict(name='cross_a_narrow_gap', timeout=60.0,
+               title='cross one 0.08 m gap',
                walls=[WALL_FRONT],
                rungs=[_ry('start', -0.45, 0.35, 1.00),
                       _ry('seg1', 0.43, 0.95, 1.00),
                       _ry('seg2', 1.03, 1.65, 1.00)],
-               goal_rungs=['rung_seg2'],
-               goals=[[0.44, 1.55, 1.00], [0.44, 1.24, 1.00]]),
+               goal_rungs=['rung_seg1'],
+               goals=[[0.44, 0.80, 1.00], [0.44, 0.49, 1.00]]),
     1.5: dict(name='traverse_small_gaps', timeout=60.0,
               title='traverse a broken rung: segments with 0.12 m gaps',
               walls=[WALL_FRONT],
