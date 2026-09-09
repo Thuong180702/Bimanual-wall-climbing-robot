@@ -646,6 +646,36 @@ the new posture changes the Jacobian. Three values of `W_ALONG_COARSE` were trie
 and none converged, so this is a re-tune of that stack, not a constant. The RL
 side is unaffected and its own checks all pass.
 
+## The wrist: human where it holds, stopped where it lets go
+
+Asked to give the wrist a human range (−70° extension … +80° flexion, against the
+±25° it had), the measurement decided the two ends separately. Hanging on a rung
+and turning one wrist while reading the hook's contact force:
+
+| flexion (+) | 0° | +25° | +50° | +80° |
+|---|---|---|---|---|
+| hold | 44 N | 123 N | 167 N | 143 N |
+
+| extension (−) | −25° | −40° | −55° | −60° |
+|---|---|---|---|---|
+| hold | 44 N | 20 N | 13 N | **0 N — off the rung** |
+
+Flexion wraps the hook tighter, so the human +80° is free. Extension unloads it:
+past −45° the hook is carrying nothing, and at −60° it is off. Handing a policy
+70° of extension is handing it 70° of letting go, and it took it — a 1.5M-step run
+with the full human range never passed the FIRST lesson (0 %, against −2 → 1.2 in
+the same budget on the model before it). Same shape as the finger's `GRIP_CLIFF`,
+and the same answer: a mechanical stop, not a reward term. The range is now
+**−30° … +80°**, three times the old travel on the side that helps.
+
+The cost is honest: on 1.5M-step sanity runs the early curriculum is slower with
+the wider wrist than with ±25° (which reached lesson 1.1 at 88 % and unlocked 1.2),
+and two runs 5° apart on the extension stop landed on opposite sides of that
+(−30° learnt all three of −2, −1 and 0; −25° stalled lesson 0 at 0 %), which is
+this project's usual run-to-run variance rather than a difference between them. If
+a long run stalls in the first three lessons, the wrist range is the first thing to
+put back.
+
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 
 10.8M steps on the curriculum with lessons −2 … 1.5. The best checkpoint, at 2.66M:
