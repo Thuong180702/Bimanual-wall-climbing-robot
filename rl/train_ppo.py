@@ -51,16 +51,8 @@ from .lessons import LESSONS, lesson_key
 WINDOW = 40          # episodes per lesson the success rate is measured over
 UNLOCK_AT = 0.60     # success rate on the newest lesson that unlocks the next one
 UNLOCK_MIN = 20      # episodes needed before that rate is believed
-NEW_SHARE = 0.60     # of the STEPS the newest lesson gets until it is being passed.
-                     # Both extremes were measured. Drawing by EPISODES gave it 96 % of
-                     # the steps (the lessons behind it are short and it times out), and
-                     # a lesson stuck for millions of steps then took lesson -1 down to
-                     # 0-2 % (mac14, mac16, mac17). Giving it 25 % of the steps starved
-                     # it instead: lesson 1 took 4x longer than in win9, which passed it
-                     # inside 1M (win10 still 0 % at 1.4M; mac25 0 % at 5M). At 60 % the
-                     # lessons behind it still get 40 % of the steps between them, which
-                     # for 20-step episodes is thousands of them.
-WARM_RATE = 0.20     # ...which means this success rate over UNLOCK_MIN episodes.
+MIN_SHARE = 0.10     # the floor on a mastered lesson's need, so it is not forgotten
+WARM_RATE = 0.20     # the rate at which a new lesson counts as started, for the log
                      # A freshly unlocked lesson is, at first, a stream of failures,
                      # and drawn as often as the rest it is half the pool's gradient
                      # when there are two lessons. The 10.8M win8 run spent 8M steps
@@ -119,9 +111,9 @@ class Curriculum(BaseCallback):
         return (len(h), sum(h) / len(h) if h else 0.0)
 
     def warming(self):
-        """is the newest lesson still failing? -- then it gets NEW_SHARE of the draws.
-        Once it has passed WARM_RATE it counts as passed for good, so a rate that
-        hovers around the threshold does not flip the draw weights back and forth."""
+        """is the newest lesson still failing? -- for the log line only; the draw
+        weights come from every lesson's rate (`weights`). Once it has passed
+        WARM_RATE it counts as started for good, so the line is printed once."""
         if not self.enabled or len(self.active) < 2:
             return False
         newest = self.active[-1]
@@ -136,29 +128,40 @@ class Curriculum(BaseCallback):
         return True
 
     def weights(self):
-        """draw probabilities over the active pool: each lesson's share of the STEPS.
+        """draw probabilities over the active pool: each lesson's share of the STEPS
+        is how much it still fails, and the probability is that divided by its mean
+        episode length.
 
-        Drawn by episodes, a lesson that times out owns the gradient: on lesson 1.5
-        a stuck episode runs 1490 steps against ~200 for a one-step lesson, so at a
-        quarter of the draws it was 60 % of the samples -- and the behaviour it
-        learnt there (left hand sweeping the rung, right hand never moving) was
-        learnt in the very states lesson -1 starts from, which needs the opposite,
-        and lesson -1 went from 90 % to 0 % in two runs of three million steps.
-        The share is divided by each lesson's mean episode length over its window,
-        so a long lesson is drawn less often and every lesson gets its share of
-        the samples; a lesson with no lengths yet is taken to be as long as the rest.
+        Both fixed rules failed, in opposite directions. Drawing by EPISODE gave the
+        newest lesson ~96 % of the steps -- it times out at 1490 while a passed lesson
+        ends in 20 -- and a lesson stuck for millions of steps took lesson -1 down to
+        0-2 % (mac14, mac16, mac17). Fixed step shares fixed that and then starved the
+        frontier: at 25 % lesson 1 got a quarter of the samples win9 gave it and win10
+        was still at 0 % at 1.4M; at 60 % the curriculum ran -2 to lesson 2 in 2M
+        steps (mac26, by far the best run) but lesson -1 fell to 0 % at 0.6M and never
+        came back, because nothing pointed samples at a lesson that was not the newest.
+        Proportional to what is still failing does both: a lesson at 0 % gets the
+        samples whether it is the frontier or the one behind that regressed, and a
+        mastered lesson keeps MIN_SHARE, which for a 20-step lesson is thousands of
+        episodes. Measured over 2.5-4.5M steps each: this held every lesson at
+        85-100 % including the one that had collapsed (mac27), where the fixed 60 %
+        reached lesson 2 in 2M but left lesson -1 at 0 % from 0.6M on (mac26).
+        Squaring the need concentrates harder on the worst lesson -- 66 % of the
+        steps instead of 49 % for a stuck lesson 1.5 -- but with several lessons
+        half-learnt it starves the rest, and the early curriculum stalled at lesson
+        1 for 2M (mac28). Linear is the only one of the three with no failure mode
+        measured; the frontier is slower for it, which more steps fix, while a
+        forgotten lesson does not come back on its own.
         """
-        k = len(self.active)
-        share = [1.0 / k] * k
-        if self.warming():
-            share = [(1.0 - NEW_SHARE) / (k - 1)] * (k - 1) + [NEW_SHARE]
-        lens = []
+        need, lens = [], []
         for lesson in self.active:
+            n, r = self.rate(lesson)
+            need.append(max(1.0 - r, MIN_SHARE) if n else 1.0)
             v = [x for x in self.lens.get(lesson, [])[-WINDOW:] if x > 0]
             lens.append(sum(v) / len(v) if v else None)
         known = [x for x in lens if x is not None]
         fill = sum(known) / len(known) if known else 1.0
-        w = [sh / (ln if ln is not None else fill) for sh, ln in zip(share, lens)]
+        w = [nd / (ln if ln is not None else fill) for nd, ln in zip(need, lens)]
         return [x / sum(w) for x in w]
 
     def state(self):
@@ -180,8 +183,7 @@ class Curriculum(BaseCallback):
             self._warm = warm
             self.training_env.env_method('set_active', self.active, self.weights())
             if not warm and len(self.active) > 1:
-                print(f"\n[curriculum] lesson {self.active[-1]} is being passed; the pool "
-                      f"{self.active} shares the steps evenly now\n")
+                print(f"\n[curriculum] lesson {self.active[-1]} is being passed\n")
         elif any(done for done in self.locals['dones']):
             # the lengths moved: keep the step shares honest (cheap; a list of floats)
             self.training_env.env_method('set_active', self.active, self.weights())
@@ -196,8 +198,7 @@ class Curriculum(BaseCallback):
             print(f"\n[curriculum] lesson {self.active[-2]} at {r:.0%} over {n} "
                   f"episodes -> unlocking lesson {self.active[-1]} "
                   f"({LESSONS[self.active[-1]]['name']}); pool now {self.active}, "
-                  f"the new one gets {NEW_SHARE:.0%} of the steps until it passes "
-                  f"{WARM_RATE:.0%}\n")
+                  f"the pool's steps go where the failures are\n")
         return True
 
 
@@ -296,36 +297,44 @@ def self_check():
     assert c.active == [1], f"unlocked on {UNLOCK_MIN - 1} episodes, below UNLOCK_MIN"
     feed(c, 1, 'success')
     assert c.active == [1, 2], f"did not unlock at {UNLOCK_MIN} successes: {c.active}"
-    assert env.calls[-1][0] == 'set_active' and env.calls[-1][1][0] == [1, 2] and \
-        np.allclose(env.calls[-1][1][1], [1 - NEW_SHARE, NEW_SHARE]), env.calls[-1]
+    assert env.calls[-1][0] == 'set_active' and env.calls[-1][1][0] == [1, 2], env.calls[-1]
     # the point of mixing: unlocking must never drop a lesson from the pool
     assert 1 in c.active, "lesson 1 left the pool -- that is the forgetting bug"
 
     feed(c, 2, 'fell', WINDOW)
     assert c.active == [1, 2], "unlocked lesson 3 while lesson 2 was failing"
-    # ...and while it fails it is drawn NEW_SHARE of the time, not half: the 10.8M
-    # run spent 8M steps on a lesson at 0 % and lost the one before it to it
-    assert np.allclose(c.weights(), [1 - NEW_SHARE, NEW_SHARE]), c.weights()
+    # ...and while it fails it gets the samples: the steps go where the failures are
+    w = c.weights()
+    assert w[1] > 5 * w[0], f"a lesson at 0 % must outweigh one at 100 %: {w}"
     feed(c, 2, 'success', WINDOW)
     assert c.active == [1, 2, 3], "never unlocked lesson 3 despite a clean window"
-    assert any(len(call[1][1]) == 2 and np.allclose(call[1][1], [0.5, 0.5]) for call in env.calls), (
-        "the pool was never re-drawn evenly once lesson 2 started passing")
-    assert np.allclose(c.weights(), [(1 - NEW_SHARE) / 2] * 2 + [NEW_SHARE]), c.weights()
-    # ...and the share is of the STEPS, not the episodes: a failing lesson whose
-    # episodes run 1490 steps against 200 is drawn rarely enough to get NEW_SHARE
-    # of them -- neither the 96 % that drawing by episode gives it nor the 25 %
-    # that cost win10 lesson 1
-    feed(c, 1, 'success', 5, steps=200)
-    feed(c, 2, 'success', 5, steps=200)
-    feed(c, 3, 'fell', 5, steps=1490)
+    assert np.allclose(c.weights()[:2], c.weights()[1]) and c.weights()[2] > c.weights()[0], (
+        "two mastered lessons must share equally and the failing new one get more: "
+        f"{c.weights()}")
+    # The share is of the STEPS, not the episodes: a failing lesson whose episodes
+    # run 1490 steps against 200 must not swallow the pool by being slow (drawing
+    # by episode gave it 96 % of the samples and cost lesson -1), and must not be
+    # starved either (a fixed 25 % of the steps cost win10 lesson 1).
+    feed(c, 1, 'success', WINDOW, steps=200)
+    feed(c, 2, 'success', WINDOW, steps=200)
+    feed(c, 3, 'fell', WINDOW, steps=1490)
     w = c.weights()
-    steps_share = w[2] * 1490 / (w[0] * 200 + w[1] * 200 + w[2] * 1490)
-    assert abs(steps_share - NEW_SHARE) < 1e-9, (w, steps_share)
-    assert w[2] < min(w[0], w[1]), f"the long failing lesson must still be drawn less often: {w}"
+    steps = [w[0] * 200, w[1] * 200, w[2] * 1490]
+    share = steps[2] / sum(steps)
+    assert 0.5 < share < 0.95, f"the failing lesson's share of the steps is {share:.0%}: {w}"
+    assert min(steps[0], steps[1]) / sum(steps) > 0.05, (
+        f"a mastered lesson must keep its share of the steps: {[x/sum(steps) for x in steps]}")
+    # ...and a lesson that regressed gets them too, even when it is not the newest:
+    # lesson -1 sat at 0 % from 0.6M to 2M in mac26 because only the frontier was fed
+    feed(c, 1, 'fell', WINDOW, steps=1490)
+    w = c.weights()
+    assert w[0] * 1490 > 0.4 * (w[0] * 1490 + w[1] * 200 + w[2] * 1490), (
+        f"a regressed lesson behind the frontier must get the samples: {w}")
+    feed(c, 1, 'success', WINDOW, steps=200)
     feed(c, 3, 'success', WINDOW, steps=400)
     assert c.active == [1, 2, 3], "unlocked past the end of the pool"
     w = c.weights()
-    assert abs(w[0] * 200 - w[2] * 400) < 1e-9, f"a pool whose newest lesson passes must share the steps evenly: {w}"
+    assert abs(w[0] * 200 - w[2] * 400) < 1e-9, f"a mastered pool must share the steps evenly: {w}"
 
     n, r = c.rate(2)
     assert n == WINDOW and r == 1.0, (n, r)
@@ -352,10 +361,9 @@ def self_check():
           f"scores {after:.2f}")
     assert after >= before, (f"unlocking a lesson dropped the score {before:.2f} -> "
                              f"{after:.2f}; best_model.zip will freeze at the old one")
-    print(f"curriculum: unlocks at {UNLOCK_AT:.0%} over {UNLOCK_MIN}+ episodes, "
-          f"keeps every lesson in the pool, gives a failing new lesson {NEW_SHARE:.0%} of "
-          f"the STEPS until it passes {WARM_RATE:.0%} (drawn by length, not by episode), "
-          f"survives a save/load. OK")
+    print(f"curriculum: unlocks at {UNLOCK_AT:.0%} over {UNLOCK_MIN}+ episodes, keeps "
+          f"every lesson in the pool, and spends its STEPS where the failures are -- "
+          f"frontier or regressed alike, {MIN_SHARE:.0%} floor for a mastered one. OK")
 
 
 def main():
