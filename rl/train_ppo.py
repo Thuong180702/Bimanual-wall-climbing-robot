@@ -51,7 +51,15 @@ from .lessons import LESSONS, lesson_key
 WINDOW = 40          # episodes per lesson the success rate is measured over
 UNLOCK_AT = 0.60     # success rate on the newest lesson that unlocks the next one
 UNLOCK_MIN = 20      # episodes needed before that rate is believed
-NEW_SHARE = 0.25     # of the STEPS the newest lesson gets until it is being passed
+NEW_SHARE = 0.60     # of the STEPS the newest lesson gets until it is being passed.
+                     # Both extremes were measured. Drawing by EPISODES gave it 96 % of
+                     # the steps (the lessons behind it are short and it times out), and
+                     # a lesson stuck for millions of steps then took lesson -1 down to
+                     # 0-2 % (mac14, mac16, mac17). Giving it 25 % of the steps starved
+                     # it instead: lesson 1 took 4x longer than in win9, which passed it
+                     # inside 1M (win10 still 0 % at 1.4M; mac25 0 % at 5M). At 60 % the
+                     # lessons behind it still get 40 % of the steps between them, which
+                     # for 20-step episodes is thousands of them.
 WARM_RATE = 0.20     # ...which means this success rate over UNLOCK_MIN episodes.
                      # A freshly unlocked lesson is, at first, a stream of failures,
                      # and drawn as often as the rest it is half the pool's gradient
@@ -303,14 +311,17 @@ def self_check():
     assert any(len(call[1][1]) == 2 and np.allclose(call[1][1], [0.5, 0.5]) for call in env.calls), (
         "the pool was never re-drawn evenly once lesson 2 started passing")
     assert np.allclose(c.weights(), [(1 - NEW_SHARE) / 2] * 2 + [NEW_SHARE]), c.weights()
-    # ...and the share is of the STEPS: a failing lesson whose episodes run 1490
-    # steps against 200 is drawn rarely enough that it still gets NEW_SHARE of them
+    # ...and the share is of the STEPS, not the episodes: a failing lesson whose
+    # episodes run 1490 steps against 200 is drawn rarely enough to get NEW_SHARE
+    # of them -- neither the 96 % that drawing by episode gives it nor the 25 %
+    # that cost win10 lesson 1
     feed(c, 1, 'success', 5, steps=200)
     feed(c, 2, 'success', 5, steps=200)
     feed(c, 3, 'fell', 5, steps=1490)
     w = c.weights()
     steps_share = w[2] * 1490 / (w[0] * 200 + w[1] * 200 + w[2] * 1490)
-    assert abs(steps_share - NEW_SHARE) < 1e-9 and w[2] < 0.06, (w, steps_share)
+    assert abs(steps_share - NEW_SHARE) < 1e-9, (w, steps_share)
+    assert w[2] < min(w[0], w[1]), f"the long failing lesson must still be drawn less often: {w}"
     feed(c, 3, 'success', WINDOW, steps=400)
     assert c.active == [1, 2, 3], "unlocked past the end of the pool"
     w = c.weights()
