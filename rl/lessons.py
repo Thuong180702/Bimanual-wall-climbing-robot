@@ -207,6 +207,22 @@ LESSONS = {
                      _ry('seg2', 1.07, 1.65, 1.00)],
               goal_rungs=['rung_seg2'],
               goals=[[0.44, 1.55, 1.00], [0.44, 1.24, 1.00]]),
+    # The last rung before lesson 2, and the measurement that says why it is here:
+    # a crossing is a reach from the last SEAT of one segment to the first seat of
+    # the next -- 185 mm on lesson 1.5, 315 mm on lesson 2, against hops of 226 mm
+    # at the median and 307 at p90 (mac19 on lesson 1). So lesson 2's crossing sits
+    # past the p90 of the step this gait produces, with nothing in between: 0/40
+    # through every run that reached it. 0.18 m makes the reach 245 mm, one
+    # ordinary hop, and it is a single crossing like 1.2 and 1.35 -- the two
+    # lessons that turned the gap skill from "never" into 90-100 %.
+    1.7: dict(name='cross_a_wide_gap', timeout=60.0,
+              title='cross one 0.18 m gap',
+              walls=[WALL_FRONT],
+              rungs=[_ry('start', -0.45, 0.35, 1.00),
+                     _ry('seg1', 0.53, 0.95, 1.00),
+                     _ry('seg2', 1.13, 1.65, 1.00)],
+              goal_rungs=['rung_seg1'],
+              goals=[[0.44, 0.90, 1.00], [0.44, 0.59, 1.00]]),
     2: dict(name='traverse_gaps', timeout=60.0,
             title='traverse a broken rung: segments with 0.25 m gaps',
             walls=[WALL_FRONT],
