@@ -551,6 +551,31 @@ behind it, and the pair waits out the episode; and on 1.35 the left hand reaches
 across (83 % off the wall) without landing — the right hand up beside it first,
 which it does on 1.2, it does not yet do on 1.35.
 
+## `win11`: the best policy this project has had, and the run that ate it
+
+15.3M steps on the pool through lesson 2, and the two checkpoints tell opposite
+stories. At **8.0M** (`best_model.zip`): −1 98 %, 0 100 %, 1 98 %, 1.1 98 %,
+**1.2 100 %**, **1.35 92 %** (10/10 in audit), **1.5 52 %** — a hand on both far
+segments, the climb the user described, and the first policy to get there. At
+15.3M: 1.5 and 2 at 0 %, 1.35 at 12 %, −1 at 28 %.
+
+It is not undertraining, and the action std is the thread. 0.48 at the peak, 1.33
+at the end, 4.24 on one joint — and the *deterministic* policy fails too (0/10 on
+lesson 1.5, 2/10 on lesson 1), so what degraded is the mean, not the sampling.
+Once most of the pool is failing, every action is about as bad as every other, the
+advantage signal flattens, and `ent_coef` is the only term left with an opinion:
+it pays for noise, the noisier policy fails more, and the loop ran for the last
+7M steps. SB3 starts log_std at 0 (std 1.0) and every good run here came down from
+it to 0.3–0.6, so nothing legitimate needs more: `BoundExploration` clamps log_std
+to at most its starting value after every rollout. Asserted (std forced to 4.06,
+back to 1.00 after one update), and checked by resuming the 8.0M checkpoint with
+it for 1.2M steps: std 0.46–0.48 with the cap binding at 1.00, lesson 1.2 at
+100 %, 1.35 at 90–98 %, 1.5 oscillating 20–52 %, lesson 2 unlocked again, and no
+collapse. The swings between lessons are still there; the spiral is not.
+
+After a run has degraded, `--resume --from-best` continues from `best_model.zip`
+rather than from the wreck.
+
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 
 10.8M steps on the curriculum with lessons −2 … 1.5. The best checkpoint, at 2.66M:

@@ -202,6 +202,31 @@ class Curriculum(BaseCallback):
         return True
 
 
+class BoundExploration(BaseCallback):
+    """Keep the action noise from running away: log_std may never exceed its own
+    starting value.
+
+    `win11` (15.3M steps) peaked at 8.0M -- lesson 1.35 at 92 %, lesson 1.5 at 52 %,
+    the best policy this project has had -- and then took itself apart: by 15.3M
+    lesson 1.5 and 2 were at 0 %, -1 at 28 %, and the DETERMINISTIC policy failed
+    too (0/10 on lesson 1.5), so it was the mean that went, not only the sampling.
+    The signature is the action std: 0.48 at the peak, 1.33 at the end, 4.24 on one
+    joint. It is a feedback loop -- once most of the pool is failing, every action
+    looks equally bad, the advantage signal flattens, `ent_coef` is the only term
+    left with an opinion and it pays for noise; the noisier policy fails more.
+    SB3 starts log_std at 0 (std 1.0) and every good run here came DOWN from it
+    (0.3-0.6), so nothing legitimate needs more. This does not touch the swings
+    themselves; it stops them from becoming a spiral.
+    """
+
+    def _on_rollout_start(self):
+        self.model.policy.log_std.data.clamp_(max=0.0)
+        return True
+
+    def _on_step(self):
+        return True
+
+
 class Checkpoint(BaseCallback):
     """Model + observation statistics + curriculum state, written together.
 
@@ -385,6 +410,9 @@ def main():
                          'usually too small to beat it; auto = cuda if present. '
                          'Run `python -m rl.bench` on the machine before deciding')
     ap.add_argument('--resume', action='store_true')
+    ap.add_argument('--from-best', dest='from_best', action='store_true',
+                    help='with --resume, continue from best_model.zip instead of the '
+                         'latest checkpoint -- what to do after a run has degraded')
     ap.add_argument('--no-curriculum', dest='curriculum', action='store_false',
                     help='put every lesson in the pool from step 0')
     # 3e-3 was too high: after 4M steps the action std had grown to 1.52, above the
@@ -402,8 +430,9 @@ def main():
     pool = [lesson_key(x) for x in a.lessons.split(',')]
     run = os.path.join('out', a.name)
     state = {}
+    ck = 'best_' if a.from_best else ''
     if a.resume:
-        f = os.path.join(run, 'state.json')
+        f = os.path.join(run, ck + 'state.json')
         if not os.path.exists(f):
             raise SystemExit(f"nothing to resume: {f} does not exist")
         state = json.load(open(f))
@@ -411,10 +440,11 @@ def main():
     base = VecMonitor(SubprocVecEnv(
         [(lambda i=i: MultiLesson(pool, seed=i)) for i in range(a.envs)]))
     if a.resume:
-        venv = VecNormalize.load(os.path.join(run, 'vecnorm.pkl'), base)
+        venv = VecNormalize.load(os.path.join(run, ck + 'vecnorm.pkl'), base)
         venv.training = True
-        model = PPO.load(os.path.join(run, 'model'), env=venv, device=a.device)
-        print(f"resumed {run} at {model.num_timesteps} steps, "
+        model = PPO.load(os.path.join(run, ck + 'model'), env=venv, device=a.device)
+        print(f"resumed {run} at {model.num_timesteps} steps "
+              f"{'from its BEST checkpoint ' if a.from_best else ''}"
               f"pool {state.get('active')}")
     else:
         venv = VecNormalize(base, norm_reward=False)
@@ -449,7 +479,7 @@ def main():
     try:
         # no progress_bar: it pulls in tqdm + rich, and verbose=1 already prints the
         # rollout table with elapsed time and total_timesteps every update
-        model.learn(total_timesteps=a.steps, callback=[cur, ckpt],
+        model.learn(total_timesteps=a.steps, callback=[cur, ckpt, BoundExploration()],
                     reset_num_timesteps=not a.resume)
     except KeyboardInterrupt:
         print("\ninterrupted -- saving")
