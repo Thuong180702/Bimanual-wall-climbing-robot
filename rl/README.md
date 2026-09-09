@@ -587,14 +587,64 @@ Narrowing the pool to the four that matter (`--resume --lessons 1.2,1.35,1.5,2`)
 for 1.5M steps holds them instead — 1.2 95 %, 1.35 98 %, 1.5 oscillating 25–60 %
 and ending at 57 % rather than collapsing.
 
-Lesson 2 stayed at 0 % throughout, and the reason is a measurement, not training
-time. A crossing is a reach from the last SEAT of one segment to the first seat of
-the next: 185 mm on lesson 1.5 and **315 mm on lesson 2**, against hops of 226 mm
-at the median and 307 mm at p90 for this gait. Lesson 2's crossing sits past the
-p90 of the step the policy has, with nothing in between — which is exactly the
-hole that lessons 1.2 and 1.35 filled below it, and those went from never to
-90–100 %. Lesson **1.7** (one 0.18 m gap, a 245 mm crossing) now sits between 1.5
-and 2.
+Lesson 2 stayed at 0 % throughout. A crossing is a reach from the last SEAT of one
+segment to the first seat of the next: 185 mm on lesson 1.5 and **315 mm on lesson
+2**. The policy that has to attempt it never produces a step that long — 447 hops
+measured on the 8.0M checkpoint, median 43 mm, p90 185 mm, longest 300 mm, and
+**not one** at 315 mm. That is a statement about the gait it has learnt, NOT about
+what the robot can do: the arms span 671 mm, the hands would be 435 mm apart on
+landing, and pulling up on the holding arm, shifting the torso across, or swinging
+the body all extend the reach further. (An earlier version of this section called
+lesson 2 geometrically blocked. It is not; the user was right to reject that.) The
+lesson is that a curriculum step should sit inside the distribution the current
+gait actually samples, which is what lessons 1.2 and 1.35 did below it — they went
+from never to 90–100 %. Lesson **1.7** (one 0.18 m gap, a 245 mm crossing, made by
+1–2 % of this policy's steps) now sits between 1.5 and 2.
+
+## The elbow pointed inward, and why the hook was the reason
+
+The user watching a pull-up: the elbows fold *inward*, across the body, where a
+person's go out or forward. Measured on the 8.0M policy over the steps where a hand
+is loaded and the torso is rising (lesson 1.35): the right elbow sits **44 mm
+inboard** of the shoulder-to-wrist line on average, 107 mm at p10, inward on 68 %
+of steps — and the shoulder rotation reads **±90°, its own limit, on every one of
+them**.
+
+That last number is the thread. Raising the arm overhead is 160° of shoulder
+flexion, which carries the hook round with it until its throat faces away from the
+wall; bringing it back takes **175° about the arm's axis**. The forearm roll has
+±85° (a human's pronation/supination, and correct), so the other 90° has to come
+from the shoulder rotation, which is therefore pinned at its stop. And the shoulder
+rotation is exactly what aims the elbow's hinge: at ±90° that hinge points at the
+wall, so flexing the elbow sweeps the forearm sideways and the elbow bulges toward
+the midline. Searching every posture whose hook orientation is within 15° of the
+one that latches, the most outward elbow available was still 88 mm *inboard*: with
+that mounting the human posture did not exist.
+
+The fix is the mounting, not the joint limits: the hook bodies are rotated 180°
+about the forearm axis (`quat="0 0 0 1"`), and the hang keyframe recomputed —
+shoulder rotation 0° and forearm roll ∓5° reproduce the old hook pose to 0.2°, with
+the throat still on the rung to 2 mm. Everything the code reads in hook-local
+coordinates (`THROAT_PT`, `THROAT_X/Z`, the pads, the finger) rides along with it
+and is unchanged. After it:
+
+| | before | after |
+|---|---|---|
+| elbow hinge, in the torso frame | (0.94, 0, −0.34) — pointing at the wall | **(0, 1, 0)** — lateral, like a human's |
+| flexing the elbow 120° moves it | 114 mm **inboard** | 172 mm **forward**, 8 mm sideways |
+| shoulder rotation while hanging | ±90°, at the stop | **0°**, mid-range |
+
+and the policy can now choose: rotation 0 puts the elbows forward, −30 to −60 puts
+them out to the sides. Both are postures a climber uses. A fresh 1.5M-step run on
+the fixed model unlocks −2 → 1.2 at the usual pace, so nothing about learning
+changed.
+
+**What it costs:** `controller/test_climb` went from failing one phase (8) to
+failing five (3, 4, 5, 6, 8). The classical controller's servo weights were swept
+empirically against the old arm posture — its own comment records the sweep — and
+the new posture changes the Jacobian. Three values of `W_ALONG_COARSE` were tried
+and none converged, so this is a re-tune of that stack, not a constant. The RL
+side is unaffected and its own checks all pass.
 
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 

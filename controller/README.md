@@ -1,3 +1,11 @@
+> **Out of date since the hook re-mount (Sept 2026).** The hook bodies were rotated
+> 180° about the forearm axis so the elbow flexes the way a human's does (see
+> `rl/README.md`), which changes the arm posture every move here was tuned against:
+> `test_climb` now fails phases 3, 4, 5, 6 and 8, where before the change it failed
+> only phase 8. The servo weights in `moves.py` need re-sweeping against the new
+> posture. Nothing structural is known to be wrong: phases 0, 1, 2 and 7 — keyframe,
+> hold map, estimator, slide resistance — still pass.
+
 # Climbing controller
 
 Classical controller for the bimanual wall-climbing robot in `../urdf/scene.xml`. The
