@@ -1179,6 +1179,7 @@ def main():
     from urdf.climbing_env import SLAM_SIG
     t = ClimbTask(1)
     t.reset()
+    t.env._slam_rng = np.random.default_rng(0)   # the test must not be a coin toss
     z = np.zeros(17)
     ax = t.segs['rung_start'][1]
     stale = lambda: float((t._throat_true(t.anchor) - t.hold[t.anchor][1]) @ ax)
