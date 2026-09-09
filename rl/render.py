@@ -1,6 +1,6 @@
 """Render the lesson scenes to PNG.
 
-    python -m rl.render                    # a sheet of all sixteen + close-ups
+    python -m rl.render                    # a sheet of all seventeen + close-ups
     python -m rl.render --lesson 6         # just one, bigger
 
 No image dependency: PNGs are written by piping a raw frame to ffmpeg, the same

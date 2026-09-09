@@ -1,6 +1,6 @@
 # PPO curriculum
 
-The frame for training PPO on the climbing tasks, as sixteen lessons ordered by
+The frame for training PPO on the climbing tasks, as seventeen lessons ordered by
 difficulty instead of the mixed scene.
 
 ```bash
@@ -24,7 +24,7 @@ python -m rl.status --name climber --watch
 
 | file | what it is |
 |---|---|
-| `lessons.py` | the 16 lesson specs + scene generator (writes `urdf/lessons/`) |
+| `lessons.py` | the 17 lesson specs + scene generator (writes `urdf/lessons/`) |
 | `climb_task.py` | Gymnasium-shaped env: obs / action / reward / termination |
 | `train_ppo.py` | thin SB3 PPO entry point |
 | `bench.py` | simulator throughput vs env count, and cpu vs mps for the policy |
@@ -37,7 +37,7 @@ python -m rl.status --name climber --watch
 −2. left hand, one step (0.30 m) → −1. right hand, one step (0.30 m, the other way)
 → 0. both hands, one step (0.40 m) → 1. traverse, continuous rung → 1.1. stop at the
 end of a rung → 1.2 / 1.35. cross one gap of 0.04 / 0.08 m → 1.5. traverse, two gaps
-of 0.12 m → 2. traverse, gaps (0.25 m) → 3. climb up → 4. up-over-down → 5. climb down → 6. staggered heights →
+of 0.12 m → 1.7. cross one 0.18 m gap → 2. traverse, gaps (0.25 m) → 3. climb up → 4. up-over-down → 5. climb down → 6. staggered heights →
 7. perpendicular wall → 8. wall behind the back → 9. row beyond static reach (needs
 a dynamic move).
 
@@ -575,6 +575,26 @@ collapse. The swings between lessons are still there; the spiral is not.
 
 After a run has degraded, `--resume --from-best` continues from `best_model.zip`
 rather than from the wreck.
+
+## `win11 2`: the cap holds, the pool does not, and a crossing nothing had taught
+
+Four million steps resumed from win11's 8.0M peak, with `BoundExploration`. It
+worked as designed — std 0.46 → 0.52 with the cap binding at 1.00, no spiral — and
+the run still did not improve: the best score stayed at 7.30 for the whole 4M and
+lesson 1.5 went 55 % → 8 %, lesson 0 100 % → 40 %. What is left is interference:
+nine lessons through one 64×64 network, and what one lesson gains another pays.
+Narrowing the pool to the four that matter (`--resume --lessons 1.2,1.35,1.5,2`)
+for 1.5M steps holds them instead — 1.2 95 %, 1.35 98 %, 1.5 oscillating 25–60 %
+and ending at 57 % rather than collapsing.
+
+Lesson 2 stayed at 0 % throughout, and the reason is a measurement, not training
+time. A crossing is a reach from the last SEAT of one segment to the first seat of
+the next: 185 mm on lesson 1.5 and **315 mm on lesson 2**, against hops of 226 mm
+at the median and 307 mm at p90 for this gait. Lesson 2's crossing sits past the
+p90 of the step the policy has, with nothing in between — which is exactly the
+hole that lessons 1.2 and 1.35 filled below it, and those went from never to
+90–100 %. Lesson **1.7** (one 0.18 m gap, a 245 mm crossing) now sits between 1.5
+and 2.
 
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 
