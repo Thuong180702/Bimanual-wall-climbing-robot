@@ -15,6 +15,7 @@ only; PPO learns from scratch, so it gets the corrected model from day one.
 
     python -m rl.lessons      # writes urdf/lessons/*.xml and smoke-checks each one
 """
+import hashlib
 import os
 import numpy as np
 from controller import SCENE, URDF
@@ -304,16 +305,34 @@ def _path(lesson):
     return os.path.join(OUT, f"{lesson_tag(lesson)}_{LESSONS[lesson]['name']}.xml")
 
 
+def _stamp(lesson):
+    """what this lesson's scene is generated FROM, as one short hash"""
+    h = hashlib.sha256()
+    h.update(open(SCENE, 'rb').read())
+    h.update(repr(sorted(LESSONS[lesson].items(), key=lambda kv: kv[0])).encode())
+    h.update(repr(WIDEN + PAD).encode())
+    return h.hexdigest()[:16]
+
+
 def xml_path(lesson):
-    """the lesson's scene file, written on demand if it is not there.
+    """the lesson's scene file, written on demand -- if it is missing OR stale.
 
     `urdf/lessons/` is generated from `scene.xml` and gitignored, so a fresh clone
     -- or a pull that adds a lesson -- has no scene for it, and MuJoCo reports that
-    as a bare ParseXML error once per worker process. Nothing is regenerated that
-    already exists: edit `scene.xml` or a spec and you still run `rl.lessons`.
+    as a bare ParseXML error once per worker process.
+
+    Staleness is why the check is a hash and not just `os.path.exists`. `win13`
+    trained 7.6M steps on the robot as it was BEFORE the hook was re-mounted: the
+    scenes were already on disk from an earlier run, a pull brought the new
+    `scene.xml`, and nothing regenerated them. It was only caught by replaying the
+    checkpoint -- 12/12 on the old model, 0/12 on the new one -- which is an
+    expensive way to learn that a model edit did not take. The stamp covers
+    `scene.xml`, this lesson's spec and the patch lists, so any of them moving
+    rewrites the file.
     """
     p = _path(lesson)
-    if not os.path.exists(p):
+    want = _stamp(lesson)
+    if not os.path.exists(p) or f'<!-- stamp {want} -->' not in open(p).read(2000):
         write(lesson)
     return p
 
@@ -322,7 +341,8 @@ def write(lesson):
     spec = LESSONS[lesson]
     xml = open(SCENE).read()
     xml = xml.replace('<mujoco model="bimanual_wall_climber_scene">',
-                      f'<mujoco model="{lesson_tag(lesson)}_{spec["name"]}">')
+                      f'<mujoco model="{lesson_tag(lesson)}_{spec["name"]}">\n'
+                      f'  <!-- stamp {_stamp(lesson)} -->')
     xml = xml.replace('meshdir="meshes/"', 'meshdir="../meshes/"')
     for old, new in WIDEN + PAD:
         assert old in xml, f"scene.xml changed; patch target not found: {old}"

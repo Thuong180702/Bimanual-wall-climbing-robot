@@ -646,6 +646,25 @@ the new posture changes the Jacobian. Three values of `W_ALONG_COARSE` were trie
 and none converged, so this is a re-tune of that stack, not a constant. The RL
 side is unaffected and its own checks all pass.
 
+## `win13`: 7.6M steps on the robot as it was before the fix
+
+The run looked healthy — best at 3.79M with −1 100 %, 0 98 %, 1 95 %, 1.1 98 %,
+**1.2 98 %**, 1.35 88 %, 1.5 22 %, faster than any run before it — and then every
+replay of that checkpoint fell 12/12, on lessons it was scoring 98 % on. The
+checkpoint was not the problem. `urdf/lessons/*.xml` is generated and gitignored,
+`xml_path` wrote a scene only when the file was **missing**, and those files were
+already on disk from the previous run. Pulling the re-mounted hook changed
+`scene.xml` and nothing regenerated them: the run trained 7.6M steps on the old
+robot, elbows and all. Replaying the same checkpoint against the pre-fix scene
+scores **12/12** on lesson 1.2 and confirms it.
+
+The scenes now carry a stamp — a hash of `scene.xml`, the lesson's own spec and
+the patch lists — and `xml_path` rewrites any file whose stamp does not match, so
+a model edit cannot silently fail to reach training again. Worth saying plainly:
+the only reason this was caught is that a checkpoint was replayed and the numbers
+disagreed with the training log. A generated artefact that is only checked for
+existence is a place where a fix goes to die.
+
 ## The wrist: human where it holds, stopped where it lets go
 
 Asked to give the wrist a human range (−70° extension … +80° flexion, against the
