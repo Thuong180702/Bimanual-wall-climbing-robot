@@ -665,11 +665,12 @@ the only reason this was caught is that a checkpoint was replayed and the number
 disagreed with the training log. A generated artefact that is only checked for
 existence is a place where a fix goes to die.
 
-## The wrist: human where it holds, stopped where it lets go
+## The wrist: a hook's wrist is its grip, so it stays at ±25°
 
 Asked to give the wrist a human range (−70° extension … +80° flexion, against the
-±25° it had), the measurement decided the two ends separately. Hanging on a rung
-and turning one wrist while reading the hook's contact force:
+±25° it had), the measurement decided both ends — and then a 20M-step run decided
+the rest. Hanging on a rung and turning one wrist while reading the hook's contact
+force:
 
 | flexion (+) | 0° | +25° | +50° | +80° |
 |---|---|---|---|---|
@@ -679,21 +680,33 @@ and turning one wrist while reading the hook's contact force:
 |---|---|---|---|---|
 | hold | 44 N | 20 N | 13 N | **0 N — off the rung** |
 
-Flexion wraps the hook tighter, so the human +80° is free. Extension unloads it:
-past −45° the hook is carrying nothing, and at −60° it is off. Handing a policy
-70° of extension is handing it 70° of letting go, and it took it — a 1.5M-step run
-with the full human range never passed the FIRST lesson (0 %, against −2 → 1.2 in
-the same budget on the model before it). Same shape as the finger's `GRIP_CLIFF`,
-and the same answer: a mechanical stop, not a reward term. The range is now
-**−30° … +80°**, three times the old travel on the side that helps.
+Extension unloads the hook — 70° of it is 70° of letting go, and a 1.5M-step run
+with the full human range never passed the first lesson. So the extension stop went
+to −30°. Flexion looked free: it wraps the hook tighter. It is not free, because
+tighter is the problem. With the wrist flexed and the finger opened, the hook
+should come off the rung; measured:
 
-The cost is honest: on 1.5M-step sanity runs the early curriculum is slower with
-the wider wrist than with ±25° (which reached lesson 1.1 at 88 % and unlocked 1.2),
-and two runs 5° apart on the extension stop landed on opposite sides of that
-(−30° learnt all three of −2, −1 and 0; −25° stalled lesson 0 at 0 %), which is
-this project's usual run-to-run variance rather than a difference between them. If
-a long run stalls in the first three lessons, the wrist range is the first thing to
-put back.
+| wrist | hold | finger opened | arm lifted |
+|---|---|---|---|
+| 0° | 45 N | 0 N | 0 N — released |
+| +25° | 58 N | 0 N | 0 N — released |
+| +50° | 118 N | 0 N | **54 N — re-caught** |
+| +80° | 118 N | **47 N** | **57 N — cannot let go** |
+
+Past +25° the wrist locks the hook onto the rung, and `win14` (5.5M steps on
+−30…+80) found the lock: on lesson 1 its right wrist sat at **+77° mean, at the
++80° stop 95 % of the time**, the right hand took **zero** holds in twelve
+episodes, and lesson 1 stayed at 0 % for the 3.5M steps after it unlocked while
+the left hand shuffled 37 times per episode. Every +80° configuration tried
+stalled in the early curriculum (−70…+80, −30…+80, −25…+80); the one ±25° run on
+the same fixed robot went −2 → lesson 1.2 in 1.5M. A human wrist has 150° of
+travel because fingers do the gripping. A hook's wrist *is* the grip, and the
+range where it can both hold and let go is the ±25° it had. Back to ±25°.
+
+The elbow fix, measured in the same run, did what it was for: on lesson 0 the
+shoulder rotation sits at −45° (left) and −4° (right) — mid-range, where the old
+mounting pinned it at ±90° — and the elbows point outward on 94–100 % of loaded,
+rising steps.
 
 ## `win8`: lesson 1 passed, and a 5° trap under the far ledge
 

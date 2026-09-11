@@ -228,7 +228,7 @@
                       <geom class="vis" mesh="forearm_rot_L"/>
                       <geom class="col" type="cylinder" size="0.02750" fromto="0.00000 0.00000 0.00000 0.00000 0.00000 -0.06000"/>
                       <body name="wrist_L" pos="0.000000 0.000000 -0.060000">
-                        <joint name="wrist_L_flexion" type="hinge" axis="0 1 0" range="-0.52360 1.39626"/>
+                        <joint name="wrist_L_flexion" type="hinge" axis="0 1 0" range="-0.43633 0.43633"/>
                         <inertial pos="-0.000000 -0.000000 -0.010000" mass="0.040045" fullinertia="1.23034469e-05 1.23034469e-05 1.98192347e-05 5.00791751e-20 -4.91707991e-19 8.8817842e-20"/>
                         <geom class="vis" mesh="wrist_L"/>
                         <geom class="col" type="cylinder" size="0.02750" fromto="0.00000 0.00000 0.00000 0.00000 0.00000 -0.02000"/>
@@ -279,7 +279,7 @@
                       <geom class="vis" mesh="forearm_rot_R"/>
                       <geom class="col" type="cylinder" size="0.02750" fromto="0.00000 0.00000 0.00000 0.00000 0.00000 -0.06000"/>
                       <body name="wrist_R" pos="0.000000 0.000000 -0.060000">
-                        <joint name="wrist_R_flexion" type="hinge" axis="0 1 0" range="-0.52360 1.39626"/>
+                        <joint name="wrist_R_flexion" type="hinge" axis="0 1 0" range="-0.43633 0.43633"/>
                         <inertial pos="-0.000000 0.000000 -0.010000" mass="0.040045" fullinertia="1.23034469e-05 1.23034469e-05 1.98192347e-05 -2.41531753e-20 -1.35823715e-20 0"/>
                         <geom class="vis" mesh="wrist_R"/>
                         <geom class="col" type="cylinder" size="0.02750" fromto="0.00000 0.00000 0.00000 0.00000 0.00000 -0.02000"/>
@@ -316,7 +316,7 @@
     <position name="act_shoulder_L_rotation" joint="shoulder_L_rotation" kp="500" dampratio="1" ctrlrange="-1.22173 1.57080" forcerange="-46 46"/>
     <position name="act_elbow_L" joint="elbow_L" kp="500" dampratio="1" ctrlrange="-2.09440 0.00000" forcerange="-39 39"/>
     <position name="act_forearm_L_roll" joint="forearm_L_roll" kp="200" dampratio="1" ctrlrange="-1.48353 1.48353" forcerange="-23 23"/>
-    <position name="act_wrist_L_flexion" joint="wrist_L_flexion" kp="150" dampratio="1" ctrlrange="-0.52360 1.39626" forcerange="-17 17"/>
+    <position name="act_wrist_L_flexion" joint="wrist_L_flexion" kp="150" dampratio="1" ctrlrange="-0.43633 0.43633" forcerange="-17 17"/>
     <position name="act_wrist_L_deviation" joint="wrist_L_deviation" kp="150" dampratio="1" ctrlrange="-0.52360 0.34907" forcerange="-15 15"/>
     <position name="act_finger_L" joint="finger_L" kp="200" dampratio="1" ctrlrange="-1.57080 0.34907" forcerange="-13 13"/>
     <position name="act_shoulder_R_abduction" joint="shoulder_R_abduction" kp="800" dampratio="1" ctrlrange="-3.14159 0.00000" forcerange="-68 68"/>
@@ -324,7 +324,7 @@
     <position name="act_shoulder_R_rotation" joint="shoulder_R_rotation" kp="500" dampratio="1" ctrlrange="-1.57080 1.22173" forcerange="-46 46"/>
     <position name="act_elbow_R" joint="elbow_R" kp="500" dampratio="1" ctrlrange="-2.09440 0.00000" forcerange="-39 39"/>
     <position name="act_forearm_R_roll" joint="forearm_R_roll" kp="200" dampratio="1" ctrlrange="-1.48353 1.48353" forcerange="-23 23"/>
-    <position name="act_wrist_R_flexion" joint="wrist_R_flexion" kp="150" dampratio="1" ctrlrange="-0.52360 1.39626" forcerange="-17 17"/>
+    <position name="act_wrist_R_flexion" joint="wrist_R_flexion" kp="150" dampratio="1" ctrlrange="-0.43633 0.43633" forcerange="-17 17"/>
     <position name="act_wrist_R_deviation" joint="wrist_R_deviation" kp="150" dampratio="1" ctrlrange="-0.34907 0.52360" forcerange="-15 15"/>
     <position name="act_finger_R" joint="finger_R" kp="200" dampratio="1" ctrlrange="-1.57080 0.34907" forcerange="-13 13"/>
   </actuator>
