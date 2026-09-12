@@ -159,7 +159,7 @@ def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
                 azimuth=azimuth)
     vid.cam.distance = distance
     base = t.env.base
-    done_n, n, reasons = 0, 0, []
+    done_n, n, reasons, marks = 0, 0, [], []
     while done_n < episodes and n < cap * episodes:
         act, _ = model.predict(obs, deterministic=deterministic)
         obs, r, dn, info = venv.step(act)
@@ -175,8 +175,16 @@ def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
         if dn[0]:
             done_n += 1
             reasons.append(info[0].get('reason'))
+            marks.append((n // stride) / fps)
     vid.close()
-    print(f"{path}: {episodes} episodes, {n} control steps, ends {reasons}")
+    # a multi-episode clip is unwatchable without an index: where each episode ends,
+    # in playback seconds, so a reader can jump straight to the one being discussed
+    at, idx = 0.0, []
+    for r, end in zip(reasons, marks):
+        idx.append(f"{int(at)//60}:{int(at)%60:02d} {r}")
+        at = end
+    print(f"{path}: {episodes} episodes, {n} control steps, {at/60:.1f} min")
+    print("   " + " | ".join(idx))
     return path
 
 
