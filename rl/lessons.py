@@ -224,6 +224,24 @@ LESSONS = {
                      _ry('seg2', 1.13, 1.65, 1.00)],
               goal_rungs=['rung_seg1'],
               goals=[[0.44, 0.90, 1.00], [0.44, 0.59, 1.00]]),
+    # Between 1.7 and 2 the step used to change two things at once -- the gap goes
+    # 0.18 -> 0.25 m AND one gap becomes two -- which is the double step the rest of
+    # this curriculum exists to avoid. Measured on win15 3's best, that is exactly
+    # where it breaks: in 6 of 10 lesson-2 episodes the lead hook crossed the gap
+    # while the trailing one was still 246-313 mm short of its own seat edge, leaving
+    # the arms at 583-651 mm of a ~671 mm span -- full stretch, the free hook only
+    # 3-25 mm onto the next seat, and the trailing hand then too far back to follow.
+    # All six failed; the four that kept the trailing hand within 64 mm of the edge
+    # hold both successes. So 1.85 isolates the width: one 0.25 m gap, nothing else
+    # new, with the goals on seg1 the way 1.7 has them.
+    1.85: dict(name='cross_a_wide_gap_again', timeout=60.0,
+               title='cross one 0.25 m gap',
+               walls=[WALL_FRONT],
+               rungs=[_ry('start', -0.45, 0.35, 1.00),
+                      _ry('seg1', 0.60, 0.95, 1.00),
+                      _ry('seg2', 1.20, 1.65, 1.00)],
+               goal_rungs=['rung_seg1'],
+               goals=[[0.44, 0.90, 1.00], [0.44, 0.66, 1.00]]),
     2: dict(name='traverse_gaps', timeout=60.0,
             title='traverse a broken rung: segments with 0.25 m gaps',
             walls=[WALL_FRONT],

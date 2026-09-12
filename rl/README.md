@@ -783,6 +783,48 @@ One thing that did not happen this time: the run did not eat its own peak. The
 latest checkpoint is 1.2M steps past the best and still within a few points of it,
 against `win15 2`'s 7.7M-step slide from 47 % to 17 %.
 
+## Why the lead hook crosses before the trailing one has walked up
+
+Watching `win15 3`'s lesson-2 video the user asked the right question: in the
+failed attempts the robot reaches for the next segment *before* advancing along
+the one it is on, so the free arm stretches to its limit and still comes up short
+— why not walk to the edge first, which is both closer and cheaper?
+
+It is doing exactly that, and the split is clean. Taking each episode's best reach
+— the step where the free hook comes nearest the next seat while exactly one hand
+carries the load — over ten episodes of the best checkpoint:
+
+| | holding hand vs its own seat edge | hand separation | free hook onto the next seat | outcome |
+|---|---|---|---|---|
+| 4 episodes | within **64 mm** of the edge | 417–573 mm | 115–235 mm | **both successes** |
+| 6 episodes | **246–313 mm short** of it | 583–651 mm | 3–25 mm | 5 timeouts, 1 fall |
+
+The arm span is about 671 mm, so the second group is reaching at full stretch, and
+it arrives 3–25 mm onto a seat — the near edge, the catch that slips. Worse, it
+strands the other hand: with the lead hook 4 mm onto `seg1` at +0.636 and the
+trailing one back at +0.03, the trailing hand is 0.6 m from the gap it now has to
+cross, and nothing can move. That is the deadlock behind every one of those
+timeouts.
+
+The energy half of the question is right too. Reaching at full stretch costs
+**104.2 N·m** of total joint torque against **71.9** from close, 45 % more. But
+`K_EFFORT` prices that difference at 0.0016 per step — about **0.24** over a
+150-step reach — against 1.25 for the 250 mm of rung the hand left behind and a
+20-point swing between success and failure. The robot's own effort term already
+measures the waste; it is charged at roughly 1 % of what the decision is worth.
+
+The fix is not a new penalty. Between 1.7 and 2 the curriculum changes two things
+at once — the gap goes 0.18 → 0.25 m *and* one gap becomes two — which is the
+double step the rest of these lessons exist to avoid, and the measurement says the
+width is what breaks. **Lesson 1.85 is one 0.25 m gap and nothing else new.**
+
+Adding it surfaced a second bug. `Curriculum` unlocked `pool[len(active)]`, an
+index, so inserting a lesson into the middle of the pool on a resume left the
+restored active set out of step with pool positions: with `active` =
+[1.2, 1.35, 1.5, 1.7, 2] and 1.85 inserted, the next unlock was lesson **2 again**,
+already active, and 1.85 would never have been trained. It now unlocks the first
+pool lesson that is not yet active.
+
 ## The wrist: a hook's wrist is its grip, so it stays at ±25°
 
 Asked to give the wrist a human range (−70° extension … +80° flexion, against the

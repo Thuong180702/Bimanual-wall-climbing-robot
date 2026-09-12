@@ -187,11 +187,17 @@ class Curriculum(BaseCallback):
         elif any(done for done in self.locals['dones']):
             # the lengths moved: keep the step shares honest (cheap; a list of floats)
             self.training_env.env_method('set_active', self.active, self.weights())
-        if self.active[-1] == self.pool[-1]:
+        locked = [k for k in self.pool if k not in self.active]
+        if not locked:
             return True
         n, r = self.rate(self.active[-1])
         if n >= UNLOCK_MIN and r >= UNLOCK_AT:
-            self.active.append(self.pool[len(self.active)])
+            # the next lesson is the first one in the pool that is not yet active,
+            # NOT `pool[len(active)]`: inserting a lesson into the middle of the pool
+            # on a resume (1.85 between 1.7 and 2, say) leaves the restored active set
+            # out of step with pool positions, and the index form then re-appends a
+            # lesson that is already active while the new one is never trained at all
+            self.active.append(locked[0])
             self.hist.setdefault(self.active[-1], [])
             self._warm = self.warming()
             self.training_env.env_method('set_active', self.active, self.weights())
