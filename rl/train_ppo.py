@@ -465,9 +465,19 @@ def main():
     # `--lessons` on a resume -- so the restored active set has to be filtered to it
     # rather than carried over wholesale.
     active = [k for k in (state.get('active') or []) if k in pool] or None
+    # A narrowed resume changes what the score MEANS. `score` sums the success
+    # rates over the active lessons, so a best of 6.35 earned over eight of them
+    # can never be beaten by three, and `best_model.zip` is then frozen for the
+    # whole run: a check that resumed win15's best on lessons 1.2-2 took lesson 1.5
+    # from 10 % to 22 % and then swung back to 2 %, and the 22 % policy was never
+    # written. Dropping a lesson resets the bar.
+    best = state.get('best')
+    if active is not None and active != (state.get('active') or []):
+        print(f"[curriculum] pool narrowed to {active}; the best score starts over")
+        best = None
     cur = Curriculum(pool, active, state.get('history'), a.curriculum)
     venv.env_method('set_active', cur.active, cur.weights())
-    ckpt = Checkpoint(run, cur, a.ckpt_every, state.get('best'))
+    ckpt = Checkpoint(run, cur, a.ckpt_every, best)
 
     # Ctrl-C during a rollout would otherwise lose everything since the last
     # checkpoint; SIGTERM likewise, so a killed run is resumable too.

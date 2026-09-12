@@ -665,6 +665,32 @@ the only reason this was caught is that a checkpoint was replayed and the number
 disagreed with the training log. A generated artefact that is only checked for
 existence is a place where a fix goes to die.
 
+## `win15`: the fixed robot climbs, and the pool is what holds it back
+
+11.5M steps on the re-mounted hook with the wrist back at ±25°, and the model
+edits did what they were for. In the learnt gait on lesson 1.2 the shoulder
+rotation sits at −1° (left) and +58° (right) — mid-range, where the old mounting
+pinned it at ±90° — the elbows point outward on **100 %** of loaded, rising steps,
+and the wrists sit at +21° / +8° with no jamming (`win14`'s right wrist had lived
+at its +80° stop). Replaying the best checkpoint: lesson 1.2 **10/12**, lesson
+1.35 **10/12**, lesson 1.5 2/12 with both hooks reaching the second far segment
+and a hand closing to 40 mm of its goal. On 1.5 the seats alternate the way the
+user described — left +0.29, right +0.20, left +0.48, right +0.24, left +0.57 —
+so the technique is there; the finishes are not.
+
+What the run also shows is where the ceiling is. The best checkpoint is at 6.78M
+and **4.7M further steps did not beat it**: lesson 1.5 went 10 % → 8 %, lesson −1
+fell to 48 %. Resuming that checkpoint on the hard lessons only
+(`--lessons 1.2,1.35,1.5,1.7,2`) moved 1.5 from 10 % to **22 % in 0.8M steps**
+before swinging back to 2 % — eight lessons through one 64×64 network is the
+limit, not the number of steps.
+
+That experiment also found a hole in the safety net. `score` sums the success
+rates over the **active** lessons, so a best of 6.35 earned over eight of them can
+never be beaten by three: `best_model.zip` was frozen for the whole narrowed run
+and the 22 % policy was thrown away. Narrowing the pool on a resume now resets the
+bar, so the peak of a narrowed run is kept.
+
 ## The wrist: a hook's wrist is its grip, so it stays at ±25°
 
 Asked to give the wrist a human range (−70° extension … +80° flexion, against the
