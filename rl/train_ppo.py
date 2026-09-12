@@ -419,7 +419,13 @@ def main():
     # 1.0 it starts at, so the entropy bonus was beating the policy gradient and the
     # mean action stayed useless -- deterministic eval fell 12/12 while sampling from
     # the same policy succeeded 8/12. Lower it and the distribution can tighten.
-    ap.add_argument('--ent-coef', type=float, default=1e-3)
+    # Left unset it means "whatever this run already uses": a fresh run gets 1e-3,
+    # a resume keeps what its checkpoint was trained with. Passing it on a resume
+    # used to do NOTHING -- `PPO.load` restores the saved value and only the fresh
+    # branch below read the flag -- so `win15 3` was asked for 3e-4 and trained all
+    # 10M steps at 1e-3 without a word. A silently ignored knob is worse than no
+    # knob; the resume now prints what it will actually use.
+    ap.add_argument('--ent-coef', type=float, default=None)
     ap.add_argument('--ckpt-every', type=int, default=100_000)
     ap.add_argument('--self-check', action='store_true',
                     help='test the curriculum logic, train nothing')
@@ -443,7 +449,10 @@ def main():
         venv = VecNormalize.load(os.path.join(run, ck + 'vecnorm.pkl'), base)
         venv.training = True
         model = PPO.load(os.path.join(run, ck + 'model'), env=venv, device=a.device)
+        if a.ent_coef is not None:
+            model.ent_coef = a.ent_coef
         print(f"resumed {run} at {model.num_timesteps} steps "
+              f"ent_coef {model.ent_coef:g} "
               f"{'from its BEST checkpoint ' if a.from_best else ''}"
               f"pool {state.get('active')}")
     else:
@@ -459,7 +468,8 @@ def main():
         # without a 1M run that reaches lesson 1: that is the cheap canary.
         model = PPO('MlpPolicy', venv, device=a.device, verbose=1,
                     n_steps=256, batch_size=512, gamma=0.995, gae_lambda=0.95,
-                    learning_rate=3e-4, ent_coef=a.ent_coef)
+                    learning_rate=3e-4,
+                    ent_coef=1e-3 if a.ent_coef is None else a.ent_coef)
 
     # A resume may narrow the pool -- dropping a mastered lesson is the point of
     # `--lessons` on a resume -- so the restored active set has to be filtered to it

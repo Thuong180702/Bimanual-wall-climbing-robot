@@ -730,6 +730,59 @@ The model edits still hold at 15.77M: elbows outward on **100 %** of loaded risi
 steps on both arms, shoulder rotation −43° / +64°, and no wrist within reach of
 either stop under load (0.3–5.6 % of steps past ±25° while loaded).
 
+## `win15 3`: lesson 2 crossed, and a flag that was never doing anything
+
+10M steps from `win15 2`'s best (8.03M), ending at 18.03M with the best at
+**16.84M**. It is the furthest this project has got, by a distance:
+
+| lesson | logged | replay of the best |
+|---|---|---|
+| 1.2 hairline gap | 97 % | 10/12 |
+| 1.35 narrow gap | 85 % | 10/12 |
+| 1.5 two 0.12 m gaps | **60 %** | 7/12 |
+| 1.7 one 0.18 m gap | **88 %** | 7/12 |
+| 2 two 0.25 m gaps | **35 %** | **3/12** |
+
+Lesson 1.5 finally cleared the 60 % bar, which unlocked 1.7, which cleared it too
+and unlocked **lesson 2 — passed for the first time in this project**. It is worth
+being precise about what that claims, because `_success` is strict: both hooks
+seated on a *goal* rung, each within `LATCH_TOL` = 150 mm of its own goal point,
+both holding under contact force, and each hand having taken at least one real
+hold along the way. On lesson 2 the goal rung is `rung_seg2`, so a success is both
+hands across **two 0.25 m gaps** and seated at the far end. There is no version of
+that a ratchet or a one-handed drag can fake.
+
+**The freeze is breaking.** `win15 2` failed lesson 1.5 by parking — the trailing
+hook planted under 146–162 N while the lead hand re-landed on the same seat for
+1490 steps. Measured on lesson 1.5, best against best: steps with **both hands
+confirmed** went 12 % → **22 %**, anchor switches per episode 10.8 → 12.8, and
+timeouts went 1 → **0** deterministic and 3 → **0** sampled. The policy stopped
+parking and started attempting; some attempts fall, which is why lesson 1.5's
+losses moved from timeouts into falls. That trade is the progress.
+
+The estimator looks worse and mostly is not. Mean throat error on lesson 1.5 went
+42 mm → 75 mm and the per-episode peaks 441 mm → 940 mm, which the end-of-episode
+snapshots make look alarming — but the peaks are the fall itself, not its cause.
+The number that decides a fall is whether the FREE hand's estimate puts it over a
+seat when it is really over an edge, because that is the step where the robot
+commits its weight. That rate is **flat: 4.1 % → 3.9 %**. The growth is all in the
+harmless direction — a real seat read as an edge, 1.4 % → 3.4 % — which costs
+hesitation, not a fall. The estimator is not what stands between 35 % and lesson 2.
+
+**What does need fixing is that the last run's one experiment never ran.** The plan
+after `win15 2` was `--ent-coef 3e-4`, to relieve an action std pressed against the
+`BoundExploration` cap. Reading it back out of the checkpoint: `ent_coef = 0.001`.
+`PPO.load` restores the saved value and only the *fresh* branch ever read the flag,
+so on a resume `--ent-coef` did nothing at all, silently, for 10M steps. So the
+whole of `win15 3`'s gain is more steps on the narrowed pool, and the entropy
+hypothesis is still untested — std sits at 0.621 at the peak and 0.634 at the end,
+with 3 and 5 of 17 dimensions pinned at the cap. The flag now applies on a resume
+and the resume line prints the value it will actually train with.
+
+One thing that did not happen this time: the run did not eat its own peak. The
+latest checkpoint is 1.2M steps past the best and still within a few points of it,
+against `win15 2`'s 7.7M-step slide from 47 % to 17 %.
+
 ## The wrist: a hook's wrist is its grip, so it stays at ±25°
 
 Asked to give the wrist a human range (−70° extension … +80° flexion, against the
