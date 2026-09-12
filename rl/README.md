@@ -691,6 +691,45 @@ never be beaten by three: `best_model.zip` was frozen for the whole narrowed run
 and the 22 % policy was thrown away. Narrowing the pool on a resume now resets the
 bar, so the peak of a narrowed run is kept.
 
+## `win15 2`: the narrowed pool doubles lesson 1.5, then 7.7M steps eat it
+
+Resumed from `win15`'s best (6.78M) with the pool cut to 1.2 / 1.35 / 1.5, 9M
+further steps, ending at 15.77M. The best-score reset works: `best_model.zip` was
+written this time, at **8.03M**, scoring 2.475 over the three lessons — 1.2 at
+100 %, 1.35 at 100 %, **lesson 1.5 at 47 %**, against 10 % when the eight-lesson
+pool was training it. Replaying that checkpoint: 12/12, 11/12, **5/12**.
+
+Then it went backwards. 7.7M steps after the peak lesson 1.5 reads 17 % and
+replays **1/12** — six of the twelve now time out. The mechanism is in the action
+std: at the peak the mean is 0.469 with no dimension at the `BoundExploration`
+ceiling; at the end it is 0.610 with **3 of 17 dimensions pinned at 1.0** and ten
+above 0.8. The cap stops `win11`'s explosion to 4.24, it does not stop the drift,
+and the policy degrades as it drifts. `ent_coef` is the term pushing it there.
+
+The 53 % that fail at the peak fail one way, and it is not a bad grab. The
+**trailing hand plants and will not let go**: over six episodes the right hook is
+loaded and rising for 1683 steps against the left's 399. In five of eight episodes
+the left hand walks out to full span and then re-lands on the *same seat* over and
+over — +0.43 four times, +0.60 six times — while the right sits at −0.11 on the
+start rung under 146–162 N with the finger closed, for all 1490 steps. The
+successes look completely different: left +0.18 +0.29 +0.44 +0.60 +0.73 +0.91
++1.04, right −0.10 +0.19 +0.36 +0.43 +0.45 +0.64 +0.77 — proper hand-over-hand.
+The policy is bimodal, not confused. The two outright falls both happen at the
+last gap, at `rung_seg2` y ≈ 1.03–1.26, with the trailing hook catching the edge
+rather than a seat, 42–49 mm off the rung axis.
+
+The obvious suspect for a freeze is that timing out had become the cheap exit —
+`win5` all over again. Measured on the peak checkpoint over 14 episodes, it has
+not: success pays **+16.6**, a timeout **−17.0** and a fall **−18.8**. Freezing is
+worth 1.8 points more than falling and 34 less than climbing. The shaping is doing
+its job; what is missing is that the policy will not spend the exploration to
+unweight a 160 N anchor. That is an optimization problem, so the next run turns
+`--ent-coef` down to 3e-4 rather than touching a reward constant.
+
+The model edits still hold at 15.77M: elbows outward on **100 %** of loaded rising
+steps on both arms, shoulder rotation −43° / +64°, and no wrist within reach of
+either stop under load (0.3–5.6 % of steps past ±25° while loaded).
+
 ## The wrist: a hook's wrist is its grip, so it stays at ±25°
 
 Asked to give the wrist a human range (−70° extension … +80° flexion, against the

@@ -45,10 +45,13 @@ def main():
     ap.add_argument('--lessons', default=None, help='default: the unlocked pool')
     ap.add_argument('--episodes', type=int, default=10)
     ap.add_argument('--device', default='cpu')
+    ap.add_argument('--from-best', dest='from_best', action='store_true',
+                    help='score best_model.zip instead of the latest checkpoint')
     a = ap.parse_args()
 
     run_dir = os.path.join('out', a.name)
-    state = json.load(open(os.path.join(run_dir, 'state.json')))
+    ck = 'best_' if a.from_best else ''
+    state = json.load(open(os.path.join(run_dir, f'{ck}state.json')))
     lessons = ([lesson_key(x) for x in a.lessons.split(',')] if a.lessons
                else state['active'])
     print(f"{run_dir}: {state['timesteps']} steps, pool {state['active']}\n")
@@ -58,10 +61,10 @@ def main():
         row = []
         for policy_on in (True, False):
             venv = DummyVecEnv([lambda: MultiLesson([k])])
-            venv = VecNormalize.load(os.path.join(run_dir, 'vecnorm.pkl'), venv)
+            venv = VecNormalize.load(os.path.join(run_dir, f'{ck}vecnorm.pkl'), venv)
             venv.training = False          # freeze the statistics; an eval that keeps
             venv.norm_reward = False       # updating them is scoring a moving target
-            model = (PPO.load(os.path.join(run_dir, 'model'), env=venv,
+            model = (PPO.load(os.path.join(run_dir, f'{ck}model'), env=venv,
                               device=a.device) if policy_on else None)
             ok, dists, why = run(venv, a.episodes, model)
             row.append(f"{ok}/{a.episodes} ok {np.mean(dists):.2f} m")
