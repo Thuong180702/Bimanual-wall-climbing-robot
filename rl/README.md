@@ -730,6 +730,71 @@ The model edits still hold at 15.77M: elbows outward on **100 %** of loaded risi
 steps on both arms, shoulder rotation −43° / +64°, and no wrist within reach of
 either stop under load (0.3–5.6 % of steps past ±25° while loaded).
 
+## `win16`: from scratch to the best policy yet in 5.75M steps, then lesson 3 unlocks and takes it all
+
+A fresh run on the full pool with lesson 1.85 in it. Its best checkpoint, at
+**5.75M**, is the best policy this project has had — and it got there in a third of
+the steps `win15` needed. The 9.5M steps after it destroyed it:
+
+| lesson | best 5.75M, logged | best, replay | latest 15.26M, logged | latest, replay |
+|---|---|---|---|---|
+| −1 step right hand | 100 % | 10/10 | 38 % | 0/10, 7 timeouts |
+| 1 traverse | 82 % | 8/10 | **3 %** | 0/10, all timeouts |
+| 1.85 one 0.25 m gap | 82 % | 10/10 | 20 % | 1/10 |
+| 2 two 0.25 m gaps | **57 %** | **5/10** | 0 % | 0/10 |
+| 3 climb up | not unlocked | 0/10, 9 falls | 0 % | 0/10 |
+
+The replays are deterministic, so the mean policy degraded, not the sampling. On
+lesson −1 the latest policy ends 0.69 m from its goal against 0.30 m for doing
+nothing at all. This is not under-training: the best checkpoint is 9.5M steps
+behind the end and nothing after it came close.
+
+**What changed between them is lesson 3.** The best checkpoint's pool stops at
+lesson 2; lesson 2 crossed 60 % shortly after and unlocked `climb_up`, the first
+lesson with a goal *above* the robot. Two separate things then went wrong, and
+both are measured.
+
+**1. On lesson 3, letting go became the rewarded action.** The critic of the best
+checkpoint, read along lesson-3 episodes: every state where the robot is still
+holding on is worth **−18.5**, the fall is **−10**. A release that ends in a fall is
+therefore scored at an advantage of about **+8.5** — PPO is paid to let go. The
+per-term split of a lesson-3 episode says why: an attempt that does not fall pays
+−58 to −118 over its 90 s, mostly loaded-hook slide (−20), grip fight (−12) and
+effort (−11), while a fall pays −25. Raising `FAIL_R` would not have fixed this. On
+a lesson the policy cannot yet pass, falling now instead of falling later saves
+exactly the costs it would pay before falling. That saving does not depend on the
+size of the fall penalty. The incentive self-check never saw it because it only
+checks lesson 1. Hanging perfectly still to the timeout already costs **−11.96 on
+lesson 3 and −16.0 on lessons 4–9**, all past `FAIL_R`, because every lesson from 3
+on runs 90–120 s instead of 60.
+
+**2. Lesson 3 rescaled the inputs every other lesson reads.** `VecNormalize` keeps
+one running mean and variance per observation, shared by all lessons. Between the
+two checkpoints only two of the 145 inputs moved by more than one standard deviation:
+**93 and 96, the vertical offset from each hand to its goal**. It is ~0 on every
+horizontal lesson (mean +0.013, sd 0.069) and lesson 3 stretched its sd **4×**, to
+0.30. The hook-height signal every grab uses lost three quarters of its gain.
+Swapping the statistics isolates it: the *best* model with the *latest*
+normalisation drops lesson 2 from 4/8 to **0/8** and lesson 1 from 6/8 to 3/8, with
+nothing else changed. The latest model with the best normalisation still fails
+(0/8 on lesson 1), so the policy itself degraded too — both happened.
+
+The collapsed gait is not a freeze. On lesson 1 the right hook lets go **70.8 times
+an episode** against 6.5 at the peak, and the left carries the load 77 % of the
+time. It is a flutter that times out. The action std went 0.359 → 0.477, with 4 of
+17 dimensions pinned at the cap against none.
+
+**Next:** resume the 5.75M checkpoint with the pool capped at lesson 2, so neither
+mechanism can recur while lesson 2 climbs from 57 %. The pool matches the best
+checkpoint's active set, so the 9.775 bar stays:
+
+```
+python -m rl.train_ppo --name win16 --resume --from-best --lessons -2,-1,0,1,1.1,1.2,1.35,1.5,1.7,1.85,2 --envs 8 --steps 10000000
+```
+
+Lesson 3 goes back into the pool only after both fixes are in: the incentive rule
+checked on every lesson, and inputs that a newly unlocked lesson cannot rescale.
+
 ## `win15 3`: lesson 2 crossed, and a flag that was never doing anything
 
 10M steps from `win15 2`'s best (8.03M), ending at 18.03M with the best at
