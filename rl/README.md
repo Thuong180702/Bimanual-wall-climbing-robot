@@ -730,7 +730,7 @@ The model edits still hold at 15.77M: elbows outward on **100 %** of loaded risi
 steps on both arms, shoulder rotation −43° / +64°, and no wrist within reach of
 either stop under load (0.3–5.6 % of steps past ±25° while loaded).
 
-## `win16`: from scratch to the best policy yet in 5.75M steps, then lesson 3 unlocks and takes it all
+## `win16`: from scratch to the best policy yet in 5.75M steps, then 9.5M steps undo it
 
 A fresh run on the full pool with lesson 1.85 in it. Its best checkpoint, at
 **5.75M**, is the best policy this project has had — and it got there in a third of
@@ -751,8 +751,8 @@ behind the end and nothing after it came close.
 
 **What changed between them is lesson 3.** The best checkpoint's pool stops at
 lesson 2; lesson 2 crossed 60 % shortly after and unlocked `climb_up`, the first
-lesson with a goal *above* the robot. Two separate things then went wrong, and
-both are measured.
+lesson with a goal *above* the robot. Two mechanisms looked responsible.
+A 600k-step A/B from the best checkpoint says neither explains the collapse.
 
 **1. On lesson 3, letting go became the rewarded action.** The critic of the best
 checkpoint, read along lesson-3 episodes: every state where the robot is still
@@ -768,32 +768,75 @@ checks lesson 1. Hanging perfectly still to the timeout already costs **−11.96
 lesson 3 and −16.0 on lessons 4–9**, all past `FAIL_R`, because every lesson from 3
 on runs 90–120 s instead of 60.
 
-**2. Lesson 3 rescaled the inputs every other lesson reads.** `VecNormalize` keeps
-one running mean and variance per observation, shared by all lessons. Between the
-two checkpoints only two of the 145 inputs moved by more than one standard deviation:
-**93 and 96, the vertical offset from each hand to its goal**. It is ~0 on every
-horizontal lesson (mean +0.013, sd 0.069) and lesson 3 stretched its sd **4×**, to
-0.30. The hook-height signal every grab uses lost three quarters of its gain.
-Swapping the statistics isolates it: the *best* model with the *latest*
-normalisation drops lesson 2 from 4/8 to **0/8** and lesson 1 from 6/8 to 3/8, with
-nothing else changed. The latest model with the best normalisation still fails
-(0/8 on lesson 1), so the policy itself degraded too — both happened.
+**2. The input statistics drifted, but not the way it first looked.** `VecNormalize`
+keeps one running mean and variance per observation, shared by all lessons. Between
+the checkpoints only inputs 93 and 96 — the vertical offset from each hand to its
+goal — moved by more than one standard deviation, their sd stretched 4× by lesson 3.
+That looked like the culprit, and it is not. Swapping the statistics block by block
+on the best model (deterministic, 8 episodes each):
+
+| normalisation | lesson 1 | lesson 2 |
+|---|---|---|
+| best, as trained | 6/8 | 4/8 |
+| latest, all of it | 3/8 | 0/8 |
+| best, only goal-z from latest | **8/8** | **5/8** |
+| best, layout block (91–142) from latest | 3/8 | 6/8 |
+| latest, layout block from best | 6/8 | 2/8 |
+
+The goal-z stretch on its own changes nothing. The damage is spread thin: the
+layout block costs lesson 1 and the proprioceptive block costs lesson 2. A swap also
+drops 9.5M steps of drift onto a frozen policy at once, where training lets the
+policy follow it. The latest model with the best statistics still fails lesson 1
+(0/8), so the policy degraded on its own. Pinning one block of statistics would
+not have protected this run.
 
 The collapsed gait is not a freeze. On lesson 1 the right hook lets go **70.8 times
 an episode** against 6.5 at the peak, and the left carries the load 77 % of the
 time. It is a flutter that times out. The action std went 0.359 → 0.477, with 4 of
 17 dimensions pinned at the cap against none.
 
-**Next:** resume the 5.75M checkpoint with the pool capped at lesson 2, so neither
-mechanism can recur while lesson 2 climbs from 57 %. The pool matches the best
-checkpoint's active set, so the 9.775 bar stays:
+**What a controlled test says.** Both mechanisms came from snapshots, so both were
+tested from the same 5.75M checkpoint: 600k steps per arm, lesson 3 in the pool (it
+unlocked early in both arms). The fix tried for mechanism 1 charged a fall the
+discounted cost of the steps it skipped, `FAIL_R − cost_ema · 1/(1−γ)`. On paper
+that makes the timing of a fall irrelevant at any cost rate.
+
+| after 600k steps | control, reward unchanged | with the fall charge |
+|---|---|---|
+| lesson 1 replay | **10/10** | 3/10, 7 falls |
+| lesson 2 replay | 3/10 | 6/10 |
+| lesson 1.5 in training | 25 % | 60 % |
+| lesson 1: free hook more than 150 mm above the rung | 0 % | 38.6 % of free-hand steps |
+| lesson 3 critic: still holding vs a fall | −3.9 vs −10 | −8.2 vs −19.3 |
+
+The unchanged reward climbed out of the trap on its own. Its critic went from −18.5
+to −3.9 per holding state, above the fall, within 600k steps, and nothing collapsed:
+lesson 1 stayed at 10/10. The −18.5 at unlock was a transient of first exposure,
+not what took lessons 1 and 2 apart over the following 9M steps. The charge helped
+nowhere it could be shown. It doubled the cost of a fall on lessons that already
+worked (−21.0 on lesson 1 against −10). In its run lesson 1 fell 7 times in 10 and
+the free hook reached up past the rung on 38.6 % of steps, which the control never
+did. One run per arm cannot call that harm, but it is not enough to ship. The
+change is parked on the local branch `fall-charge`.
+
+So what undid `win16` is still open. It is not an immediate effect of unlocking
+lesson 3, because the control held every flat lesson for 600k steps after the
+unlock. It is not the goal-z stretch. It took millions of steps. Three candidates
+fit and are untested: twelve lessons through one 64×64 network (the swings
+`train_ppo` already documents), lesson 3 sitting at 0 % on 15 % of the steps for
+9M steps, and the action std drifting to the cap (4 dimensions pinned by the end).
+
+**Next:** keep lesson 3 out of the pool and push lesson 2 up from the 5.75M
+checkpoint. The pool matches that checkpoint's active set, so the 9.775 bar stays.
+On Windows the pool must be written with `=`:
 
 ```
 python -m rl.train_ppo --name win16 --resume --from-best --lessons=-2,-1,0,1,1.1,1.2,1.35,1.5,1.7,1.85,2 --envs 8 --steps 10000000
 ```
 
-Lesson 3 goes back into the pool only after both fixes are in: the incentive rule
-checked on every lesson, and inputs that a newly unlocked lesson cannot rescale.
+The experiment that would settle lesson 3 is the long version of the A/B above: the
+same checkpoint with and without lesson 3 in the pool, several million steps each,
+watching lessons 1 and 2.
 
 ## `win15 3`: lesson 2 crossed, and a flag that was never doing anything
 
