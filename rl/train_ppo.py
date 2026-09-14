@@ -400,7 +400,12 @@ def self_check():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--name', default='climber', help='run directory under out/')
-    ap.add_argument('--lessons', default=','.join(str(k) for k in sorted(LESSONS)))
+    # A pool that starts with a negative lesson must be written --lessons=-2,-1,...
+    # With a space, argparse before Python 3.14 reads "-2,-1,..." as an unknown
+    # option and stops with "expected one argument"; the Mac venv is 3.14 and took
+    # it, the Windows one did not.
+    ap.add_argument('--lessons', default=','.join(str(k) for k in sorted(LESSONS)),
+                    help='comma-separated; if it starts with a minus, use --lessons=-2,...')
     ap.add_argument('--steps', type=int, default=2_000_000,
                     help='steps to run; with --resume, ADDITIONAL steps')
     # Default to the machine's core count rather than a number tuned here -- on a

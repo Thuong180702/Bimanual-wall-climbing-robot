@@ -789,7 +789,7 @@ mechanism can recur while lesson 2 climbs from 57 %. The pool matches the best
 checkpoint's active set, so the 9.775 bar stays:
 
 ```
-python -m rl.train_ppo --name win16 --resume --from-best --lessons -2,-1,0,1,1.1,1.2,1.35,1.5,1.7,1.85,2 --envs 8 --steps 10000000
+python -m rl.train_ppo --name win16 --resume --from-best --lessons=-2,-1,0,1,1.1,1.2,1.35,1.5,1.7,1.85,2 --envs 8 --steps 10000000
 ```
 
 Lesson 3 goes back into the pool only after both fixes are in: the incentive rule
