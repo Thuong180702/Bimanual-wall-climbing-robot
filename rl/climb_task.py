@@ -184,6 +184,7 @@ K_GRAB = 1.0             # once per hand per episode, for its first supported ho
                          # condition (MIN_GRABS), not a goal of its own.
 SUCCESS_R = 10.0
 FAIL_R = -10.0
+GRIP_STOP = np.radians(-37.0)   # finger setpoint limit: 3 deg inside GRIP_BAND's closed edge
 
 # Progress is CREDITED to a hand only while it is free and the other hand holds,
 # and only for the part of its approach that is its own -- the holder's motion is
@@ -298,8 +299,17 @@ class ClimbTask:
         # on lesson 1 were "not gripping" for that reason alone, the estimator's
         # anchor stayed on a hand that was moving, and the far ledge was seen
         # 240-500 mm from where it was. Squeeze as hard as you like: it is in band.
+        # ...and 3 deg INSIDE the edge, not on it. A stop at exactly -40 had no
+        # margin: a hook whose setpoint sits on the stop reads 0.5-2.5 deg past it
+        # whenever the rung is not pressing the finger open -- a hook that has handed
+        # its weight to the other one, a landing, a swing. On the collapsed win16 and
+        # win16 2 policies the right hook's real holds (93 N of contact and 0.69 mm of
+        # slide per step, against 97 N and 0.91 mm in band) read -41 to -42.5 on
+        # 71-78 % of loaded steps and counted as not holding, in the reward and in the
+        # estimator's anchor alike. With the stop at -37 the same policies' loaded
+        # holds count 100 %, and -37 is still deep in the >1200 N band.
         for j in ('finger_L', 'finger_R'):
-            self.lo[JOINTS.index(j)] = GRIP_BAND[0]
+            self.lo[JOINTS.index(j)] = GRIP_STOP
         self.dt = self.env.model.opt.timestep
         m = self.env.model
         self._rung_name = {g: mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
@@ -668,6 +678,27 @@ class ClimbTask:
 
     def _dist(self):
         return float(self._hand_dists().sum())
+
+    def _off_band_under_side_load(self, push=60.0, steps=150):
+        """fingers squeezed onto their stop, the torso pushed `push` N along the rung
+        so one hook hands its weight to the other: how many steps does a hook still on
+        the rung read outside GRIP_BAND? The stop's margin is what keeps this at 0."""
+        m, d = self.env.model, self.env.data
+        tb = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'torso_upper')
+        shut = np.zeros(17)
+        shut[[JOINTS.index('finger_L'), JOINTS.index('finger_R')]] = -1.0
+        out = 0
+        for sign in (1.0, -1.0):
+            self.reset()
+            d.xfrc_applied[tb] = [0.0, sign * push, 0.0, 0.0, 0.0, 0.0]
+            try:
+                for _ in range(steps):
+                    self.step(shut)
+                    out += sum(not self._gripping(sd) for sd in 'LR'
+                               if self.env.hand(sd)['pad'] > 2.0)
+            finally:
+                d.xfrc_applied[tb] = 0.0
+        return out
 
     def _success(self):
         """both hooks seated on a goal rung, near their goal points.
@@ -1062,7 +1093,12 @@ def main():
     print(f"grip test (siết hết cỡ): {inband}/{n_loaded} loaded steps in band while swinging")
     assert n_loaded > 50 and inband >= 0.97 * n_loaded, (
         f"squeezing shut left the band on {n_loaded - inband} of {n_loaded} loaded "
-        f"steps: the finger stop is not at the band's edge")
+        f"steps: the finger stop is outside the band")
+    off = t._off_band_under_side_load()
+    print(f"grip test (tay nhả tải): fingers on the {np.degrees(GRIP_STOP):.0f} deg stop, "
+          f"60 N along the rung both ways -- {off} step(s) out of band on a hook still on the rung")
+    assert off == 0, (f"a hook on its stop read outside GRIP_BAND on {off} steps once the other "
+                      f"hook took the weight: the stop has no margin inside the band")
 
     # And success must need real grabs, not just arriving. Geometry is stubbed to
     # the goal so only the grab count and the finger are left to decide.

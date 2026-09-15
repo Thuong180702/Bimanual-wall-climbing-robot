@@ -730,6 +730,73 @@ The model edits still hold at 15.77M: elbows outward on **100 %** of loaded risi
 steps on both arms, shoulder rotation −43° / +64°, and no wrist within reach of
 either stop under load (0.3–5.6 % of steps past ±25° while loaded).
 
+## `win16 2`: without lesson 3 it still collapses, and a finger stop with no margin
+
+This run resumed from `win16`'s 5.75M checkpoint with the pool capped at lesson 2,
+so lesson 3 never entered it. The best checkpoint came 343k steps in, at **6.09M**,
+and is the best policy yet: lesson 2 at 78 % logged and 7/10 in replay, lesson 1.5
+at 7/10. By 11.36M the gap lessons had collapsed anyway:
+
+| lesson | best 6.09M logged | best replay | latest 11.36M logged | latest replay |
+|---|---|---|---|---|
+| 0 | 92 % | 10/10 | 92 % | 9/10 |
+| 1 traverse | 90 % | 9/10 | 52 % | 7/10 |
+| 1.2 hairline gap | 100 % | 7/10 | 18 % | 2/10, 5 timeouts |
+| 1.5 two 0.12 m gaps | 72 % | 7/10 | 0 % | 0/10, all timeouts |
+| 2 two 0.25 m gaps | 78 % | 7/10 | 0 % | 0/10, all timeouts |
+
+That settles what the `win16` A/B left open: **lesson 3 is not the cause**. Nor is
+the input normalisation this time. No input drifted by more than 0.26 sd, the best
+model with the latest statistics still passes lesson 1.5 4/5, and the latest model
+with the best statistics passes 0/5.
+
+**The collapsed policy freezes.** On lesson 1.5 the right hook carries the load on
+100 % of steps and lets go 0–2 times an episode. The left hook carries it on 0–4 %:
+it slaps at y 0.33–0.54, the edge and gap between `rung_start`'s last seat (0.32)
+and `seg1`'s first (0.50), and never seats. The critic is flat at −4.4. The same
+freeze is already present at the peak, in 1 episode of 8. On those left-hand touches
+the finger is **open**: +6.5° on average against −32.5° at the peak, in band on 11 %
+of loaded steps, and left-hand grabs fell from 14.6 to 0.2 per episode. The finger
+is a symptom, though. Driving only the latest policy's left finger with the peak
+policy's command brings left grabs back (0.4 → 7.2) but not one success in 5, and
+giving the peak policy the latest's left finger still passes 4/5.
+
+**What the collapse did expose is a real defect in the hold test.** The finger
+setpoint stopped at −40°, exactly on `GRIP_BAND`'s closed edge. The table above says
+that makes a full squeeze count as a grip, but there was no margin for it. A hook
+whose setpoint sits on the stop reads 0.5–2.5° past it whenever the rung is not
+pressing the finger open. On the collapsed policies the right hook read −41 to
+−42.5° on 71–78 % of loaded steps, with 93 N of contact and 0.69 mm of slide per
+step against 97 N and 0.91 mm in band. Those are real holds, yet `_holding`,
+`_confirmed` and `_touching` all said no: no grab, no bank, no success, no anchor.
+Even the peak policy lost 18 % of its left hook's loaded steps on lesson 2 this way.
+It reproduces with no policy at all: a 60 N push along the rung hands one hook's
+weight to the other, and the unloaded hook on a −40° stop leaves the band on 20
+steps out of 300.
+
+The stop is now **−37°**, still deep in the >1200 N band. The same push reads 0
+steps out of band at −38° and at −37°, and a new self-check holds it there. With the
+new stop, the collapsed policies' loaded holds count 100 % (up from 40–70 %). The
+peak policy goes 5/8 → 6/8 on lesson 1.5 and 7/8 → 5/8 on lesson 2, within noise
+either way. The fix does not revive a collapsed policy, which still succeeds 0–1
+times in 5. It corrects what the reward and the map see; it has not been shown to
+prevent the drift.
+
+**Still open:** why every long run from a peak (`win15 2`, `win16`, `win16 2`)
+drifts into a failure mode that was already a minority at the peak. It is not a
+lesson, not the normalisation, and not entropy: the left finger's std is 0.07. The
+untested candidate is update size, a constant learning rate of 3e-4 with no KL limit,
+applied for millions of steps to a policy that is already good. SB3's console log
+records `approx_kl`, `clip_fraction` and `explained_variance` on every update, and
+that is the evidence to look at next.
+
+**Next:** resume the 6.09M checkpoint with the new stop and lesson 3 still out. Keep
+the run short, so the peak is checked before it can drift far:
+
+```
+python -m rl.train_ppo --name "win16 2" --resume --from-best --lessons=-2,-1,0,1,1.1,1.2,1.35,1.5,1.7,1.85,2 --envs 8 --steps 3000000
+```
+
 ## `win16`: from scratch to the best policy yet in 5.75M steps, then 9.5M steps undo it
 
 A fresh run on the full pool with lesson 1.85 in it. Its best checkpoint, at
