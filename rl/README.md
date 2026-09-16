@@ -730,6 +730,70 @@ The model edits still hold at 15.77M: elbows outward on **100 %** of loaded risi
 steps on both arms, shoulder rotation −43° / +64°, and no wrist within reach of
 either stop under load (0.3–5.6 % of steps past ±25° while loaded).
 
+## `win16 3`: the same decay a third time, and three 1M-step arms that all lose ground
+
+Resumed from `win16 2`'s peak with the new −37° finger stop. The best checkpoint
+landed at **6.098M — 5k steps after the resume** — and the 4.2M steps after it went
+the same way as the two runs before:
+
+| lesson | best 6.098M | latest 10.33M |
+|---|---|---|
+| 0 | 9/10 | 9/10 |
+| 1 traverse | 6/10 | **10/10** |
+| 1.2 hairline gap | 9/10 | 6/10 |
+| 1.5 two 0.12 m gaps | 6/10 | 2/10 |
+| 2 two 0.25 m gaps | 3/10 | **0/10**, 7 timeouts |
+
+The grip fix was in effect and did what it was for: the stop reads −37°, the loaded
+finger sits at −34° (p50), and holds count as holds on **99–100 %** of loaded steps
+at the peak against 40–70 % before. The collapse happened anyway, which is what the
+commit that made the fix already said it could not rule out.
+
+**The decay is selective, in both of the last two runs.** Lessons with no gap hold or
+improve — lesson 1 *ended* at 10/10 — while every lesson with a gap rots. The
+collapsed gait is the same freeze: on lesson 1.5 the left hook carries load on 29 %
+of steps and keeps landing at y 0.42–0.43, in the gap between seats.
+
+**Three arms, 1M steps each, from that same 6.098M peak.** One keeps the learning
+rate at 3e-4, one drops it to 5e-5, one keeps 3e-4 but narrows the pool to the six
+gap lessons:
+
+| replay after 1M | start | lr 3e-4 | lr 5e-5 | gap lessons only |
+|---|---|---|---|---|
+| 1 traverse | 6/10 | 9/10 | 7/10 | — |
+| 1.2 | 9/10 | 8/10 | 8/10 | 9/10 |
+| 1.5 | 6/10 | 7/10 | 7/10 | 7/10 |
+| 2 | 3/10 | 3/10 | 6/10 | 2/10 |
+
+Three things come out of it. **1M steps cannot see this failure**: no arm collapsed,
+and all three sit at or above the checkpoint they started from, while `win16 3` took
+4.2M steps to reach 0/10. So the lr question is still open — 6/10 against 3/10 on
+lesson 2 is one arm of ten episodes, not a result. **Narrowing the pool did not
+protect anything**: lesson 2's logged rate fell 80 % → 48 % and lesson 1.5 72 % →
+48 %, so `win15 2`'s narrowed-pool lift did not replicate. And **every arm reached
+its best score within 2–6k steps of resuming and never beat it again** — gapC's best
+is stamped at step 6,097,988, six steps in. Counting the user's runs, that is now six
+resumes in a row where continuing from a peak buys nothing.
+
+One more detail worth keeping: the logged (stochastic) rates fall inside 1M steps in
+every arm while the deterministic replays hold. The training metric goes first and
+the mean policy follows, which is why a run looks broken in `rl.status` long before
+a replay agrees.
+
+**Next:** the experiment has to match the timescale. From `win16 3`'s best, two arms
+of **4M steps**, 3e-4 against 5e-5, on the machine that can run them, and this time
+keep the console output — `approx_kl`, `clip_fraction` and `explained_variance` per
+update are the one piece of evidence a checkpoint cannot reconstruct:
+
+```
+python -m rl.train_ppo --name w16lrA --resume --from-best --lessons=-2,-1,0,1,1.1,1.2,1.35,1.5,1.7,1.85,2 --envs 8 --steps 4000000 > w16lrA.log 2>&1
+python -m rl.train_ppo --name w16lrB --resume --from-best --lessons=-2,-1,0,1,1.1,1.2,1.35,1.5,1.7,1.85,2 --envs 8 --steps 4000000 --lr 5e-5 > w16lrB.log 2>&1
+```
+
+Copy `win16 3/best_*` into `out/w16lrA` and `out/w16lrB` first, so both arms start
+from the same policy. Until that says otherwise, the policy to keep and to show is
+`win16 3/best_model.zip`.
+
 ## `win16 2`: without lesson 3 it still collapses, and a finger stop with no margin
 
 This run resumed from `win16`'s 5.75M checkpoint with the pool capped at lesson 2,
