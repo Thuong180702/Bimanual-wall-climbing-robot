@@ -437,6 +437,14 @@ def main():
     # 10M steps at 1e-3 without a word. A silently ignored knob is worse than no
     # knob; the resume now prints what it will actually use.
     ap.add_argument('--ent-coef', type=float, default=None)
+    # Same "unset means keep what this run uses" rule as --ent-coef, and the same
+    # reason: PPO.load restores both, so a resume that wants a smaller step has to
+    # say so and be told what it got. Fine-tuning a peak is not the regime the 3e-4
+    # default was chosen in -- that was the early curriculum (mac21-mac24).
+    ap.add_argument('--lr', type=float, default=None,
+                    help='learning rate; on a resume, overrides the checkpoint')
+    ap.add_argument('--target-kl', dest='target_kl', type=float, default=None,
+                    help='stop an update early once approx_kl passes 1.5x this')
     ap.add_argument('--ckpt-every', type=int, default=100_000)
     ap.add_argument('--self-check', action='store_true',
                     help='test the curriculum logic, train nothing')
@@ -462,8 +470,14 @@ def main():
         model = PPO.load(os.path.join(run, ck + 'model'), env=venv, device=a.device)
         if a.ent_coef is not None:
             model.ent_coef = a.ent_coef
+        if a.lr is not None:
+            model.learning_rate = a.lr
+            model._setup_lr_schedule()      # lr_schedule is built from learning_rate
+        if a.target_kl is not None:
+            model.target_kl = a.target_kl
         print(f"resumed {run} at {model.num_timesteps} steps "
-              f"ent_coef {model.ent_coef:g} "
+              f"ent_coef {model.ent_coef:g} lr {model.lr_schedule(1.0):g} "
+              f"target_kl {model.target_kl} "
               f"{'from its BEST checkpoint ' if a.from_best else ''}"
               f"pool {state.get('active')}")
     else:
@@ -479,7 +493,8 @@ def main():
         # without a 1M run that reaches lesson 1: that is the cheap canary.
         model = PPO('MlpPolicy', venv, device=a.device, verbose=1,
                     n_steps=256, batch_size=512, gamma=0.995, gae_lambda=0.95,
-                    learning_rate=3e-4,
+                    learning_rate=3e-4 if a.lr is None else a.lr,
+                    target_kl=a.target_kl,
                     ent_coef=1e-3 if a.ent_coef is None else a.ent_coef)
 
     # A resume may narrow the pool -- dropping a mastered lesson is the point of
