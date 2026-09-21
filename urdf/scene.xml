@@ -12,40 +12,79 @@
     <material name="wall" rgba="0.34 0.36 0.40 1"/>
     <material name="rung" rgba="0.85 0.55 0.15 1"/>
     <mesh name="base_link" file="base_link.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="base_link_col" file="base_link_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="base_link_col_wall" file="base_link_col_wall.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="base_link_col_floor" file="base_link_col_floor.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="base_link_col_deck" file="base_link_col_deck.stl" scale="0.001 0.001 0.001"/>
     <mesh name="waist_link" file="waist_link.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="waist_link_col" file="waist_link_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="waist_link_col_plate_out" file="waist_link_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="waist_link_col_cone" file="waist_link_col_cone.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="waist_link_col_flange" file="waist_link_col_flange.stl" scale="0.001 0.001 0.001"/>
     <mesh name="torso_upper" file="torso_upper.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="torso_upper_col" file="torso_upper_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_plate_shoulder_L_abduction" file="torso_upper_col_plate_shoulder_L_abduction.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_wishbone_L_ring" file="torso_upper_col_wishbone_L_ring.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_wishbone_L_strip" file="torso_upper_col_wishbone_L_strip.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_plate_shoulder_R_abduction" file="torso_upper_col_plate_shoulder_R_abduction.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_wishbone_R_ring" file="torso_upper_col_wishbone_R_ring.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_wishbone_R_strip" file="torso_upper_col_wishbone_R_strip.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_deck" file="torso_upper_col_deck.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_flanks" file="torso_upper_col_flanks.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_L" file="shoulder_L.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="shoulder_L_col" file="shoulder_L_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="shoulder_L_col_plate_out" file="shoulder_L_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="shoulder_L_col_plate_face" file="shoulder_L_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="shoulder_L_col_web" file="shoulder_L_col_web.stl" scale="0.001 0.001 0.001"/>
     <mesh name="humerus_rot_L" file="humerus_rot_L.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="humerus_rot_L_col" file="humerus_rot_L_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="humerus_rot_L_col_plate_out" file="humerus_rot_L_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="humerus_rot_L_col_plate_face" file="humerus_rot_L_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="humerus_rot_L_col_cheek" file="humerus_rot_L_col_cheek.stl" scale="0.001 0.001 0.001"/>
     <mesh name="upper_arm_L" file="upper_arm_L.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="upper_arm_L_col" file="upper_arm_L_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="upper_arm_L_col_plate_out" file="upper_arm_L_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="upper_arm_L_col_plate_face" file="upper_arm_L_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="upper_arm_L_col_cheek" file="upper_arm_L_col_cheek.stl" scale="0.001 0.001 0.001"/>
     <mesh name="fore_arm_L" file="fore_arm_L.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="fore_arm_L_col" file="fore_arm_L_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="fore_arm_L_col_plate_out" file="fore_arm_L_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="fore_arm_L_col_plate_face" file="fore_arm_L_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="fore_arm_L_col_cheek" file="fore_arm_L_col_cheek.stl" scale="0.001 0.001 0.001"/>
     <mesh name="forearm_rot_L" file="forearm_rot_L.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="forearm_rot_L_col" file="forearm_rot_L_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="forearm_rot_L_col_plate_out" file="forearm_rot_L_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="forearm_rot_L_col_plate_face" file="forearm_rot_L_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="forearm_rot_L_col_cheek" file="forearm_rot_L_col_cheek.stl" scale="0.001 0.001 0.001"/>
     <mesh name="wrist_L" file="wrist_L.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="wrist_L_col" file="wrist_L_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_L_col_plate_out" file="wrist_L_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_L_col_plate_face" file="wrist_L_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_L_col_web" file="wrist_L_col_web.stl" scale="0.001 0.001 0.001"/>
     <mesh name="wrist_dev_L" file="wrist_dev_L.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="wrist_dev_L_col" file="wrist_dev_L_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_dev_L_col_plate_out" file="wrist_dev_L_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_dev_L_col_plate_face" file="wrist_dev_L_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_dev_L_col_web" file="wrist_dev_L_col_web.stl" scale="0.001 0.001 0.001"/>
     <mesh name="hook_L" file="hook_L.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_R" file="shoulder_R.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="shoulder_R_col" file="shoulder_R_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="shoulder_R_col_plate_out" file="shoulder_R_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="shoulder_R_col_plate_face" file="shoulder_R_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="shoulder_R_col_web" file="shoulder_R_col_web.stl" scale="0.001 0.001 0.001"/>
     <mesh name="upper_arm_R" file="upper_arm_R.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="upper_arm_R_col" file="upper_arm_R_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="upper_arm_R_col_plate_out" file="upper_arm_R_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="upper_arm_R_col_plate_face" file="upper_arm_R_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="upper_arm_R_col_cheek" file="upper_arm_R_col_cheek.stl" scale="0.001 0.001 0.001"/>
     <mesh name="humerus_rot_R" file="humerus_rot_R.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="humerus_rot_R_col" file="humerus_rot_R_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="humerus_rot_R_col_plate_out" file="humerus_rot_R_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="humerus_rot_R_col_plate_face" file="humerus_rot_R_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="humerus_rot_R_col_cheek" file="humerus_rot_R_col_cheek.stl" scale="0.001 0.001 0.001"/>
     <mesh name="fore_arm_R" file="fore_arm_R.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="fore_arm_R_col" file="fore_arm_R_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="fore_arm_R_col_plate_out" file="fore_arm_R_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="fore_arm_R_col_plate_face" file="fore_arm_R_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="fore_arm_R_col_cheek" file="fore_arm_R_col_cheek.stl" scale="0.001 0.001 0.001"/>
     <mesh name="forearm_rot_R" file="forearm_rot_R.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="forearm_rot_R_col" file="forearm_rot_R_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="forearm_rot_R_col_plate_out" file="forearm_rot_R_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="forearm_rot_R_col_plate_face" file="forearm_rot_R_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="forearm_rot_R_col_cheek" file="forearm_rot_R_col_cheek.stl" scale="0.001 0.001 0.001"/>
     <mesh name="wrist_R" file="wrist_R.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="wrist_R_col" file="wrist_R_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_R_col_plate_out" file="wrist_R_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_R_col_plate_face" file="wrist_R_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_R_col_web" file="wrist_R_col_web.stl" scale="0.001 0.001 0.001"/>
     <mesh name="wrist_dev_R" file="wrist_dev_R.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="wrist_dev_R_col" file="wrist_dev_R_col.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_dev_R_col_plate_out" file="wrist_dev_R_col_plate_out.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_dev_R_col_plate_face" file="wrist_dev_R_col_plate_face.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="wrist_dev_R_col_web" file="wrist_dev_R_col_web.stl" scale="0.001 0.001 0.001"/>
     <mesh name="hook_R" file="hook_R.stl" scale="0.001 0.001 0.001"/>
   </asset>
 
@@ -212,64 +251,89 @@
         <inertial pos="0.000000 -0.000000 0.097305" mass="4.389528" fullinertia="0.0191369306 0.0181137554 0.00931721799 2.15423512e-18 3.79904811e-17 -4.01342675e-18"/>
         <geom class="vis" mesh="base_link"/>
         <geom class="col" type="cylinder" size="0.03950" fromto="0.00000 0.00000 0.13250 0.00000 0.00000 0.19950"/>
-        <geom class="col" type="mesh" mesh="base_link_col" pos="0 0 0"/>
+        <geom class="col" type="mesh" mesh="base_link_col_wall" pos="0 0 0"/>
+        <geom class="col" type="mesh" mesh="base_link_col_floor" pos="0 0 0"/>
+        <geom class="col" type="mesh" mesh="base_link_col_deck" pos="0 0 0"/>
         <body name="waist_link" pos="0.000000 0.000000 0.200000">
           <joint name="waist_yaw" type="hinge" axis="0 0 1" range="-0.78540 0.78540" armature="0.0444964" frictionloss="0.8667"/>
           <inertial pos="0.000000 0.000000 0.024521" mass="0.136650" fullinertia="0.000120548333 0.000120548333 0.000194636115 1.2942307e-20 4.04123696e-22 -6.75782627e-21"/>
           <geom class="vis" mesh="waist_link"/>
-          <geom class="col" type="mesh" mesh="waist_link_col" pos="0 0 0"/>
+          <geom class="col" type="mesh" mesh="waist_link_col_plate_out" pos="0 0 0"/>
+          <geom class="col" type="mesh" mesh="waist_link_col_cone" pos="0 0 0"/>
+          <geom class="col" type="mesh" mesh="waist_link_col_flange" pos="0 0 0"/>
           <body name="torso_upper" pos="0.000000 0.000000 0.040000">
-            <inertial pos="-0.037166 0.000000 0.203197" mass="3.188336" fullinertia="0.0634228198 0.034267024 0.0396480417 -5.43551098e-12 0.00618571863 1.37401189e-10"/>
+            <inertial pos="-0.037166 0.000000 0.203197" mass="3.188336" fullinertia="0.0634228202 0.0342670244 0.0396480417 -7.09634825e-12 0.00618571863 1.80699257e-10"/>
             <geom class="vis" mesh="torso_upper"/>
             <geom class="col" type="cylinder" size="0.04900" fromto="-0.09290 0.12500 0.26900 -0.03100 0.12500 0.26900"/>
             <geom class="col" type="cylinder" size="0.04900" fromto="-0.09290 -0.12500 0.26900 -0.03100 -0.12500 0.26900"/>
-            <geom class="col" type="mesh" mesh="torso_upper_col" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_plate_shoulder_L_abduction" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_wishbone_L_ring" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_wishbone_L_strip" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_plate_shoulder_R_abduction" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_wishbone_R_ring" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_wishbone_R_strip" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_deck" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_flanks" pos="0 0 0"/>
             <site name="s_imu" type="box" pos="0 0 0.15750" size="0.02 0.02 0.01"/>
             <body name="shoulder_L" pos="0.000000 0.125000 0.269000">
               <joint name="shoulder_L_abduction" type="hinge" axis="1 0 0" range="0.00000 3.14159" armature="0.208983" frictionloss="1.422"/>
               <inertial pos="-0.004107 -0.004468 -0.082249" mass="1.256664" fullinertia="0.00330411601 0.00354703419 0.00118481232 2.60791687e-06 0.000389118033 -4.39810897e-05"/>
               <geom class="vis" mesh="shoulder_L"/>
               <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 -0.03290 -0.10400 0.00000 0.02900 -0.10400"/>
-              <geom class="col" type="mesh" mesh="shoulder_L_col" pos="0 0 0"/>
+              <geom class="col" type="mesh" mesh="shoulder_L_col_plate_out" pos="0 0 0"/>
+              <geom class="col" type="mesh" mesh="shoulder_L_col_plate_face" pos="0 0 0"/>
+              <geom class="col" type="mesh" mesh="shoulder_L_col_web" pos="0 0 0"/>
               <body name="upper_arm_L" pos="0.000000 0.030000 -0.104000">
                 <joint name="shoulder_L_flexion" type="hinge" axis="0 1 0" range="-2.96706 1.04720" armature="0.208983" frictionloss="1.422"/>
                 <inertial pos="-0.000000 0.003617 -0.128592" mass="1.292555" fullinertia="0.00631253316 0.00652156176 0.00141697822 1.54808061e-20 7.60872301e-20 -0.000382352144"/>
                 <geom class="vis" mesh="upper_arm_L"/>
                 <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.00000 -0.13710 0.00000 0.00000 -0.19900"/>
-                <geom class="col" type="mesh" mesh="upper_arm_L_col" pos="0 0 0"/>
+                <geom class="col" type="mesh" mesh="upper_arm_L_col_plate_out" pos="0 0 0"/>
+                <geom class="col" type="mesh" mesh="upper_arm_L_col_plate_face" pos="0 0 0"/>
+                <geom class="col" type="mesh" mesh="upper_arm_L_col_cheek" pos="0 0 0"/>
                 <body name="humerus_rot_L" pos="0.000000 0.000000 -0.200000">
                   <joint name="shoulder_L_rotation" type="hinge" axis="0 0 1" range="-1.22173 1.57080" armature="0.208983" frictionloss="1.422"/>
                   <inertial pos="0.000000 0.027671 -0.055711" mass="0.959729" fullinertia="0.0011282333 0.00133802688 0.00095478447 5.3288648e-15 -6.66515352e-15 0.000109381795"/>
                   <geom class="vis" mesh="humerus_rot_L"/>
                   <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.06290 -0.06000 0.00000 0.00100 -0.06000"/>
-                  <geom class="col" type="mesh" mesh="humerus_rot_L_col" pos="0 0 0"/>
+                  <geom class="col" type="mesh" mesh="humerus_rot_L_col_plate_out" pos="0 0 0"/>
+                  <geom class="col" type="mesh" mesh="humerus_rot_L_col_plate_face" pos="0 0 0"/>
+                  <geom class="col" type="mesh" mesh="humerus_rot_L_col_cheek" pos="0 0 0"/>
                   <body name="fore_arm_L" pos="0.000000 0.000000 -0.060000">
                     <joint name="elbow_L" type="hinge" axis="0 1 0" range="-1.91986 0.00000" armature="0.208983" frictionloss="1.422"/>
                     <inertial pos="0.000000 -0.001587 -0.090522" mass="0.997296" fullinertia="0.00228086956 0.00238728094 0.000749316439 3.02512748e-13 4.04665416e-13 0.000110025167"/>
                     <geom class="vis" mesh="fore_arm_L"/>
                     <geom class="col" type="cylinder" size="0.03950" fromto="0.00000 0.00000 -0.07750 0.00000 0.00000 -0.14450"/>
-                    <geom class="col" type="mesh" mesh="fore_arm_L_col" pos="0 0 0"/>
+                    <geom class="col" type="mesh" mesh="fore_arm_L_col_plate_out" pos="0 0 0"/>
+                    <geom class="col" type="mesh" mesh="fore_arm_L_col_plate_face" pos="0 0 0"/>
+                    <geom class="col" type="mesh" mesh="fore_arm_L_col_cheek" pos="0 0 0"/>
                     <body name="forearm_rot_L" pos="0.000000 0.000000 -0.145000">
                       <joint name="forearm_L_roll" type="hinge" axis="0 0 1" range="-1.48353 1.48353" armature="0.0444964" frictionloss="0.8667"/>
                       <inertial pos="-0.000000 -0.030606 -0.057425" mass="0.826012" fullinertia="0.000773869566 0.000745561178 0.000680685138 3.6120952e-12 1.64234322e-12 -6.26245491e-05"/>
                       <geom class="vis" mesh="forearm_rot_L"/>
                       <geom class="col" type="cylinder" size="0.03950" fromto="0.00000 -0.06750 -0.06000 0.00000 -0.00050 -0.06000"/>
-                      <geom class="col" type="mesh" mesh="forearm_rot_L_col" pos="0 0 0"/>
+                      <geom class="col" type="mesh" mesh="forearm_rot_L_col_plate_out" pos="0 0 0"/>
+                      <geom class="col" type="mesh" mesh="forearm_rot_L_col_plate_face" pos="0 0 0"/>
+                      <geom class="col" type="mesh" mesh="forearm_rot_L_col_cheek" pos="0 0 0"/>
                       <body name="wrist_L" pos="0.000000 0.000000 -0.060000">
                         <joint name="wrist_L_flexion" type="hinge" axis="0 1 0" range="-0.43633 0.43633" armature="0.0444964" frictionloss="0.8667"/>
                         <inertial pos="-0.026422 0.000950 -0.075778" mass="0.942401" fullinertia="0.0012635103 0.00139312615 0.000839842256 -2.40715489e-05 -0.000206938428 -5.9285031e-05"/>
                         <geom class="vis" mesh="wrist_L"/>
                         <geom class="col" type="cylinder" size="0.03950" fromto="-0.06750 0.00000 -0.08400 -0.00050 0.00000 -0.08400"/>
-                        <geom class="col" type="mesh" mesh="wrist_L_col" pos="0 0 0"/>
+                        <geom class="col" type="mesh" mesh="wrist_L_col_plate_out" pos="0 0 0"/>
+                        <geom class="col" type="mesh" mesh="wrist_L_col_plate_face" pos="0 0 0"/>
+                        <geom class="col" type="mesh" mesh="wrist_L_col_web" pos="0 0 0"/>
                         <body name="wrist_dev_L" pos="0.000000 0.000000 -0.084000">
                           <joint name="wrist_L_deviation" type="hinge" axis="1 0 0" range="-0.52360 0.34907" armature="0.0444964" frictionloss="0.8667"/>
                           <inertial pos="0.004550 0.016334 -0.052018" mass="0.545989" fullinertia="0.000857471086 0.000752149546 0.000328607549 4.2431378e-05 -0.000110441346 0.000181662999"/>
                           <geom class="vis" mesh="wrist_dev_L"/>
                           <geom class="col" type="cylinder" size="0.02750" fromto="0.00000 0.05600 -0.07200 0.00000 0.00200 -0.07200"/>
-                          <geom class="col" type="mesh" mesh="wrist_dev_L_col" pos="0 0 0"/>
-                          <body name="hook_L" pos="0.000000 0.000000 -0.072000">
+                          <geom class="col" type="mesh" mesh="wrist_dev_L_col_plate_out" pos="0 0 0"/>
+                          <geom class="col" type="mesh" mesh="wrist_dev_L_col_plate_face" pos="0 0 0"/>
+                          <geom class="col" type="mesh" mesh="wrist_dev_L_col_web" pos="0 0 0"/>
+                          <body name="hook_L" pos="0.000000 0.000000 -0.072000" quat="0 0 0 1">
                             <joint name="finger_L" type="hinge" axis="0 1 0" range="-1.57080 0.34907" armature="0.00833085" frictionloss="0.8"/>
-                            <inertial pos="0.008217 -0.005305 -0.068935" mass="0.266566" fullinertia="0.000525112109 0.000506383924 0.000134025729 -1.16187504e-05 7.68013864e-05 6.44168714e-05"/>
+                            <inertial pos="0.008217 0.005305 -0.068935" mass="0.266566" fullinertia="0.000525112109 0.000506383924 0.000134025729 1.16187504e-05 7.68013864e-05 -6.44168714e-05"/>
                             <geom class="vis" mesh="hook_L"/>
                             <geom class="col" type="box" size="0.00600 0.03250 0.05500" pos="0.00000 0.00000 -0.05500"/>
                             <geom class="col" type="box" size="0.02000 0.03250 0.00600" pos="0.02600 0.00000 -0.10400"/>
@@ -289,46 +353,60 @@
               <inertial pos="-0.004107 0.004468 -0.082249" mass="1.256664" fullinertia="0.00330411601 0.00354703419 0.00118481232 -2.60791687e-06 0.000389118033 4.39810897e-05"/>
               <geom class="vis" mesh="shoulder_R"/>
               <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.03290 -0.10400 0.00000 -0.02900 -0.10400"/>
-              <geom class="col" type="mesh" mesh="shoulder_R_col" pos="0 0 0"/>
+              <geom class="col" type="mesh" mesh="shoulder_R_col_plate_out" pos="0 0 0"/>
+              <geom class="col" type="mesh" mesh="shoulder_R_col_plate_face" pos="0 0 0"/>
+              <geom class="col" type="mesh" mesh="shoulder_R_col_web" pos="0 0 0"/>
               <body name="upper_arm_R" pos="0.000000 -0.030000 -0.104000">
                 <joint name="shoulder_R_flexion" type="hinge" axis="0 1 0" range="-2.96706 1.04720" armature="0.208983" frictionloss="1.422"/>
                 <inertial pos="-0.000000 -0.003617 -0.128592" mass="1.292555" fullinertia="0.00631253316 0.00652156176 0.00141697822 -2.63205252e-19 -1.36081073e-21 0.000382352144"/>
                 <geom class="vis" mesh="upper_arm_R"/>
                 <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.00000 -0.13710 0.00000 0.00000 -0.19900"/>
-                <geom class="col" type="mesh" mesh="upper_arm_R_col" pos="0 0 0"/>
+                <geom class="col" type="mesh" mesh="upper_arm_R_col_plate_out" pos="0 0 0"/>
+                <geom class="col" type="mesh" mesh="upper_arm_R_col_plate_face" pos="0 0 0"/>
+                <geom class="col" type="mesh" mesh="upper_arm_R_col_cheek" pos="0 0 0"/>
                 <body name="humerus_rot_R" pos="0.000000 0.000000 -0.200000">
                   <joint name="shoulder_R_rotation" type="hinge" axis="0 0 1" range="-1.57080 1.22173" armature="0.208983" frictionloss="1.422"/>
-                  <inertial pos="0.000000 -0.027671 -0.055711" mass="0.959729" fullinertia="0.0011282333 0.00133802688 0.00095478447 -5.32886419e-15 -6.66515611e-15 -0.000109381795"/>
+                  <inertial pos="0.000000 -0.027671 -0.055711" mass="0.959729" fullinertia="0.0011282333 0.00133802688 0.00095478447 -5.32886581e-15 -6.66515748e-15 -0.000109381795"/>
                   <geom class="vis" mesh="humerus_rot_R"/>
                   <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 -0.06290 -0.06000 0.00000 -0.00100 -0.06000"/>
-                  <geom class="col" type="mesh" mesh="humerus_rot_R_col" pos="0 0 0"/>
+                  <geom class="col" type="mesh" mesh="humerus_rot_R_col_plate_out" pos="0 0 0"/>
+                  <geom class="col" type="mesh" mesh="humerus_rot_R_col_plate_face" pos="0 0 0"/>
+                  <geom class="col" type="mesh" mesh="humerus_rot_R_col_cheek" pos="0 0 0"/>
                   <body name="fore_arm_R" pos="0.000000 0.000000 -0.060000">
                     <joint name="elbow_R" type="hinge" axis="0 1 0" range="-1.91986 0.00000" armature="0.208983" frictionloss="1.422"/>
                     <inertial pos="0.000000 0.001587 -0.090522" mass="0.997296" fullinertia="0.00228086956 0.00238728094 0.000749316439 -3.02512752e-13 4.04665144e-13 -0.000110025167"/>
                     <geom class="vis" mesh="fore_arm_R"/>
                     <geom class="col" type="cylinder" size="0.03950" fromto="0.00000 0.00000 -0.07750 0.00000 0.00000 -0.14450"/>
-                    <geom class="col" type="mesh" mesh="fore_arm_R_col" pos="0 0 0"/>
+                    <geom class="col" type="mesh" mesh="fore_arm_R_col_plate_out" pos="0 0 0"/>
+                    <geom class="col" type="mesh" mesh="fore_arm_R_col_plate_face" pos="0 0 0"/>
+                    <geom class="col" type="mesh" mesh="fore_arm_R_col_cheek" pos="0 0 0"/>
                     <body name="forearm_rot_R" pos="0.000000 0.000000 -0.145000">
                       <joint name="forearm_R_roll" type="hinge" axis="0 0 1" range="-1.48353 1.48353" armature="0.0444964" frictionloss="0.8667"/>
                       <inertial pos="-0.000000 0.030606 -0.057425" mass="0.826012" fullinertia="0.000773869566 0.000745561178 0.000680685138 -3.61209495e-12 1.64234309e-12 6.26245491e-05"/>
                       <geom class="vis" mesh="forearm_rot_R"/>
                       <geom class="col" type="cylinder" size="0.03950" fromto="0.00000 0.06750 -0.06000 0.00000 0.00050 -0.06000"/>
-                      <geom class="col" type="mesh" mesh="forearm_rot_R_col" pos="0 0 0"/>
+                      <geom class="col" type="mesh" mesh="forearm_rot_R_col_plate_out" pos="0 0 0"/>
+                      <geom class="col" type="mesh" mesh="forearm_rot_R_col_plate_face" pos="0 0 0"/>
+                      <geom class="col" type="mesh" mesh="forearm_rot_R_col_cheek" pos="0 0 0"/>
                       <body name="wrist_R" pos="0.000000 0.000000 -0.060000">
                         <joint name="wrist_R_flexion" type="hinge" axis="0 1 0" range="-0.43633 0.43633" armature="0.0444964" frictionloss="0.8667"/>
                         <inertial pos="-0.026422 -0.000950 -0.075778" mass="0.942401" fullinertia="0.0012635103 0.00139312615 0.000839842256 2.40715489e-05 -0.000206938428 5.9285031e-05"/>
                         <geom class="vis" mesh="wrist_R"/>
                         <geom class="col" type="cylinder" size="0.03950" fromto="-0.06750 0.00000 -0.08400 -0.00050 0.00000 -0.08400"/>
-                        <geom class="col" type="mesh" mesh="wrist_R_col" pos="0 0 0"/>
+                        <geom class="col" type="mesh" mesh="wrist_R_col_plate_out" pos="0 0 0"/>
+                        <geom class="col" type="mesh" mesh="wrist_R_col_plate_face" pos="0 0 0"/>
+                        <geom class="col" type="mesh" mesh="wrist_R_col_web" pos="0 0 0"/>
                         <body name="wrist_dev_R" pos="0.000000 0.000000 -0.084000">
                           <joint name="wrist_R_deviation" type="hinge" axis="1 0 0" range="-0.34907 0.52360" armature="0.0444964" frictionloss="0.8667"/>
                           <inertial pos="0.004550 -0.016334 -0.052018" mass="0.545989" fullinertia="0.000857471086 0.000752149546 0.000328607549 -4.2431378e-05 -0.000110441346 -0.000181662999"/>
                           <geom class="vis" mesh="wrist_dev_R"/>
                           <geom class="col" type="cylinder" size="0.02750" fromto="0.00000 -0.05600 -0.07200 0.00000 -0.00200 -0.07200"/>
-                          <geom class="col" type="mesh" mesh="wrist_dev_R_col" pos="0 0 0"/>
-                          <body name="hook_R" pos="0.000000 0.000000 -0.072000">
+                          <geom class="col" type="mesh" mesh="wrist_dev_R_col_plate_out" pos="0 0 0"/>
+                          <geom class="col" type="mesh" mesh="wrist_dev_R_col_plate_face" pos="0 0 0"/>
+                          <geom class="col" type="mesh" mesh="wrist_dev_R_col_web" pos="0 0 0"/>
+                          <body name="hook_R" pos="0.000000 0.000000 -0.072000" quat="0 0 0 1">
                             <joint name="finger_R" type="hinge" axis="0 1 0" range="-1.57080 0.34907" armature="0.00833085" frictionloss="0.8"/>
-                            <inertial pos="0.008217 0.005305 -0.068935" mass="0.266566" fullinertia="0.000525112109 0.000506383924 0.000134025729 1.16187504e-05 7.68013864e-05 -6.44168714e-05"/>
+                            <inertial pos="0.008217 -0.005305 -0.068935" mass="0.266566" fullinertia="0.000525112109 0.000506383924 0.000134025729 -1.16187504e-05 7.68013864e-05 6.44168714e-05"/>
                             <geom class="vis" mesh="hook_R"/>
                             <geom class="col" type="box" size="0.00600 0.03250 0.05500" pos="0.00000 0.00000 -0.05500"/>
                             <geom class="col" type="box" size="0.02000 0.03250 0.00600" pos="0.02600 0.00000 -0.10400"/>
@@ -467,7 +545,7 @@
   <keyframe>
     <!-- Both hooks latched on rung_front_line_0 (z = 1.00). -->
     <key name="hang_on_rung"
-         qpos="0.410846 -0.001101 -0.083958 0.990904 -0.004101 -0.131426 -0.028619 0.000000 0.132742 -2.664027 0.001147 0.000691 0.002636 -0.017082 0.043893 0.042799 -0.129331 -2.661479 -0.000043 -0.004575 0.000302 0.096933 -0.028453 0.019587"
-         ctrl="0.000000 0.000000 -2.792527 0.000000 0.000000 0.000000 -0.087266 0.000000 0.000000 0.000000 -2.792527 0.000000 0.000000 0.000000 0.087266 0.000000 0.000000"/>
+         qpos="0.431792 -0.000664 -0.093684 0.993610 -0.000052 -0.112866 -0.000007 -0.000049 0.001626 -2.796405 0.000145 -0.006287 -0.087050 -0.018301 0.003549 0.013177 -0.001531 -2.796423 -0.000161 -0.006273 0.087004 -0.018221 -0.003072 0.013026"
+         ctrl="0.000000 0.000000 -2.792527 0.000000 0.000000 -0.087266 0.000000 0.000000 0.000000 0.000000 -2.792527 0.000000 0.000000 0.087266 0.000000 0.000000 0.000000"/>
   </keyframe>
 </mujoco>

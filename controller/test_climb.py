@@ -103,7 +103,16 @@ def test_phase_1():
 @phase(2, "encoder+IMU estimate and relative Jacobians match ground truth")
 def test_phase_2():
     from .kinematics import Estimator, THROAT_PT, ARM, WAIST, JOINTS, triad
+    from .holds import HoldMap
+    from .moves import Ctx, IMU_WINDOW
     e = env_at_hang()
+    # The IMU as the controller senses it: averaged over one slow swing (Ctx.imu).
+    # Read raw at the instant of the reset, the body's small post-reset sway reads
+    # as tilt -- 0.3-1.0 deg over the first second, on v1 as on this robot -- so
+    # whether a single sample passed 0.5 deg was a matter of timing.
+    ctx = Ctx(e, HoldMap.load())
+    for _ in range(int(IMU_WINDOW / ctx.dt)):
+        ctx.tick()
     est = Estimator(e.model)
     enc = e.encoders()
     q = np.array([enc[j][0] for j in JOINTS])
@@ -118,7 +127,7 @@ def test_phase_2():
     anchor = gp + np.dot(thr_true - gp, gax) * gax
     print(f"    throat sits {np.linalg.norm(thr_true-anchor)*1000:.1f} mm off the rung axis")
 
-    est.update(q, e.imu(raw_only=True), 'L', anchor)
+    est.update(q, ctx.imu(), 'L', anchor)
 
     # attitude from raw IMU vs the simulator's quaternion oracle
     from .kinematics import rotvec
@@ -327,7 +336,7 @@ def test_phase_6():
             acc[s].append(float(np.linalg.norm(e.hand(s)['force'])))
     f = {s: float(np.mean(v)) for s, v in acc.items()}
     print(f"    load two seconds later: L {f['L']:.0f} N, R {f['R']:.0f} N "
-          f"(the robot weighs 109 N)")
+          f"(the robot weighs {e.model.body_subtreemass[e.base] * 9.81:.0f} N)")
     print(f"    env.latched says L={e.latched('L')[0]} R={e.latched('R')[0]}")
     # Not `env.latched`: it is a tight box round the nominal seat, and the README's own
     # measurement has a hook outside it carrying 167 N. The physical test is the model's
@@ -368,17 +377,22 @@ def test_phase_7():
                     + e.data.xmat[e.hook['R']].reshape(3, 3) @ THROAT_PT)[1]
     y0 = seat()
     base = mujoco.mj_name2id(e.model, mujoco.mjtObj.mjOBJ_BODY, 'base_link')
+    # Pulls as fractions of body weight: 20, 40 and 80 N on the 109 N robot this was
+    # written on. Friction holds the hook along its rung, and friction scales with the
+    # load it carries, so the same newtons on the 215 N robot read as a hook that no
+    # longer slides -- 80 N moved it 62 mm -- while 0.73 W still runs it off.
+    W = e.model.body_subtreemass[base] * 9.81
     slid = {}
-    for f in (20.0, 40.0, 80.0):
-        e.data.xfrc_applied[base] = [0, f, 0, 0, 0, 0]
+    for frac in (0.18, 0.37, 0.73):
+        e.data.xfrc_applied[base] = [0, frac * W, 0, 0, 0, 0]
         for _ in range(1200):
             e.step(ctx.ctrl)
-        slid[f] = (seat() - y0) * 1000
+        slid[frac] = (seat() - y0) * 1000
     e.data.xfrc_applied[base] = np.zeros(6)
-    print("    " + ", ".join(f"{f:.0f} N sideways -> {d:+.0f} mm" for f, d in slid.items())
-          + f"  (the robot weighs {11.13 * 9.81:.0f} N)")
-    assert slid[20.0] > 10, "the hook now resists sliding; the climbing blocker may be gone"
-    assert slid[80.0] > 500, "80 N used to run it off the rung entirely"
+    print("    " + ", ".join(f"{frac * W:.0f} N sideways -> {d:+.0f} mm" for frac, d in slid.items())
+          + f"  (the robot weighs {W:.0f} N)")
+    assert slid[0.18] > 10, "the hook now resists sliding; the climbing blocker may be gone"
+    assert slid[0.73] > 500, "0.73 x body weight used to run it off the rung entirely"
 
 
 # --------------------------------------------------------------------------

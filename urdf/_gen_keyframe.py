@@ -9,7 +9,7 @@ import numpy as np, mujoco
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 XML = os.path.join(HERE, "scene.xml")
-FLEX, WR = np.radians(-160.0), np.radians(5.0)
+FLEX, ROLL = np.radians(-160.0), np.radians(5.0)
 
 m = mujoco.MjModel.from_xml_path(XML)
 d = mujoco.MjData(m)
@@ -17,8 +17,14 @@ J = [m.joint(i).name for i in range(m.njnt)
      if m.jnt_type[i] == mujoco.mjtJoint.mjJNT_HINGE]
 QA = {n: m.joint(n).qposadr[0] for n in J}
 
+# v1's latching posture since the hook re-mount (spec.MOUNT_ROT): arms overhead,
+# shoulder rotation 0, the forearms rolled 5 deg toward each other. Rolled, not
+# flexed at the wrist - roll mirrors to -roll across the sagittal plane, wrist
+# flexion mirrors to itself, so "-5 / +5 of wrist flexion" tipped one hook
+# forward and the other back: the hang settled at 208 N on one hook and 100 N on
+# the other.
 POSE = {"shoulder_L_flexion": FLEX, "shoulder_R_flexion": FLEX,
-        "wrist_L_flexion": -WR, "wrist_R_flexion": WR}
+        "forearm_L_roll": -ROLL, "forearm_R_roll": ROLL}
 
 
 def place():

@@ -36,7 +36,7 @@ STEP/              outputs
 
 ```bash
 python src/robot.py        # build STEP/robot.step
-python tools/verify.py     # 18 checks
+python tools/verify.py     # 17 checks
 cadgen viewer --json       # review in the browser
 ```
 
@@ -47,7 +47,7 @@ cadgen viewer --json       # review in the browser
 `z < 0`. `src/purchased/*.py` holds the one transform each vendor file needs.
 
 **Link frame.** URDF convention: origin on the proximal joint axis, identity
-rotation at q = 0. `BODY_DIR[joint]` points from the joint origin toward that
+rotation at q = 0 — except the hooks, turned 180° about z by `MOUNT_ROT` (below). `BODY_DIR[joint]` points from the joint origin toward that
 actuator's body, so the child structure grows the other way. `MOUNT_AT[joint]`
 slides the actuator along its own axis — kinematically free clearance.
 
@@ -134,6 +134,13 @@ collision boxes disagreed about where the hand was. The palm is back on the
 axis and the TOP of the palm is cut away instead, which costs nothing - the
 actuator only reaches 27.5 mm down and the rung never touches there.
 
+It is bolted on **turned over** (`spec.MOUNT_ROT`, 180° about the forearm axis):
+raised overhead, an unturned hook's throat faces away from the wall, which v1
+learnt the hard way. The hook is drawn in its own turned frame
+(`build.in_turned_frame`), so its plate stays on the flange side of the finger
+actuator — turning the frame alone would have put 21 700 mm³ of it inside the
+motor.
+
 **Plate diameter** is the mating face, unless the actuator's bolt circle sits
 so close to the rim that a socket head hangs over the edge, and then it is as
 wide as the heads need and never wider than the actuator's own body. Only the
@@ -157,7 +164,17 @@ circles by their cylindrical faces and z-positions.
 | AK60-39 | Ø30 | 6 × M4 | −9.0 | Ø71 | 8 × M3 | Ø17 |
 | AK45-36 | Ø27 | 6 × M2.5 | −4.0 | Ø48 | 6 × M3 | Ø8 |
 
-## Two traps worth remembering
+## Traps worth remembering
+
+**MuJoCo collides a mesh's convex hull, never the mesh.** One mesh per link made
+the torso frame one hull, a block out to the shoulder plates, and the raised
+arms sank 10-22 mm into it. `gen_urdf.py` writes one collision mesh per bracket
+PART (stored as its hull) - see `src/lib/collide.py`.
+
+**`Shape.scale()` does not scale a part that still carries a Location.** A part
+placed by `plane * shape` keeps that placement, and `.scale(1000)` on it moved
+`upper_arm_L`'s face plate 200 mm up the arm. A fused result is clean; a single
+part has to be wrapped (`Compound(children=[part])`) before scaling.
 
 **Axis-distance arithmetic does not decide clearance for perpendicular
 cylinders.** The first version of `check_fit.py` computed the distance between

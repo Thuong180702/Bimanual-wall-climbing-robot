@@ -211,6 +211,16 @@ MOUNT_AT = {}
 for _s in "LR":
     MOUNT_AT["shoulder_%s_abduction" % _s] = 0.030
 
+# The hooks are bolted on TURNED OVER: a hook's frame is its finger joint's
+# frame turned 180 deg about the forearm axis (z). v1 learnt this the hard way
+# (commit dc2f07b): with the arm raised overhead to hang, an unturned hook's
+# throat faces AWAY from the wall, and turning it back through the arm pins
+# the shoulder rotation at its stop, which aims the elbow hinge at the wall -
+# the elbows folded 44 mm inboard on every pull-up. Everything read in
+# hook-LOCAL coordinates (the throat, the pads, the finger angle) is unchanged
+# by it. Radians about the child link's own z; every other link is 0.
+MOUNT_ROT = {"hook_L": math.pi, "hook_R": math.pi}
+
 PARENT = {j[2]: j[1] for j in JOINTS}
 PJOINT = {j[2]: j for j in JOINTS} | {f[2]: f[1] for f in FIXED}
 AXIS = {j[0]: j[3] for j in JOINTS}
@@ -225,7 +235,8 @@ def fk(q=None):
     """World placement of every link frame at joint angles q (default all zero).
 
     Returns {link: (origin xyz, 3x3 rotation)} with the base at the origin.
-    Every link frame has identity rotation at q=0, so this is a plain chain.
+    Every link frame has identity rotation at q=0 except the hooks, which are
+    turned by MOUNT_ROT; a joint's axis is in its CHILD's frame, as in MJCF.
     """
     q = q or {}
     out = {"base_link": ((0.0, 0.0, 0.0), _I)}
@@ -240,7 +251,8 @@ def fk(q=None):
             po, pR = out[par]
             o = tuple(p + sum(pR[i][k] * off[k] for k in range(3))
                       for i, p in enumerate(po))
-            R = pR if ax is None else _mul(pR, _rot(ax, q.get(j[0], 0.0)))
+            R = pR if ax is None else _mul(
+                _mul(pR, _rot((0, 0, 1), MOUNT_ROT.get(ch, 0.0))), _rot(ax, q.get(j[0], 0.0)))
             out[ch] = (o, R)
         if len(rest) == len(todo):
             raise RuntimeError("cycle in the joint list")
@@ -276,7 +288,8 @@ def motor_placements(q=None):
     for name, par, ch, ax, off, _lim, _bd in JOINTS:
         po, pR = F[par]
         o = F[ch][0]
-        wax = tuple(sum(pR[i][k] * ax[k] for k in range(3)) for i in range(3))
+        cR = F[ch][1]                    # the axis is in the child's frame
+        wax = tuple(sum(cR[i][k] * ax[k] for k in range(3)) for i in range(3))
         bd = BODY_DIR[name]
         wbd = tuple(sum(pR[i][k] * bd[k] for k in range(3)) for i in range(3))
         a = MOUNT_AT.get(name, 0.0)

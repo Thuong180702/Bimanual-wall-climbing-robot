@@ -139,7 +139,7 @@ def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
 
     pre = f'out/{run}/{ckpt}'
     venv = VecNormalize.load(pre + 'vecnorm.pkl',
-                             DummyVecEnv([lambda: MultiLesson([lesson])]))
+                             DummyVecEnv([lambda: MultiLesson([lesson], visual=True)]))
     venv.training = False
     venv.norm_reward = False
     model = PPO.load(pre + 'model', env=venv, device='cpu')

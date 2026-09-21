@@ -8,7 +8,7 @@ Two subsystems share one model:
 | [`cad/`](cad/README.md) | the mechanical design: vendor actuator CAD, the brackets between them, and the tools that check both — the robot is generated from here |
 | [`urdf/`](urdf/README.md) | the generated robot, the scene, 86 sensors, and the measured properties of both |
 | [`controller/`](controller/README.md) | a classical controller: anchor-rooted state estimate, relative Jacobians, hold graph, A\* routing |
-| [`rl/`](rl/README.md) | a PPO curriculum: seventeen lesson scenes ordered by difficulty, and the task/reward around them |
+| [`rl/`](rl/README.md) | a PPO curriculum: eighteen lesson scenes ordered by difficulty, and the task/reward around them |
 
 ```bash
 python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
@@ -35,9 +35,12 @@ half of it in the actuators. The two things that did not change are the ones
 everything else rests on: the kinematics, and the vertical reach that set the
 rung spacing — 0.676 m, against v1's 0.671.
 
-**The controller has not been retuned for it.** Its state estimate, hold map
-and Jacobians check out on the new robot; its motion phases are tuned for
-11 kg and time out or fall at 21.9. See [`urdf/README.md`](urdf/README.md).
+**The classical controller has not been retuned for it.** Its state estimate,
+hold map, Jacobians and single steps pass on the new robot (phases 0-4 and 7);
+the traverse, the climb down and the route (5, 6, 8) fall, because their gains
+were swept at 11 kg. The RL task needed no retuning, only its two baselines read
+off the model instead of typed in. Every policy trained before this is void: it
+learned the old robot. See [`urdf/README.md`](urdf/README.md).
 
 ## Where it stands
 

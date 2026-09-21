@@ -18,7 +18,7 @@ STEPS = 200
 def _worker(lesson, steps, q):
     os.environ['OMP_NUM_THREADS'] = '1'          # no BLAS thread contention
     from .climb_task import ClimbTask
-    t = ClimbTask(lesson)
+    t = ClimbTask(lesson, visual=False)          # as training builds it
     t.reset()
     a = np.zeros(17)
     t.step(a)                                     # warm up

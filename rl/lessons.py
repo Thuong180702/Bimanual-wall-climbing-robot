@@ -454,11 +454,10 @@ def main():
         for _ in range(int(1.0 / e.model.opt.timestep)):
             e.step(ctrl)
         drift = np.linalg.norm(e.data.xpos[e.base] - p0) * 1000.0
-        # 8 mm, not the 5 it was: the keyframe is settled on scene.xml, the
-        # lessons add the grip pad, and the two equilibria differ by a few mm
-        # of contact compliance. That gap scales with weight, and the robot
-        # went from 11.1 kg of abstract blocks to 21.9 kg of real actuators.
-        assert drift < 8.0, f"lesson {k}: keyframe drifted {drift:.1f} mm"
+        # 0.6 mm on the 21.9 kg robot. It read 3.8 while the hooks hung back to
+        # front and the arms were jammed into the torso -- a drift budget is a
+        # symptom detector, so it stays where it was rather than following one.
+        assert drift < 5.0, f"lesson {k}: keyframe drifted {drift:.1f} mm"
         assert e.latched('L')[0] and e.latched('R')[0], f"lesson {k}: a hook came off"
         segs = rung_segments(e.model)
         for nm in spec['goal_rungs']:

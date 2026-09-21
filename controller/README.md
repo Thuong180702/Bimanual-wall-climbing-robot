@@ -1,10 +1,11 @@
-> **Out of date since the hook re-mount (Sept 2026).** The hook bodies were rotated
-> 180° about the forearm axis so the elbow flexes the way a human's does (see
-> `rl/README.md`), which changes the arm posture every move here was tuned against:
-> `test_climb` now fails phases 3, 4, 5, 6 and 8, where before the change it failed
-> only phase 8. The servo weights in `moves.py` need re-sweeping against the new
-> posture. Nothing structural is known to be wrong: phases 0, 1, 2 and 7 — keyframe,
-> hold map, estimator, slide resistance — still pass.
+> **Not yet tuned for the real-actuator robot (Sept 2026).** `urdf/` is now the
+> 21.9 kg robot generated from `cad/` (the hooks still mounted turned over, as
+> since the re-mount). On it `test_climb` passes phases 0-4 and 7 — keyframe, hold
+> map, estimator and Jacobians, one step with each hand, the slide characterisation
+> — and fails 5, 6 and 8 (traverse, climb down, route), which fall: the servo
+> weights and move parameters in `moves.py` were swept on the 11.1 kg robot.
+> Phase 7's pulls are fractions of body weight now; the numbers quoted below in
+> newtons are the old robot's.
 
 # Climbing controller
 

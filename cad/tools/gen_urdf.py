@@ -5,7 +5,7 @@ Outputs
   urdf/climbing_robot.urdf           fixed base
   urdf/climbing_robot_floating.urdf  free base, for MuJoCo
   urdf/meshes/<link>.stl             visual, mm, link frame, actuators included
-  urdf/meshes/<link>_col.stl          the bracket alone, for collision
+  urdf/meshes/<link>_col_<part>.stl   one bracket part each, for collision
   urdf/_actuators.json               the motor table the scene generator reads
 """
 import json, math, os, sys
@@ -16,11 +16,12 @@ OUT = os.path.abspath(os.path.join(HERE, "..", "..", "urdf"))
 
 from cadgen import build123d as bd
 from cadgen import read_step
+import trimesh
 
 from lib.build import BUILDERS, CHILD_OF, fuse, mount_plane
-from lib.collide import link_collision
+from lib.collide import col_parts, link_collision
 from lib.motors import MOTORS
-from lib.spec import FIXED, JOINTS, MOTOR_OF, PICK
+from lib.spec import FIXED, JOINTS, MOTOR_OF, MOUNT_ROT, PICK
 from massprops import link_props
 
 MM = 0.001
@@ -96,12 +97,21 @@ def main():
         bd.export_stl(link_visual(link),
                       os.path.join(OUT, "meshes", "%s.stl" % link),
                       tolerance=TOL, angular_tolerance=ANG)
-        # the bracket on its own is the collision mesh; MuJoCo hulls it, and
-        # the actuators are separate cylinders that are exact
+        # the bracket's parts are the collision meshes, one each - MuJoCo hulls
+        # every mesh (see lib/collide.py) - and the actuators are separate
+        # cylinders that are exact
         if not link.startswith("hook"):
-            bd.export_stl(fuse(BUILDERS[link]()).scale(1000.0),
-                          os.path.join(OUT, "meshes", "%s_col.stl" % link),
-                          tolerance=TOL, angular_tolerance=ANG)
+            for name, solid in col_parts(link):
+                # wrapped, not scaled bare: a part placed by `plane * shape`
+                # keeps that Location, and .scale() on it moved upper_arm_L's
+                # face plate 200 mm up its own arm
+                p = os.path.join(OUT, "meshes", "%s.stl" % name)
+                bd.export_stl(bd.Compound(children=[solid]).scale(1000.0), p,
+                              tolerance=TOL, angular_tolerance=ANG)
+                # MuJoCo collides a mesh's HULL anyway, so store only that: the
+                # same geometry in 5.8k triangles instead of 66k, and the BVH
+                # MuJoCo builds over the triangles was most of a model's memory
+                trimesh.load(p).convex_hull.export(p)
 
     total = sum(p[0] for p in props.values())
     L = ['<?xml version="1.0"?>',
@@ -163,7 +173,8 @@ def main():
         L += ['', '  <joint name="%s" type="revolute">' % name,
               '    <parent link="%s"/>' % par,
               '    <child link="%s"/>' % ch,
-              '    <origin xyz="%.6f %.6f %.6f" rpy="0 0 0"/>' % off,
+              '    <origin xyz="%.6f %.6f %.6f" rpy="0 0 %.9g"/>'
+              % (*off, MOUNT_ROT.get(ch, 0.0)),
               '    <axis xyz="%d %d %d"/>' % ax,
               '    <limit lower="%.6f" upper="%.6f" effort="%g" velocity="%.4f"/>'
               % (lo, hi, eff, vel),

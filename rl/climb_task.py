@@ -128,8 +128,13 @@ K_VEL = 1e-4             # joint velocity penalty -- smoothness
 # Deliberately NOT rewarded: the number of times the load majority swaps. The 10.4M
 # policy already swaps it 5.8 times a second on lesson 1 and 9.2 on lesson 2 -- that
 # is chatter, not weight shifting, and paying per swap would buy more of it.
-TAU_IDLE = 30.0          # N.m of joint torque a still hang already costs
-WEIGHT = 109.0           # N, the robot
+#
+# The two baselines -- the torque of a still hang, and body weight -- are READ OFF
+# THE MODEL (`ClimbTask.tau_idle`, `.weight`), not typed in. They were typed in, as
+# 30 N.m and 109 N, and when the robot became the real 21.9 kg one (still hang
+# ~61 N.m, 215 N) nothing moved them: hanging still was charged 0.021/step of effort
+# and 0.0053 of "fighting", a 60 s idle cost -58 against -10 for a fall, and the
+# incentive test below failed. The numbers in the table above are that 11.1 kg robot.
 K_EFFORT = 5e-5          # per step, per N.m of torque above the idle hang
 K_FIGHT = 5e-5           # per step, per N of grip above body weight
 K_TIME = 0.003           # per step. A whole 1500-step episode costs 4.5 against
@@ -273,12 +278,12 @@ GRIP_STOP = np.radians(-37.0)   # finger setpoint limit: 3 deg inside GRIP_BAND'
 
 
 class ClimbTask:
-    def __init__(self, lesson=1):
+    def __init__(self, lesson=1, visual=True):
         self.lesson = lesson
         self.spec = LESSONS[lesson]
         self.env = ClimbingEnv(xml=xml_path(lesson), success_z=1e9,
                                timeout_s=self.spec['timeout'],
-                               held_fn=self._attached)
+                               held_fn=self._attached, visual=visual)
         self.est = Estimator(self.env.model)
         self.segs = rung_segments(self.env.model)
         self.goals = [np.asarray(g, float) for g in self.spec['goals']]
@@ -325,6 +330,9 @@ class ClimbTask:
         self._gyro_adr = m.sensor_adr[sid]
         self._w_sum = np.zeros(3)          # body rates summed over the substeps
         self._Rf = None                    # filtered world<-torso attitude
+        # the two baselines effort and fight are priced above (see K_EFFORT)
+        self.weight = float(m.body_subtreemass[self.env.base] * -m.opt.gravity[2])
+        self.tau_idle = None               # N.m, set by the first reset: the secured hang
         self.obs_dim = len(self.reset()[0])
 
     # ---- hardware-legal sensing -------------------------------------------
@@ -679,10 +687,12 @@ class ClimbTask:
     def _dist(self):
         return float(self._hand_dists().sum())
 
-    def _off_band_under_side_load(self, push=60.0, steps=150):
-        """fingers squeezed onto their stop, the torso pushed `push` N along the rung
-        so one hook hands its weight to the other: how many steps does a hook still on
-        the rung read outside GRIP_BAND? The stop's margin is what keeps this at 0."""
+    def _off_band_under_side_load(self, push=0.55, steps=150):
+        """fingers squeezed onto their stop, the torso pushed `push` x body weight
+        along the rung (60 N on the 109 N robot it was measured on) so one hook hands
+        its weight to the other: how many steps does a hook still on the rung read
+        outside GRIP_BAND? The stop's margin is what keeps this at 0."""
+        push *= self.weight
         m, d = self.env.model, self.env.data
         tb = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'torso_upper')
         shut = np.zeros(17)
@@ -749,6 +759,8 @@ class ClimbTask:
         self._Rf = triad(imu['accel'], imu['mag'])   # at rest the triad is right
         self._w_sum[:] = 0.0
         self._sense()
+        if self.tau_idle is None:            # deterministic: keyframe + the same secure()
+            self.tau_idle = float(np.abs(self.tau).sum())
         self.prev_d, self.prev_live = self._hand_dists(), self._live()
         self.credit = np.zeros(2)            # relative approach earned since the last hold
         self.held = self._holding()
@@ -850,9 +862,9 @@ class ClimbTask:
         bank = float(self.credit[took].sum())
         self.credit[took] = 0.0
         sep_err = self._sep_error()
-        effort = max(0.0, float(np.abs(self.tau).sum()) - TAU_IDLE)
+        effort = max(0.0, float(np.abs(self.tau).sum()) - self.tau_idle)
         grip = sum(float(np.linalg.norm(self.env.hand(s)['force'])) for s in 'LR')
-        fight = max(0.0, grip - WEIGHT)
+        fight = max(0.0, grip - self.weight)
         r = (K_BANK * bank + K_GRAB * float(first.sum())
              + K_REACH * float((self.prev_live - live).sum())
              - K_DANGLE * parked - K_STALE * stale - K_SEP * sep_err
@@ -937,10 +949,15 @@ def main():
     # it -- a climber slips too. So the reward has to hold the line as well: over
     # every step where both hooks are seated, whatever distance the body does
     # manage to close must pay exactly nothing.
+    # Side pulls here are a fraction of body weight -- 25 N on the 109 N robot these
+    # tests were written on. The same 25 N drags the 215 N robot's hooks 15 mm, too
+    # little to prove anything, because what holds a hook along its rung is friction,
+    # and friction scales with the weight it carries.
     t = ClimbTask(1)
     t.reset()
+    shove = 0.23 * t.weight
     base = mujoco.mj_name2id(t.env.model, mujoco.mjtObj.mjOBJ_BODY, 'base_link')
-    t.env.data.xfrc_applied[base] = [0, 25, 0, 0, 0, 0]
+    t.env.data.xfrc_applied[base] = [0, shove, 0, 0, 0, 0]
     moved_while_held, held, n, slid, paid = 0.0, 0, 0, 0.0, 0.0
     prev = t._dist()
     for _ in range(150):
@@ -957,14 +974,14 @@ def main():
             break
     t.env.data.xfrc_applied[base] = np.zeros(6)
     banked = paid + max(0.0, info['banked'])
-    print(f"slide test: 25 N along the rung, both hooks seated for {held}/{n} steps, "
+    print(f"slide test: {shove:.0f} N along the rung, both hooks seated for {held}/{n} steps, "
           f"body moved {moved_while_held*1000:.0f} mm over those -- "
           f"credited {banked*1000:+.1f} mm, loaded hooks dragged {slid*1000:.0f} mm "
           f"and charged {K_SLIDE*slid:.2f}")
     assert slid > 0.02 and 0.5 < slid / max(moved_while_held, 1e-9) < 2.0, (
         f"the hooks were dragged {moved_while_held*1000:.0f} mm under load but "
         f"K_SLIDE saw {slid*1000:.0f} mm")
-    assert held > 100, (f"only {held}/{n} steps with both hooks seated: 25 N should "
+    assert held > 100, (f"only {held}/{n} steps with both hooks seated: {shove:.0f} N should "
                         f"not take a hook off the rung, so something else is")
     assert paid == 0.0 and abs(info['banked']) <= max(0.01, 0.2 * moved_while_held), (
         f"sliding with both hooks on banked {paid*1000:+.1f} mm and left "
@@ -1096,7 +1113,7 @@ def main():
         f"steps: the finger stop is outside the band")
     off = t._off_band_under_side_load()
     print(f"grip test (tay nhả tải): fingers on the {np.degrees(GRIP_STOP):.0f} deg stop, "
-          f"60 N along the rung both ways -- {off} step(s) out of band on a hook still on the rung")
+          f"{0.55 * t.weight:.0f} N along the rung both ways -- {off} step(s) out of band on a hook still on the rung")
     assert off == 0, (f"a hook on its stop read outside GRIP_BAND on {off} steps once the other "
                       f"hook took the weight: the stop has no margin inside the band")
 
@@ -1210,8 +1227,8 @@ def main():
           f"gap onto seg1 too; a guess on the far side picks the far side")
 
     # SLAM keeps the anchor honest. The loaded hook creeps along the rung under a
-    # side load and the arm cannot see it: hang, then pull the body 25 N along the
-    # rung for 150 steps (the slide test's scenario, the hooks drag 25-50 mm).
+    # side load and the arm cannot see it: hang, then pull the body along the rung
+    # for 150 steps (the slide test's scenario and force, the hooks drag 25-50 mm).
     from urdf.climbing_env import SLAM_SIG
     t = ClimbTask(1)
     t.reset()
@@ -1227,17 +1244,20 @@ def main():
         wander.append(abs(stale()))
     p0 = t._throat_true(t.anchor).copy()
     for _ in range(150):
-        t.env.data.xfrc_applied[t.env.base, :3] = 25.0 * ax
+        t.env.data.xfrc_applied[t.env.base, :3] = 0.23 * t.weight * ax
         t.step(z)
     t.env.data.xfrc_applied[t.env.base, :3] = 0.0
     crept = float((t._throat_true(t.anchor) - p0) @ ax)
-    # (the wander is mostly the filtered attitude's ~1 deg on the 0.5 m lever from
-    # the anchor to the base, ~9 mm, plus ~3 mm of averaged SLAM noise)
-    assert max(wander) < 0.020, f"hanging still, the anchor wandered {max(wander)*1e3:.0f} mm"
+    # (the wander is mostly the filtered attitude's ~1 deg on the lever from the
+    # anchor to the base, plus ~3 mm of averaged SLAM noise. That lever was 0.5 m;
+    # the real-actuator robot's arm is 116 mm longer and its torso 104 mm taller,
+    # and over SLAM seeds 0-9 the wander reads 15-24 mm, mean 20 -- where the old
+    # 20 mm bound sat for the old robot's ~12)
+    assert max(wander) < 0.030, f"hanging still, the anchor wandered {max(wander)*1e3:.0f} mm"
     assert abs(crept) > 0.015, f"the pull crept the hook only {crept*1e3:.0f} mm; the test proves nothing"
     assert abs(stale()) < 0.020, f"after {crept*1e3:+.0f} mm of creep the anchor is {stale()*1e3:+.0f} mm stale"
     print(f"slam test: hanging still the anchor wanders {max(wander)*1e3:.1f} mm under {SLAM_SIG*1e3:.0f} mm "
-          f"of SLAM noise; a 25 N pull creeps the loaded hook {crept*1e3:+.0f} mm along the rung and the "
+          f"of SLAM noise; a {0.23 * t.weight:.0f} N pull creeps the loaded hook {crept*1e3:+.0f} mm along the rung and the "
           f"anchor follows to within {stale()*1e3:+.0f} mm")
 
     # Progress is measured at the rung. The win9 dive: the left hook off the end of

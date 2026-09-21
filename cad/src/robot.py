@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cadgen import build123d as bd
 from cadgen import report, step, track
 
-from lib.links import BUILDERS
+from lib.build import BUILDERS, fuse
 from lib.spec import BODY_DIR, IFACE, MOTOR_OF, fk, motor_placements
 from purchased.ak45_36 import ak45_36
 from purchased.ak60_39 import ak60_39
@@ -55,7 +55,7 @@ def robot():
         o, R = F[link]
         pl = bd.Plane(origin=tuple(v * 1000 for v in o), x_dir=(R[0][0], R[1][0], R[2][0]),
                       z_dir=(R[0][2], R[1][2], R[2][2]))
-        p = bd.Location(pl) * build().scale(1000.0)
+        p = bd.Location(pl) * fuse(build()).scale(1000.0)
         p.label = link
         kids.append(p)
 

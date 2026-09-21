@@ -32,8 +32,20 @@ CAPTURE_DZ = (-0.010, 0.070)
 
 class ClimbingEnv:
     def __init__(self, xml='scene.xml', fall_z=-1.2, free_fall_s=0.6,
-                 success_z=2.00, timeout_s=60.0, qvel_max=100.0, held_fn=None):
-        self.model = mujoco.MjModel.from_xml_path(xml)
+                 success_z=2.00, timeout_s=60.0, qvel_max=100.0, held_fn=None,
+                 visual=True):
+        if visual:
+            self.model = mujoco.MjModel.from_xml_path(xml)
+        else:
+            # Nothing that is only looked at: no visual meshes, no cosmetic stubs.
+            # The real actuators' meshes are 168k vertices a model, and a training
+            # env holds every lesson -- 1.5 GB each against 0.33 GB without them.
+            # Collision geoms, masses and sensors are untouched, and the physics
+            # is bit-for-bit the same (qpos and sensordata over 6 s of random
+            # actions, max difference 0.0).
+            spec = mujoco.MjSpec.from_file(xml)
+            spec.compiler.discardvisual = True
+            self.model = spec.compile()
         self.data = mujoco.MjData(self.model)
         self.fall_z, self.free_fall_s = fall_z, free_fall_s
         # What counts as "still attached to the wall", for the `released` timer only.

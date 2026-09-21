@@ -31,7 +31,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/base_link_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/base_link_col_wall.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/base_link_col_floor.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/base_link_col_deck.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -48,7 +56,15 @@
     </visual>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/waist_link_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/waist_link_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/waist_link_col_cone.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/waist_link_col_flange.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -56,7 +72,7 @@
     <inertial>
       <origin xyz="-0.037166 0.000000 0.203197" rpy="0 0 0"/>
       <mass value="3.188336"/>
-      <inertia ixx="0.0634228198" ixy="-5.43551098e-12" ixz="0.00618571863" iyy="0.034267024" iyz="1.37401189e-10" izz="0.0396480417"/>
+      <inertia ixx="0.0634228202" ixy="-7.09634825e-12" ixz="0.00618571863" iyy="0.0342670244" iyz="1.80699257e-10" izz="0.0396480417"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -73,7 +89,35 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/torso_upper_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/torso_upper_col_plate_shoulder_L_abduction.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/torso_upper_col_wishbone_L_ring.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/torso_upper_col_wishbone_L_strip.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/torso_upper_col_plate_shoulder_R_abduction.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/torso_upper_col_wishbone_R_ring.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/torso_upper_col_wishbone_R_strip.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/torso_upper_col_deck.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/torso_upper_col_flanks.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -94,7 +138,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/shoulder_L_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/shoulder_L_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/shoulder_L_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/shoulder_L_col_web.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -115,7 +167,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/humerus_rot_L_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/humerus_rot_L_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/humerus_rot_L_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/humerus_rot_L_col_cheek.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -136,7 +196,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/upper_arm_L_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/upper_arm_L_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/upper_arm_L_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/upper_arm_L_col_cheek.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -144,7 +212,7 @@
     <inertial>
       <origin xyz="0.000000 -0.001587 -0.090522" rpy="0 0 0"/>
       <mass value="0.997296"/>
-      <inertia ixx="0.00228086956" ixy="3.02512748e-13" ixz="4.04665416e-13" iyy="0.00238728094" iyz="0.000110025167" izz="0.000749316439"/>
+      <inertia ixx="0.00228086956" ixy="3.02512747e-13" ixz="4.04665392e-13" iyy="0.00238728094" iyz="0.000110025167" izz="0.000749316439"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -157,7 +225,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/fore_arm_L_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/fore_arm_L_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/fore_arm_L_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/fore_arm_L_col_cheek.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -178,7 +254,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/forearm_rot_L_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/forearm_rot_L_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/forearm_rot_L_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/forearm_rot_L_col_cheek.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -199,7 +283,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/wrist_L_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/wrist_L_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/wrist_L_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/wrist_L_col_web.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -220,15 +312,23 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/wrist_dev_L_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/wrist_dev_L_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/wrist_dev_L_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/wrist_dev_L_col_web.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
   <link name="hook_L">
     <inertial>
-      <origin xyz="0.008217 -0.005305 -0.068935" rpy="0 0 0"/>
+      <origin xyz="0.008217 0.005305 -0.068935" rpy="0 0 0"/>
       <mass value="0.266566"/>
-      <inertia ixx="0.000525112109" ixy="-1.16187504e-05" ixz="7.68013864e-05" iyy="0.000506383924" iyz="6.44168714e-05" izz="0.000134025729"/>
+      <inertia ixx="0.000525112109" ixy="1.16187504e-05" ixz="7.68013864e-05" iyy="0.000506383924" iyz="-6.44168714e-05" izz="0.000134025729"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -266,7 +366,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/shoulder_R_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/shoulder_R_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/shoulder_R_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/shoulder_R_col_web.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -274,7 +382,7 @@
     <inertial>
       <origin xyz="-0.000000 -0.003617 -0.128592" rpy="0 0 0"/>
       <mass value="1.292555"/>
-      <inertia ixx="0.00631253316" ixy="-2.62130519e-19" ixz="8.35765764e-20" iyy="0.00652156176" iyz="0.000382352144" izz="0.00141697822"/>
+      <inertia ixx="0.00631253316" ixy="-2.63205252e-19" ixz="-1.36081073e-21" iyy="0.00652156176" iyz="0.000382352144" izz="0.00141697822"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -287,7 +395,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/upper_arm_R_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/upper_arm_R_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/upper_arm_R_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/upper_arm_R_col_cheek.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -308,7 +424,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/humerus_rot_R_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/humerus_rot_R_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/humerus_rot_R_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/humerus_rot_R_col_cheek.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -329,7 +453,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/fore_arm_R_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/fore_arm_R_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/fore_arm_R_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/fore_arm_R_col_cheek.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -350,7 +482,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/forearm_rot_R_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/forearm_rot_R_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/forearm_rot_R_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/forearm_rot_R_col_cheek.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -371,7 +511,15 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/wrist_R_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/wrist_R_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/wrist_R_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/wrist_R_col_web.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
@@ -392,15 +540,23 @@
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/wrist_dev_R_col.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/wrist_dev_R_col_plate_out.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/wrist_dev_R_col_plate_face.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/wrist_dev_R_col_web.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
   </link>
 
   <link name="hook_R">
     <inertial>
-      <origin xyz="0.008217 0.005305 -0.068935" rpy="0 0 0"/>
+      <origin xyz="0.008217 -0.005305 -0.068935" rpy="0 0 0"/>
       <mass value="0.266566"/>
-      <inertia ixx="0.000525112109" ixy="1.16187504e-05" ixz="7.68013864e-05" iyy="0.000506383924" iyz="-6.44168714e-05" izz="0.000134025729"/>
+      <inertia ixx="0.000525112109" ixy="-1.16187504e-05" ixz="7.68013864e-05" iyy="0.000506383924" iyz="6.44168714e-05" izz="0.000134025729"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -496,7 +652,7 @@
   <joint name="finger_L" type="revolute">
     <parent link="wrist_dev_L"/>
     <child link="hook_L"/>
-    <origin xyz="0.000000 0.000000 -0.072000" rpy="0 0 0"/>
+    <origin xyz="0.000000 0.000000 -0.072000" rpy="0 0 3.14159265"/>
     <axis xyz="0 1 0"/>
     <limit lower="-1.570796" upper="0.349066" effort="24" velocity="5.4454"/>
     <dynamics damping="0.1" friction="0.0"/>
@@ -568,7 +724,7 @@
   <joint name="finger_R" type="revolute">
     <parent link="wrist_dev_R"/>
     <child link="hook_R"/>
-    <origin xyz="0.000000 0.000000 -0.072000" rpy="0 0 0"/>
+    <origin xyz="0.000000 0.000000 -0.072000" rpy="0 0 3.14159265"/>
     <axis xyz="0 1 0"/>
     <limit lower="-1.570796" upper="0.349066" effort="24" velocity="5.4454"/>
     <dynamics damping="0.1" friction="0.0"/>

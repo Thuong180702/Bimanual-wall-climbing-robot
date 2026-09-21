@@ -1,6 +1,6 @@
 # PPO curriculum
 
-The frame for training PPO on the climbing tasks, as seventeen lessons ordered by
+The frame for training PPO on the climbing tasks, as eighteen lessons ordered by
 difficulty instead of the mixed scene.
 
 ```bash
@@ -11,7 +11,7 @@ python -m rl.climb_task     # smoke-check the task API on every lesson
 python -m rl.bench          # where the time actually goes on this machine
 python -m rl.train_ppo --self-check          # curriculum logic, trains nothing
 
-python -m rl.train_ppo --name climber        # train: all 13, curriculum on
+python -m rl.train_ppo --name climber        # train: every lesson, curriculum on
 # Ctrl-C any time, then:
 python -m rl.train_ppo --name climber --resume
 
@@ -24,13 +24,74 @@ python -m rl.status --name climber --watch
 
 | file | what it is |
 |---|---|
-| `lessons.py` | the 17 lesson specs + scene generator (writes `urdf/lessons/`) |
+| `lessons.py` | the 18 lesson specs + scene generator (writes `urdf/lessons/`) |
 | `climb_task.py` | Gymnasium-shaped env: obs / action / reward / termination |
 | `train_ppo.py` | thin SB3 PPO entry point |
 | `bench.py` | simulator throughput vs env count, and cpu vs mps for the policy |
 | `render.py` | PNGs of the lesson scenes → `out/scenes/` (ffmpeg writes them, no image dep) |
 | `status.py` | what a run is doing, read from its checkpoint — safe to run while it trains |
 | `eval.py` | score a checkpoint per lesson against a do-nothing control |
+
+## The real-actuator robot (Sept 21 2026)
+
+`urdf/` is now the 21.9 kg robot generated from `cad/` — 17 CubeMars actuators,
+masses from the solids, torque limits off datasheets. **Every policy trained
+before it learned the 11.1 kg robot and is void: start a new run, do not
+`--resume` an old one.** The shapes still match, so such a resume would load and
+quietly be wrong; checkpoints now record which robot they learned (a hash of
+`scene.xml`) and `--resume` refuses a different one unless given `--new-robot`.
+
+The swap loaded cleanly and was broken in four ways, all found by this
+directory's own checks — `python -m rl.climb_task` failed its incentive test —
+and all fixed at the source:
+
+- **The hooks hung back to front.** The re-mount in the elbow section below lived
+  only in `scene.xml`, and regenerating the robot from the CAD dropped it: the
+  throat faced away from the wall, the shank hung between rung and wall, and
+  both wrists leaned on the wall. It is in the CAD now (`spec.MOUNT_ROT`), so a
+  regeneration cannot lose it again. The hands start at ±155 mm again, which is
+  what every lesson's goals assume.
+- **The raised arms were jammed into the torso.** MuJoCo collides each mesh's
+  convex hull, and the torso frame exported as one mesh was one hull — a block
+  out to the shoulder plates — that the raised upper arms sank 10–22 mm into,
+  18–52 mm from any real metal. The hang held four shoulder actuators at 88 % of
+  peak torque against 1500 N of contact. Each CAD part is its own hull now; the
+  hang holds on ≤3.2 N·m per joint, and of the self-contacts reported in the
+  climbing envelope 14 % are hull artefacts, down from 71 % — the flare the
+  wide-shoulder lessons exist for is no longer blocked by air.
+- **The two idle baselines were the old robot's.** `TAU_IDLE` 30 N·m and
+  `WEIGHT` 109 N were typed in; the new robot hangs still on ~61 N·m and weighs
+  215 N, so standing still was charged as effort and as fighting: −58 over
+  lesson 1 against −10 for a fall, the `win5` trap exactly. Both are read off the
+  model now (`ClimbTask.tau_idle`, `.weight`); a still hang costs −7.89.
+- **A training env held 1.5 GB.** The actuators' visual meshes are 168k vertices
+  a model and an env holds every lesson. Training loads the scenes without them
+  (`MultiLesson(visual=False)`; the physics is bit-for-bit the same) and stores
+  collision meshes as hulls: 0.33 GB per env, ~0.55 GB per worker process once
+  torch is imported. Budget `--envs` x 0.6 GB. Only `rl.render` loads the visuals.
+
+The self-checks' side pulls (25 N, 60 N) are fractions of body weight now: a hook
+is held along its rung by friction, which scales with the load, so the same
+newtons prove nothing on a robot twice as heavy.
+
+**What is really different, measured:** moving costs about 4x the torque above
+idle it did (77 against 18 N·m under the same random actions) — mostly the
+reflected rotor inertia, `armature` 0.21 kg·m² on every AK80-64 joint where the
+old robot had 0.01. `K_EFFORT` is unchanged; if the early curriculum stalls, it
+is the first knob to A/B. And the estimate's still-hang anchor wander is ~20 mm
+(was ~12): the lever from the anchor hook to the base is 1.5x longer.
+
+**Canaries, fresh runs on this Mac.** On an intermediate collision model (the
+wishbone still one hull) two runs passed lesson −2 at ~175k and ~150k steps, and
+one reached lesson 1.2 by 2M. On the final model one run passed −2 at 950k and
+another was still at 0 % after 1M, parked in the `win5` basin (hanging to the
+timeout, fluttering both hooks, the left hand never travelling). The physics is
+not what blocks it: the stuck policy fails on both models, and trained policies
+transfer between them both ways (20/20 and 16/20 on lesson −2). The early
+curriculum's seed variance is large; **if lesson −2 has not passed by ~1M steps,
+start again under a new `--name`** rather than waiting it out. Every trained
+policy here also rests its arms at the −170° flexion stop — see `urdf/README.md`
+on what that costs the real machine.
 
 ## Lessons
 

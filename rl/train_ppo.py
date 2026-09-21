@@ -1,6 +1,6 @@
 """Train ONE PPO policy across the lessons, with a curriculum and resume.
 
-    python -m rl.train_ppo --name climber                 # all 13, curriculum on
+    python -m rl.train_ppo --name climber                 # every lesson, curriculum on
     python -m rl.train_ppo --name climber --resume        # continue where it stopped
     python -m rl.train_ppo --name t1 --lessons 1,2        # a subset
     python -m rl.train_ppo --name t1 --no-curriculum      # all lessons from step 0
@@ -33,7 +33,7 @@ lesson 9 and lesson 1 is gone. So lessons are MIXED, not sequential -- each env
 picks from the active pool on every reset -- and the curriculum only controls which
 lessons are IN the pool. Nothing ever leaves it.
 """
-import argparse, json, os, signal
+import argparse, hashlib, json, os, signal
 import numpy as np
 
 try:
@@ -44,6 +44,7 @@ try:
 except ImportError as e:
     raise SystemExit(f"missing training deps ({e}); pip install gymnasium stable-baselines3")
 
+from controller import SCENE
 from . import default_envs
 from .climb_task import ClimbTask
 from .lessons import LESSONS, lesson_key
@@ -62,15 +63,40 @@ WARM_RATE = 0.20     # the rate at which a new lesson counts as started, for the
 
 
 
+def robot_stamp():
+    """which robot a checkpoint learned: a hash of urdf/scene.xml, line endings
+    normalised so a Windows checkout of the same file stamps the same"""
+    return hashlib.sha256(open(SCENE, 'rb').read().replace(b'\r\n', b'\n')).hexdigest()[:16]
+
+
+def check_robot(state, allow):
+    """refuse to resume a policy onto a robot it never trained on.
+
+    The observation and action are the same shape on the 11.1 kg robot and the
+    21.9 kg one, so such a resume loads without a word and trains a policy -- and
+    VecNormalize statistics -- learnt on a different machine. win13 trained 7.6M
+    steps on a robot that had already been replaced; this is the same mistake one
+    level up. Checkpoints from before the stamp have none, and count as different.
+    """
+    have = state.get('robot')
+    if have != robot_stamp() and not allow:
+        raise SystemExit(
+            f"this checkpoint was trained on a different robot (stamp {have}, the "
+            f"model is now {robot_stamp()}): urdf/scene.xml has changed since. Start a "
+            f"new run with a new --name, or add --new-robot to fine-tune it anyway.")
+
+
 class MultiLesson(gym.Env):
     """Every lesson pre-loaded; each reset draws one from the active pool.
 
-    All nine models cost 66 MB and 0.09 s to build in one process, so holding them
-    all beats reloading a scene on every reset.
+    All eighteen models cost ~330 MB and 0.4 s to build in one process, so holding
+    them all beats reloading a scene on every reset -- WITHOUT their visual meshes
+    (`visual=False`, the default here), which training never draws. With them it
+    was 1.5 GB per env on the real-actuator robot; only `rl.render` asks for them.
     """
 
-    def __init__(self, lessons, seed=0):
-        self.tasks = {k: ClimbTask(k) for k in lessons}
+    def __init__(self, lessons, seed=0, visual=False):
+        self.tasks = {k: ClimbTask(k, visual=visual) for k in lessons}
         self.active = list(lessons)
         self.rng = np.random.default_rng(seed)
         self.cur = self.tasks[self.active[0]]
@@ -270,7 +296,7 @@ class Checkpoint(BaseCallback):
         p = os.path.join(self.dir, tag or '')
         self.model.save(p + 'model')
         self.model.get_vec_normalize_env().save(p + 'vecnorm.pkl')
-        state = {'timesteps': int(self.model.num_timesteps),
+        state = {'timesteps': int(self.model.num_timesteps), 'robot': robot_stamp(),
                  'best': self.best, **self.cur.state()}
         json.dump(state, open(p + 'state.json', 'w'), indent=1)
         return p
@@ -373,6 +399,16 @@ def self_check():
     assert restored.active == c.active, (restored.active, c.active)
     assert restored.rate(2) == c.rate(2), "history did not survive state.json"
 
+    # a resume onto another robot is refused unless asked for
+    check_robot({'robot': robot_stamp()}, False)
+    for stale in ({}, {'robot': 'not-this-robot'}):
+        try:
+            check_robot(stale, False)
+            raise AssertionError(f"resumed {stale} onto a different robot")
+        except SystemExit:
+            pass
+        check_robot(stale, True)
+
     off = Curriculum([1, 2, 3], enabled=False)
     assert off.active == [1, 2, 3], "--no-curriculum must start with the whole pool"
 
@@ -413,7 +449,9 @@ def main():
     # lesson 1 on the 12-core M4 Pro: 6->3413, 8->3950, 12->4330, 20->4977,
     # 32->5259. It keeps creeping up past the core count because the envs sit idle
     # during each policy update, so on a big machine try more than this default.
-    # Each env holds all 13 scenes, ~94 MB, so budget RAM at --envs x 94 MB.
+    # Each env holds every lesson scene, ~330 MB without visual meshes (see
+    # MultiLesson), and each worker process imports torch as well: budget RAM at
+    # --envs x 0.6 GB.
     ap.add_argument('--envs', type=int, default=default_envs())
     ap.add_argument('--device', default='cpu',
                     choices=['cpu', 'cuda', 'mps', 'auto'],
@@ -424,6 +462,9 @@ def main():
     ap.add_argument('--from-best', dest='from_best', action='store_true',
                     help='with --resume, continue from best_model.zip instead of the '
                          'latest checkpoint -- what to do after a run has degraded')
+    ap.add_argument('--new-robot', dest='new_robot', action='store_true',
+                    help='with --resume, accept a checkpoint trained on a different '
+                         'robot model (fine-tuning across a model change)')
     ap.add_argument('--no-curriculum', dest='curriculum', action='store_false',
                     help='put every lesson in the pool from step 0')
     # 3e-3 was too high: after 4M steps the action std had grown to 1.52, above the
@@ -461,6 +502,7 @@ def main():
         if not os.path.exists(f):
             raise SystemExit(f"nothing to resume: {f} does not exist")
         state = json.load(open(f))
+        check_robot(state, a.new_robot)
 
     base = VecMonitor(SubprocVecEnv(
         [(lambda i=i: MultiLesson(pool, seed=i)) for i in range(a.envs)]))

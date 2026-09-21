@@ -16,7 +16,7 @@ from .connect import (bolt_access, bolt_ring, cheek, face_od, face_plate,
                       hook_profile, mate_bore_r, output_plate,
                       plane_at, yoke_profile)
 from .spec import (BODY_DIR, CLEAR, FIXED, HOOK, IFACE, JOINTS, MOTOR_OF,
-                   MOUNT_AT, PLATE, SHELL, TORSO_BC, TORSO_LOW,
+                   MOUNT_AT, MOUNT_ROT, PLATE, SHELL, TORSO_BC, TORSO_LOW,
                    TORSO_LOW_R, TORSO_N, TORSO_TH, TORSO_UP, WAIST_DIA,
                    WALL)
 
@@ -38,13 +38,24 @@ def mount_plane(joint, origin):
     """That actuator's own frame, where it actually sits.
 
     MOUNT_AT slides an actuator along its own axis, which is kinematically
-    free - the shoulder abduction one is slid 40 mm back so the raised arm's
+    free - the shoulder abduction one is slid 30 mm back so the raised arm's
     rotation actuator sweeps past it - so the flange is not always on the
     joint origin.
     """
     a = MOUNT_AT.get(joint[0], 0.0)
     b = BODY_DIR[joint[0]]
     return plane_at(tuple(origin[k] + b[k] * a for k in range(3)), b)
+
+
+def in_turned_frame(pl, a):
+    """A plane given in a joint's frame, re-expressed in a child frame turned by
+    `a` about z (spec.MOUNT_ROT). Origin AND both axes turn, so a bolt pattern
+    drawn on it still lands on the actuator's real bolts."""
+    c, s = math.cos(a), math.sin(a)
+
+    def f(v):
+        return (c * v.X + s * v.Y, -s * v.X + c * v.Y, v.Z)
+    return _bd.Plane(origin=f(pl.origin), x_dir=f(pl.x_dir), z_dir=f(pl.z_dir))
 
 
 # Which face a connector actually bolts to, where it is not the one
@@ -471,7 +482,9 @@ def hook_L():
     pj = PJOINT["hook_L"]                            # finger_L
     p_key = MOTOR_OF[pj[0]]
     dp = IFACE[p_key]
-    pl_p = mount_plane(pj, (0.0, 0.0, 0.0))
+    # the hook is bolted on turned over (spec.MOUNT_ROT): its throat stays on
+    # its own +X, and its plate follows the flange round to the other side
+    pl_p = in_turned_frame(mount_plane(pj, (0.0, 0.0, 0.0)), MOUNT_ROT["hook_L"])
 
     a_od = dp["out_od"] * MM                         # 36 mm - the finger's face
 
@@ -619,7 +632,6 @@ def torso_upper():
     """
     d, w, h = TORSO_UP
     parts = {}
-    back = None
     for cj in CHILD_OF["torso_upper"]:
         key = MOTOR_OF[cj[0]]
         pl_c = mount_plane(cj, cj[4])
@@ -634,8 +646,18 @@ def torso_upper():
         bb = arm.bounding_box()
         arm = _bd.Pos(x_lo - bb.min.X, 0, 0) * arm
         arm = clear_bolts(arm, [(pl_c, key, "front")])
-        back = arm if back is None else back + arm
-    parts["wishbone"] = back
+        # Two parts per arm - the ring round the actuator face and the strip
+        # down to the deck - because the collision engine hulls each part, and
+        # hulled whole the arm fills the triangle between strip and ring: the
+        # space the raised upper arm's root swings through when the shoulders
+        # flare (8 mm deep, on a third of the poses in the climbing envelope).
+        ring = _bd.Location(_bd.Plane(origin=(x_lo - 0.01, cj[4][1], cj[4][2]),
+                                      z_dir=(1, 0, 0))) * _bd.Cylinder(
+            radius=b_od / 2 + 0.0005, height=TORSO_WEB + 0.02,
+            align=(_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN))
+        side = cj[0].split("_")[1]
+        parts["wishbone_%s_ring" % side] = arm & ring
+        parts["wishbone_%s_strip" % side] = arm - ring
 
     # the deck spans the frame, not just the bolt circle, so the side panels
     # land on it too and the yoke is not carrying them

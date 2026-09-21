@@ -1,4 +1,4 @@
-"""Write urdf2/scene.xml: the v2 robot in the same corridor v1 used.
+"""Write urdf/scene.xml: the v2 robot in the same corridor v1 used.
 
 Walls, rungs, cameras and the 86 sensors are carried over from urdf/scene.xml
 unchanged - the environment did not change, the robot did. What IS new:
@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "cad", "tools"))
 from lib.build import BUILDERS, CHILD_OF, PJOINT
 from lib.collide import link_collision
 from lib.motors import MOTORS
-from lib.spec import FIXED, JOINTS, MOTOR_OF, TORSO_UP, HOOK
+from lib.spec import FIXED, JOINTS, MOTOR_OF, MOUNT_ROT, TORSO_UP, HOOK
 
 A = json.load(open(os.path.join(HERE, "_actuators.json")))
 PROPS = A["links"]
@@ -106,6 +106,13 @@ def _quat(R):
     return tuple(q)
 
 
+def _turn(a):
+    """the quat attribute for a link turned by `a` about its own z (spec.MOUNT_ROT)"""
+    if not a:
+        return ""
+    return ' quat="%g 0 0 %g"' % (round(math.cos(a / 2), 12), round(math.sin(a / 2), 12))
+
+
 def body_tree():
     import numpy as np
     from massprops import link_props
@@ -124,7 +131,8 @@ def body_tree():
                  '%s  <freejoint name="floating_base"/>' % p]
         else:
             jn, _, _, ax, off, lim, _bd = joint
-            L = ['%s<body name="%s" pos="%.6f %.6f %.6f">' % (p, name, *off)]
+            L = ['%s<body name="%s" pos="%.6f %.6f %.6f"%s>' % (
+                p, name, *off, _turn(MOUNT_ROT.get(name, 0.0)))]
             if jn is not None:
                 key = MOTOR_OF[jn]
                 L.append('%s  <joint name="%s" type="hinge" axis="%d %d %d" '
@@ -232,10 +240,11 @@ def main():
     '    <material name="rung" rgba="0.85 0.55 0.15 1"/>']
     for n in LINKS:
         L.append('    <mesh name="%s" file="%s.stl" scale="0.001 0.001 0.001"/>' % (n, n))
-        # the bracket on its own, which the collision geoms use; MuJoCo hulls it
-        if not n.startswith("hook"):
-            L.append('    <mesh name="%s_col" file="%s_col.stl"'
-                     ' scale="0.001 0.001 0.001"/>' % (n, n))
+        # the bracket's parts, which the collision geoms use; MuJoCo hulls each
+        for kind, size, *_ in link_collision(n):
+            if kind == "mesh":
+                L.append('    <mesh name="%s" file="%s.stl"'
+                         ' scale="0.001 0.001 0.001"/>' % (size[0], size[0]))
     L += ['  </asset>', '',
     '  <default>',
     '    <default class="vis">',

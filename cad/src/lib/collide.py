@@ -5,17 +5,26 @@ Two kinds of geom, and the split is deliberate.
 Every ACTUATOR is a cylinder of its real diameter and length. That is exact,
 and it is most of the swept volume of the arm.
 
-Every BRACKET is its own mesh, which MuJoCo takes the convex hull of. For a
-tapered plate the hull is the plate; for a ring it is a disc, which is
-conservative and costs nothing because the only thing inside a ring is the
-actuator it is bolted to, and MuJoCo does not test a body against its own
-parent.
+Every bracket PART - a plate, a web, a shell - is its own mesh, which MuJoCo
+takes the convex hull of. For a tapered plate the hull is the plate; for a
+ring it is a disc, which is conservative and costs nothing because the only
+thing inside a ring is the actuator it is bolted to, and MuJoCo does not test
+a body against its own parent.
+
+One hull per PART, not per link. Fused into one mesh, the upper torso's
+wishbone, flanks and shoulder plates were one hull - a solid block out to the
+shoulder plates - and the raised upper arm's hull sank 10-22 mm into it at
+every flexion past -120 deg, 18-52 mm from any real metal: the hang keyframe
+pressed the arms into the torso with 1500 N and held four shoulder actuators
+at 88 % of peak torque doing it.
 
 The HOOKS are the exception: their whole job is the throat between the palm
 and the lip, and a convex hull fills it in. They keep the two explicit boxes
 the controller and the RL work were built on, verbatim.
 """
-from .build import CHILD_OF, mount_plane
+import re
+
+from .build import BUILDERS, CHILD_OF, mount_plane
 from .spec import BODY_DIR, HOOK, IFACE, MOTOR_OF
 
 MM = 0.001
@@ -42,6 +51,12 @@ def link_collision(link):
         out.append(("cylinder", (od / 2, 0.030), (0.0, 0.0, 0.0),
                     (0, 1, 0) if link.endswith("_L") else (0, -1, 0), None))
     else:
-        out.append(("mesh", (link + "_col",), (0.0, 0.0, 0.0), (0, 0, 1),
-                    (1, 0, 0)))
+        for name, _ in col_parts(link):
+            out.append(("mesh", (name,), (0.0, 0.0, 0.0), (0, 0, 1), (1, 0, 0)))
     return out
+
+
+def col_parts(link):
+    """[(mesh name, solid in metres)], one per CAD part of a non-hook link"""
+    return [("%s_col_%s" % (link, re.sub(r"\W+", "_", k)), v)
+            for k, v in BUILDERS[link]().items() if v is not None]
