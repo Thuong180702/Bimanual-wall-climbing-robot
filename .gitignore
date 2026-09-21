@@ -10,3 +10,12 @@ urdf/lessons/
 __pycache__/
 *.pyc
 .DS_Store
+
+# vendor actuator CAD -- the manufacturers', not ours. Fetch and checksum with:
+#   python cad/tools/fetch_vendor.py
+cad/vendor/
+
+# generated CAD outputs and visual meshes -- rebuilt by:
+#   python cad/tools/gen_urdf.py && python urdf/_gen_scene.py
+cad/STEP/
+cad/tmp/
