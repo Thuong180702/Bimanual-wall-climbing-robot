@@ -17,6 +17,7 @@ only; PPO learns from scratch, so it gets the corrected model from day one.
 """
 import hashlib
 import os
+import math, re
 import numpy as np
 from controller import SCENE, URDF
 
@@ -27,17 +28,27 @@ WALL_FRONT = '    <geom name="wall_front" type="box" material="wall" pos="0.550 
 WALL_BACK = '    <geom name="wall_back"  type="box" material="wall" pos="-0.300 0.30 1.00" size="0.05 1.35 2.00"/>'
 WALL_SIDE = '    <geom name="wall_side"  type="box" material="wall" pos="0.125 -1.050 1.00" size="0.425 0.05 2.00"/>'
 
-# widening the shoulders: identical to the scene.xml -> scene_wide_shoulders.xml diff
-WIDEN = [
-    ('<joint name="shoulder_L_abduction" type="hinge" axis="1 0 0" range="0.00000 3.14159"/>',
-     '<joint name="shoulder_L_abduction" type="hinge" axis="1 0 0" range="-1.04720 3.14159"/>'),
-    ('<joint name="shoulder_R_abduction" type="hinge" axis="1 0 0" range="-3.14159 0.00000"/>',
-     '<joint name="shoulder_R_abduction" type="hinge" axis="1 0 0" range="-3.14159 1.04720"/>'),
-    ('joint="shoulder_L_abduction" kp="800" dampratio="1" ctrlrange="0.00000 3.14159"',
-     'joint="shoulder_L_abduction" kp="800" dampratio="1" ctrlrange="-1.04720 3.14159"'),
-    ('joint="shoulder_R_abduction" kp="800" dampratio="1" ctrlrange="-3.14159 0.00000"',
-     'joint="shoulder_R_abduction" kp="800" dampratio="1" ctrlrange="-3.14159 1.04720"'),
-]
+# widening the shoulders: rewrite the abduction limit wherever it appears, on
+# the joint and on its position actuator. By attribute rather than by whole
+# line - scene.xml gained armature and frictionloss when the robot became a
+# real one, and a literal line match would have silently stopped widening.
+WIDE_LO = -1.04720
+
+
+def widen(xml):
+    def one(side, lo, hi):
+        j = 'name="shoulder_%s_abduction"' % side
+        a = 'joint="shoulder_%s_abduction"' % side
+        out = xml
+        for key, attr in ((j, "range"), (a, "ctrlrange")):
+            pat = re.compile(r'(%s[^/>]*?%s=")[^"]*(")' % (re.escape(key), attr))
+            out, n = pat.subn(r'\g<1>%.5f %.5f\g<2>' % (lo, hi), out)
+            assert n >= 1, "scene.xml changed: no %s on %s" % (attr, key)
+        return out
+    xml = one("L", WIDE_LO, math.pi)
+    xml = one("R", -math.pi, -WIDE_LO)
+    return xml
+
 
 
 # --- the grip pad: what makes the hook hold along its rung --------------------
@@ -328,7 +339,7 @@ def _stamp(lesson):
     h = hashlib.sha256()
     h.update(open(SCENE, 'rb').read())
     h.update(repr(sorted(LESSONS[lesson].items(), key=lambda kv: kv[0])).encode())
-    h.update(repr(WIDEN + PAD).encode())
+    h.update(repr((WIDE_LO, PAD)).encode())
     return h.hexdigest()[:16]
 
 
@@ -362,7 +373,8 @@ def write(lesson):
                       f'<mujoco model="{lesson_tag(lesson)}_{spec["name"]}">\n'
                       f'  <!-- stamp {_stamp(lesson)} -->')
     xml = xml.replace('meshdir="meshes/"', 'meshdir="../meshes/"')
-    for old, new in WIDEN + PAD:
+    xml = widen(xml)
+    for old, new in PAD:
         assert old in xml, f"scene.xml changed; patch target not found: {old}"
         xml = xml.replace(old, new)
     head, rest = xml.split('    <!-- ===== walls ===== -->')
@@ -442,7 +454,11 @@ def main():
         for _ in range(int(1.0 / e.model.opt.timestep)):
             e.step(ctrl)
         drift = np.linalg.norm(e.data.xpos[e.base] - p0) * 1000.0
-        assert drift < 5.0, f"lesson {k}: keyframe drifted {drift:.1f} mm"
+        # 8 mm, not the 5 it was: the keyframe is settled on scene.xml, the
+        # lessons add the grip pad, and the two equilibria differ by a few mm
+        # of contact compliance. That gap scales with weight, and the robot
+        # went from 11.1 kg of abstract blocks to 21.9 kg of real actuators.
+        assert drift < 8.0, f"lesson {k}: keyframe drifted {drift:.1f} mm"
         assert e.latched('L')[0] and e.latched('R')[0], f"lesson {k}: a hook came off"
         segs = rung_segments(e.model)
         for nm in spec['goal_rungs']:
