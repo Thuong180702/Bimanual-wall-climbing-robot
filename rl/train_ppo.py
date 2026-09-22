@@ -8,6 +8,14 @@
 Ctrl-C saves and exits cleanly; `--resume` picks the run back up, timestep counter,
 optimizer state, observation statistics and curriculum progress included.
 
+A run looks after itself; nobody has to watch it for the two things that used to
+need a person. The next lesson unlocks only once EVERY lesson in the pool is being
+passed (`UNLOCK_AT`), so a new one is not added on top of half-learnt ones. And if
+the pool forgets -- the best checkpoint's lessons, scored now, a whole lesson below
+that best for a million steps (`GUARD_DROP`, `GUARD_STEPS`) -- it goes back to the
+best checkpoint by itself and carries on at half the learning rate. Everything it
+prints is also appended to out/<name>/train.log.
+
 ## Why one policy and not nine
 
 Three shapes were on the table. This is the middle one, and the reasons are
@@ -33,7 +41,7 @@ lesson 9 and lesson 1 is gone. So lessons are MIXED, not sequential -- each env
 picks from the active pool on every reset -- and the curriculum only controls which
 lessons are IN the pool. Nothing ever leaves it.
 """
-import argparse, hashlib, json, os, signal
+import argparse, hashlib, json, os, pickle, signal, sys, time
 import numpy as np
 
 try:
@@ -50,7 +58,11 @@ from .climb_task import ClimbTask
 from .lessons import LESSONS, lesson_key
 
 WINDOW = 40          # episodes per lesson the success rate is measured over
-UNLOCK_AT = 0.60     # success rate on the newest lesson that unlocks the next one
+UNLOCK_AT = 0.70     # success rate EVERY lesson in the pool needs before the next
+                     # one unlocks. It was 0.60 on the newest lesson alone, and win17
+                     # unlocked lesson 2 with 1.5 and 1.85 at ~60 %: lesson 2 then
+                     # took 30 % of the steps at 2 %, and the pool forgot -- lesson -2
+                     # went 20/20 -> 13/20 in replay. Consolidate, then add.
 UNLOCK_MIN = 20      # episodes needed before that rate is believed
 MIN_SHARE = 0.10     # the floor on a mastered lesson's need, so it is not forgotten
 WARM_RATE = 0.20     # the rate at which a new lesson counts as started, for the log
@@ -59,8 +71,36 @@ WARM_RATE = 0.20     # the rate at which a new lesson counts as started, for the
                      # when there are two lessons. The 10.8M win8 run spent 8M steps
                      # on a lesson at 0 % and took the one before it from 95 % down
                      # to 32 %, and its action std from 0.67 to a floor of 0.04.
+GUARD_DROP = 1.0     # the best checkpoint's own lessons falling this far below its
+GUARD_STEPS = 1_000_000  # score -- a whole lesson's worth -- for this long sends the
+                     # run back to that checkpoint. Every long run from a peak has
+                     # drifted off it over millions of steps (win11, win15 2, win16,
+                     # win16 2, win16 3, win17) and each one needed a person to
+                     # notice and resume from best. A million steps, because the
+                     # first exposure to a new lesson dips and recovers inside 600k
+                     # on its own (the win16 A/B), and that should not trip it.
+LR_DECAY = 0.5       # each rollback halves the learning rate: the untested suspect
+LR_MIN = 1e-5        # for the drift is the update size, 3e-4 for millions of steps
+                     # with no KL limit, so the retry takes smaller steps
 
 
+class Tee:
+    """a stream that writes to the console and to the run's log at once"""
+
+    def __init__(self, *files):
+        self.files = files
+
+    def write(self, s):
+        for f in self.files:
+            f.write(s)
+        return len(s)
+
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+    def __getattr__(self, name):          # isatty, encoding, fileno: the console's
+        return getattr(self.files[0], name)
 
 
 def robot_stamp():
@@ -121,8 +161,8 @@ class MultiLesson(gym.Env):
 
 
 class Curriculum(BaseCallback):
-    """Unlock the next lesson once the newest one is being passed, and keep the old
-    ones in the pool so the policy does not forget them."""
+    """Unlock the next lesson once every lesson in the pool is being passed, and keep
+    the old ones in the pool so the policy does not forget them."""
 
     def __init__(self, pool, active=None, history=None, enabled=True):
         super().__init__()
@@ -194,6 +234,14 @@ class Curriculum(BaseCallback):
         return {'active': self.active,
                 'history': {str(k): v[-WINDOW:] for k, v in self.hist.items()}}
 
+    def restore(self, state):
+        """back to a saved active set and history: the curriculum half of a rollback"""
+        self.active = [k for k in map(lesson_key, state['active']) if k in self.pool] \
+            or self.active
+        self.hist = {lesson_key(k): list(v) for k, v in state['history'].items()}
+        self._warm = self.warming()
+        self.training_env.env_method('set_active', self.active, self.weights())
+
     def _on_step(self):
         for info, done in zip(self.locals['infos'], self.locals['dones']):
             if done and 'reason' in info:
@@ -216,8 +264,10 @@ class Curriculum(BaseCallback):
         locked = [k for k in self.pool if k not in self.active]
         if not locked:
             return True
-        n, r = self.rate(self.active[-1])
-        if n >= UNLOCK_MIN and r >= UNLOCK_AT:
+        # every lesson in the pool, not only the newest: see UNLOCK_AT
+        rates = [self.rate(k) for k in self.active]
+        n, r = rates[-1]
+        if all(m >= UNLOCK_MIN and q >= UNLOCK_AT for m, q in rates):
             # the next lesson is the first one in the pool that is not yet active,
             # NOT `pool[len(active)]`: inserting a lesson into the middle of the pool
             # on a resume (1.85 between 1.7 and 2, say) leaves the restored active set
@@ -227,7 +277,8 @@ class Curriculum(BaseCallback):
             self.hist.setdefault(self.active[-1], [])
             self._warm = self.warming()
             self.training_env.env_method('set_active', self.active, self.weights())
-            print(f"\n[curriculum] lesson {self.active[-2]} at {r:.0%} over {n} "
+            print(f"\n[curriculum] every lesson at {UNLOCK_AT:.0%}+, the newest "
+                  f"({self.active[-2]}) at {r:.0%} over {n} "
                   f"episodes -> unlocking lesson {self.active[-1]} "
                   f"({LESSONS[self.active[-1]]['name']}); pool now {self.active}, "
                   f"the pool's steps go where the failures are\n")
@@ -267,10 +318,14 @@ class Checkpoint(BaseCallback):
     having silently degraded.
     """
 
-    def __init__(self, run_dir, curriculum, every=100_000, best=None):
+    def __init__(self, run_dir, curriculum, every=100_000, best=None, best_active=None,
+                 rollbacks=0):
         super().__init__()
         self.dir, self.cur, self.every = run_dir, curriculum, every
         self.last, self.best = 0, best if best is not None else -1.0
+        # the lessons the best checkpoint was scored over; `held` scores them now
+        self.best_active = [lesson_key(k) for k in (best_active or [])]
+        self.low_since, self.due, self.rollbacks = None, False, rollbacks
 
     def score(self):
         """SUM of the success rates over the active lessons. Not the mean.
@@ -291,13 +346,67 @@ class Checkpoint(BaseCallback):
             return None
         return sum(r for _, r in rates)
 
+    def held(self):
+        """The best checkpoint's own lessons, scored now. Forgetting lowers it; a
+        lesson unlocked since the best cannot, so a new lesson's first failures are
+        never read as the pool coming apart."""
+        rates = [self.cur.rate(k) for k in self.best_active]
+        if not rates or any(n < UNLOCK_MIN for n, _ in rates):
+            return None
+        return sum(r for _, r in rates)
+
+    def guard(self):
+        """at each checkpoint: has the pool been a lesson below its best for long
+        enough to go back? The rollback itself waits for the next rollout to start
+        (`_on_rollout_start`), so no update ever mixes the two policies' data."""
+        h = self.held()
+        if h is None or h >= self.best - GUARD_DROP:
+            self.low_since = None
+            return ""
+        if self.low_since is None:
+            self.low_since = self.model.num_timesteps
+        low = self.model.num_timesteps - self.low_since
+        if low >= GUARD_STEPS:
+            self.due = True
+        return f" | forgetting: {h:.2f} vs best {self.best:.2f} for {low:,} steps"
+
+    def _on_rollout_start(self):
+        if self.due:
+            self.rollback()
+
+    def rollback(self):
+        """Back to the best checkpoint -- policy and optimizer, observation
+        statistics and curriculum, the same three `save` writes together -- and on
+        from there at half the learning rate. What a person did by hand after every
+        drift: stop, `--resume --from-best`, try a smaller step."""
+        m, p = self.model, os.path.join(self.dir, 'best_')
+        h = self.held()
+        m.set_parameters(p + 'model.zip', exact_match=True, device=m.device)
+        with open(p + 'vecnorm.pkl', 'rb') as f:
+            stats = pickle.load(f)
+        env = m.get_vec_normalize_env()
+        env.obs_rms, env.ret_rms = stats.obs_rms, stats.ret_rms
+        self.cur.restore(json.load(open(p + 'state.json')))
+        was = m.lr_schedule(1.0)
+        m.learning_rate = max(was * LR_DECAY, LR_MIN)
+        m._setup_lr_schedule()              # lr_schedule is built from learning_rate
+        self.rollbacks += 1
+        self.low_since, self.due = None, False
+        print(f"\n[guard] {h:.2f} against the best {self.best:.2f} for "
+              f"{GUARD_STEPS:,}+ steps: back to the best checkpoint (pool "
+              f"{self.cur.active}), learning rate {was:g} -> {m.learning_rate:g}, "
+              f"rollback {self.rollbacks}\n")
+        self.save()
+
     def save(self, tag=''):
         os.makedirs(self.dir, exist_ok=True)
         p = os.path.join(self.dir, tag or '')
         self.model.save(p + 'model')
         self.model.get_vec_normalize_env().save(p + 'vecnorm.pkl')
         state = {'timesteps': int(self.model.num_timesteps), 'robot': robot_stamp(),
-                 'best': self.best, **self.cur.state()}
+                 'best': self.best, 'best_active': self.best_active,
+                 'lr': self.model.lr_schedule(1.0), 'rollbacks': self.rollbacks,
+                 **self.cur.state()}
         json.dump(state, open(p + 'state.json', 'w'), indent=1)
         return p
 
@@ -307,7 +416,7 @@ class Checkpoint(BaseCallback):
         # backup copy; a run that peaks and then drifts should not lose its peak.
         s = self.score()
         if s is not None and s > self.best:
-            self.best = s
+            self.best, self.best_active, self.low_since = s, list(self.cur.active), None
             self.save('best_')
             print(f"[best] score {s:.2f} over {len(self.cur.active)} lesson(s) "
                   f"at {self.model.num_timesteps:,} steps")
@@ -316,7 +425,8 @@ class Checkpoint(BaseCallback):
             self.save()
             rates = " ".join(f"L{k} {self.cur.rate(k)[1]:.0%}" for k in self.cur.active)
             print(f"[checkpoint] {self.model.num_timesteps:,} steps | {rates} | "
-                  f"best {self.best:.2f} | out/{os.path.basename(self.dir)}")
+                  f"best {self.best:.2f} | lr {self.model.lr_schedule(1.0):g}"
+                  f"{self.guard()} | out/{os.path.basename(self.dir)}")
         return True
 
 
@@ -412,6 +522,18 @@ def self_check():
     off = Curriculum([1, 2, 3], enabled=False)
     assert off.active == [1, 2, 3], "--no-curriculum must start with the whole pool"
 
+    # the gate: a lesson slipping behind the frontier holds the next one back
+    g = Curriculum([1, 2, 3])
+    g.model = FakeModel(FakeEnv())
+    feed(g, 1, 'success', WINDOW)
+    feed(g, 1, 'fell', WINDOW // 2)                 # lesson 1 slips to 50 %
+    feed(g, 2, 'success', WINDOW)
+    assert g.active == [1, 2], f"unlocked while lesson 1 was being forgotten: {g.active}"
+    feed(g, 1, 'success', WINDOW)
+    assert g.active == [1, 2, 3], f"never unlocked once lesson 1 recovered: {g.active}"
+
+    guard_check(FakeModel, FakeEnv, feed)
+
     # The best-checkpoint score must never fall just because a lesson unlocked. Under
     # the old mean it did: 85% on lesson 1 alone scored 0.85, and unlocking lesson 2
     # at 0% dropped it to 0.42, so the 10.4M run kept a 308k-step policy as "best".
@@ -428,9 +550,84 @@ def self_check():
           f"scores {after:.2f}")
     assert after >= before, (f"unlocking a lesson dropped the score {before:.2f} -> "
                              f"{after:.2f}; best_model.zip will freeze at the old one")
-    print(f"curriculum: unlocks at {UNLOCK_AT:.0%} over {UNLOCK_MIN}+ episodes, keeps "
-          f"every lesson in the pool, and spends its STEPS where the failures are -- "
-          f"frontier or regressed alike, {MIN_SHARE:.0%} floor for a mastered one. OK")
+    print(f"curriculum: unlocks at {UNLOCK_AT:.0%} over {UNLOCK_MIN}+ episodes on EVERY "
+          f"lesson in the pool, keeps them all, and spends its STEPS where the failures "
+          f"are -- frontier or regressed alike, {MIN_SHARE:.0%} floor for a mastered one. OK")
+
+
+def guard_check(FakeModel, FakeEnv, feed):
+    """A real (tiny) PPO: make a best, let the pool forget, and see the run put
+    itself back -- policy, optimizer, statistics, curriculum -- at half the rate."""
+    import tempfile
+    import torch
+    from stable_baselines3.common.vec_env import DummyVecEnv
+
+    class Toy(gym.Env):
+        observation_space = gym.spaces.Box(-5.0, 5.0, (3,), np.float32)
+        action_space = gym.spaces.Box(-1.0, 1.0, (2,), np.float32)
+
+        def reset(self, seed=None, options=None):
+            return np.zeros(3, np.float32), {}
+
+        def step(self, a):
+            return np.random.randn(3).astype(np.float32), 0.0, False, False, {}
+
+    out = sys.stdout
+    with tempfile.TemporaryDirectory() as d:
+        venv = VecNormalize(DummyVecEnv([Toy]), norm_reward=False)
+        m = PPO('MlpPolicy', venv, n_steps=16, batch_size=16, verbose=0)
+        cur = Curriculum([1, 2])
+        cur.model = FakeModel(FakeEnv())
+        feed(cur, 1, 'success', WINDOW)               # pool [1, 2]
+        feed(cur, 2, 'success', UNLOCK_MIN)
+        ck = Checkpoint(d, cur, every=1)
+        ck.init_callback(m)
+        sys.stdout = open(os.devnull, 'w')            # its [best]/[checkpoint] lines
+        try:
+            ck._on_step()                             # a best, over [1, 2]
+            assert ck.best == 2.0 and ck.best_active == [1, 2], (ck.best, ck.best_active)
+            best_w = {k: v.clone() for k, v in m.policy.state_dict().items()}
+            best_mean = venv.obs_rms.mean.copy()
+            with torch.no_grad():                     # the drift: weights, statistics...
+                for v in m.policy.parameters():
+                    v.add_(0.1)
+            venv.obs_rms.mean += 1.0
+            feed(cur, 1, 'fell', WINDOW)              # ...and lesson 1 forgotten
+            feed(cur, 2, 'fell', 5)
+            m.num_timesteps = 10
+            ck._on_step()
+            assert not ck.due and ck.low_since == 10, "tripped on the first low checkpoint"
+            m.num_timesteps = 10 + GUARD_STEPS - 1
+            ck._on_step()
+            assert not ck.due, "tripped before GUARD_STEPS"
+            m.num_timesteps = 10 + GUARD_STEPS
+            ck._on_step()
+            assert ck.due, f"a lesson forgotten for {GUARD_STEPS:,} steps did not trip it"
+            ck._on_rollout_start()
+        finally:
+            sys.stdout.close()
+            sys.stdout = out
+        assert all(torch.equal(v, best_w[k]) for k, v in m.policy.state_dict().items()), \
+            "rollback did not restore the best policy"
+        assert np.allclose(venv.obs_rms.mean, best_mean), \
+            "rollback did not restore the observation statistics"
+        assert cur.rate(1)[1] == 1.0 and cur.active == [1, 2], \
+            "rollback did not restore the curriculum"
+        assert abs(m.lr_schedule(1.0) - 3e-4 * LR_DECAY) < 1e-12, m.lr_schedule(1.0)
+        st = json.load(open(os.path.join(d, 'state.json')))
+        assert st['rollbacks'] == 1 and abs(st['lr'] - 3e-4 * LR_DECAY) < 1e-12, st
+        assert not ck.due and ck.low_since is None
+        sys.stdout = open(os.devnull, 'w')
+        try:
+            for _ in range(12):
+                ck.rollback()
+        finally:
+            sys.stdout.close()
+            sys.stdout = out
+        assert abs(m.lr_schedule(1.0) - LR_MIN) < 1e-15, "the learning rate went below LR_MIN"
+    print(f"guard test: the best's lessons a whole lesson down for {GUARD_STEPS:,} steps "
+          f"sends the run back to its best checkpoint (policy, statistics, curriculum) at "
+          f"x{LR_DECAY:g} the learning rate, never below {LR_MIN:g}. OK")
 
 
 def main():
@@ -495,6 +692,13 @@ def main():
 
     pool = [lesson_key(x) for x in a.lessons.split(',')]
     run = os.path.join('out', a.name)
+    # the console, kept: approx_kl, clip_fraction and explained_variance per update
+    # are the evidence a checkpoint cannot reconstruct, and every rollback and unlock
+    # is printed here. Appended, so a resumed run keeps one log.
+    os.makedirs(run, exist_ok=True)
+    log = open(os.path.join(run, 'train.log'), 'a', encoding='utf-8', buffering=1)
+    sys.stdout, sys.stderr = Tee(sys.stdout, log), Tee(sys.stderr, log)
+    print(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')}  {' '.join(sys.argv)}")
     state = {}
     ck = 'best_' if a.from_best else ''
     if a.resume:
@@ -555,7 +759,15 @@ def main():
         best = None
     cur = Curriculum(pool, active, state.get('history'), a.curriculum)
     venv.env_method('set_active', cur.active, cur.weights())
-    ckpt = Checkpoint(run, cur, a.ckpt_every, best)
+    # which lessons the best was scored over: in the state since the guard exists,
+    # and before that it is best_state.json's own active set
+    best_active = state.get('best_active')
+    bf = os.path.join(run, 'best_state.json')
+    if best is not None and not best_active and os.path.exists(bf):
+        best_active = json.load(open(bf))['active']
+    ckpt = Checkpoint(run, cur, a.ckpt_every, best,
+                      best_active if best is not None else None,
+                      state.get('rollbacks', 0))
 
     # Ctrl-C during a rollout would otherwise lose everything since the last
     # checkpoint; SIGTERM likewise, so a killed run is resumable too.

@@ -149,9 +149,9 @@ Why not the two alternatives:
 **Lessons are mixed, never sequential.** Fine-tuning lesson 1 → 2 → … → 9 in order
 is the obvious reading of "curriculum" and it is the one thing to avoid: training on
 lesson 9 erases lesson 1 (catastrophic forgetting). Each env draws a fresh lesson
-from the active pool on every reset instead, and a lesson unlocks when the newest
-one clears 60 % success over 20+ episodes. `--self-check` asserts that a lesson
-never leaves the pool.
+from the active pool on every reset instead, and a lesson unlocks when **every**
+lesson in the pool clears 70 % success over 20+ episodes (it was the newest alone
+at 60 % until `win17`). `--self-check` asserts that a lesson never leaves the pool.
 
 ## Pausing and resuming
 
@@ -164,11 +164,18 @@ degraded:
 |---|---|
 | `model.zip` | policy + value net **and the Adam optimizer state** |
 | `vecnorm.pkl` | running observation mean/variance |
-| `state.json` | timestep count, unlocked pool, per-lesson success history |
+| `state.json` | timestep count, unlocked pool, per-lesson success history, the best score and its lessons, the learning rate, rollbacks so far |
 
 `--resume` restores all three and continues the timestep counter. On resume,
 `--steps` means *additional* steps, not a new total. Periodic checkpoints every
 `--ckpt-every` steps (default 100 000) on top of the Ctrl-C one.
+
+**A run looks after itself.** It does not need someone watching for a drift and
+resuming from best by hand: if the best checkpoint's lessons fall a whole lesson
+below that best for a million steps, the run goes back to `best_*` by itself and
+carries on at half the learning rate (the `win17` section has the rule and why).
+`python -m rl.status` shows the current rate and how many times it has gone back,
+and everything the run prints is appended to `out/<name>/train.log`.
 
 ## The grip pad — why the lesson scenes differ from `scene.xml`
 
@@ -803,6 +810,63 @@ unweight a 160 N anchor. That is an optimization problem, so the next run turns
 The model edits still hold at 15.77M: elbows outward on **100 %** of loaded rising
 steps on both arms, shoulder rotation −43° / +64°, and no wrist within reach of
 either stop under load (0.3–5.6 % of steps past ±25° while loaded).
+
+## `win17`: the pitch-first robot climbs, stalls at lesson 2, and runs now look after themselves
+
+The first run on the rebuilt shoulder. At 14.8M its best checkpoint was 5M steps
+back (9.87M, 9.03 over lessons −2…1.85), and those steps had bought nothing:
+
+| lesson (deterministic, 20 each) | best 9.87M | latest 14.8M |
+|---|---|---|
+| −2 one left-hand step | 20/20 | **13/20** |
+| −1 … 1.35 | 18–20/20 | 19–20/20 |
+| 1.5 two 0.12 m gaps | 13/20 | 11/20 |
+| 1.7 one 0.18 m gap | 20/20 | **15/20** |
+| 1.85 one 0.25 m gap | 12/20 | 12/20 |
+| 2 two 0.25 m gaps | 0/20 | 2/20 |
+
+The gait is honest. Every hook leaves the rung (0 N) before it moves and seats
+again with the finger in band (−33°), the holder does not slide, one hook always
+carries load, and lesson 1 takes six grabs a hand. It is fast, 0.3 s a step, and
+hard on the hooks: 480–640 N at the catch, 2.3–3× body weight.
+
+Lesson 2 stalls at the deadlock described below: the lead hand reaches while the
+trailing one is still ~0.2 m back from the edge, the hands span 0.46–0.49 m, and
+the far segment stays out of reach. The robot can make that crossing — lesson 1.85
+is the same gap and passes 60 % — the policy has not learnt to walk up first.
+Meanwhile lesson 2 held ~30 % of the steps at 2 %, and the pool began to forget: on
+lesson −2 the latest policy sometimes moves the right hand too, walks the whole
+rung like lesson 1, and falls. It is not the action noise. Waist, left finger,
+right elbow and left wrist flexion sit at or near the 1.0 cap, but sampling with
+those four turned down to 0.2 did no better (lesson 1.5: 8/20 against 12/20).
+
+**Two rules, so this needs no one watching** (`train_ppo.py`, both in the
+self-check):
+
+- The next lesson unlocks when **every** lesson in the pool is at 70 %
+  (`UNLOCK_AT`), not the newest at 60 %. `win17` unlocked lesson 2 with 1.5 and
+  1.85 at ~60 %.
+- **The guard.** If the best checkpoint's own lessons score a whole lesson below
+  that best (`GUARD_DROP`) for a million steps (`GUARD_STEPS`), the run goes back to
+  the best checkpoint — policy and optimizer, statistics, curriculum — and carries
+  on at half the learning rate (`LR_DECAY`, never below `LR_MIN`, 1e-5). A lesson
+  unlocked since the best does not count, so a new lesson's first failures cannot
+  trip it. Resumed on a copy of `win17` with the guard shortened, it went back to
+  the 9.87M state, left lesson 2 parked (1.5 and 1.85 were under 70 % there) and
+  carried on at 1.5e-4. Update size is the untested suspect for every drift since
+  `win11`; halving it on each rollback is the experiment `win16 3` asked for, run
+  by the trainer instead of by hand.
+
+Every run also appends its console to `out/<name>/train.log`, with the
+`approx_kl`, `clip_fraction` and `explained_variance` that question has been
+waiting on.
+
+**Next:** resume from the peak and leave it. Lesson 2 comes back once 1.5 and 1.85
+are both at 70 %:
+
+```
+python -m rl.train_ppo --name win17 --resume --from-best --lessons=-2,-1,0,1,1.1,1.2,1.35,1.5,1.7,1.85,2 --envs 8 --steps 30000000
+```
 
 ## `win16 3`: the same decay a third time, and three 1M-step arms that all lose ground
 
