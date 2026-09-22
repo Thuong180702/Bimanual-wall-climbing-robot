@@ -2,7 +2,7 @@
   <!-- Frame: +X toward the front wall, +Y left, +Z up. No floor (by request). -->
   <!-- Rungs stand 60 mm off each wall face so the hook finger can pass behind them. -->
   <compiler angle="radian" meshdir="meshes/" autolimits="true"/>
-  <!-- Robot: 17 CubeMars AK-series actuators, 21.8889 kg total. -->
+  <!-- Robot: 17 CubeMars AK-series actuators, 21.5176 kg total. -->
   <option timestep="0.002" integrator="implicitfast"/>
   <statistic center="0 0.3 1.0" extent="3.5"/>
   <visual><global azimuth="150" elevation="-15" offwidth="1600" offheight="1200"/><quality shadowsize="4096"/></visual>
@@ -20,18 +20,17 @@
     <mesh name="waist_link_col_cone" file="waist_link_col_cone.stl" scale="0.001 0.001 0.001"/>
     <mesh name="waist_link_col_flange" file="waist_link_col_flange.stl" scale="0.001 0.001 0.001"/>
     <mesh name="torso_upper" file="torso_upper.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="torso_upper_col_plate_shoulder_L_abduction" file="torso_upper_col_plate_shoulder_L_abduction.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="torso_upper_col_wishbone_L_ring" file="torso_upper_col_wishbone_L_ring.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="torso_upper_col_wishbone_L_strip" file="torso_upper_col_wishbone_L_strip.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="torso_upper_col_plate_shoulder_R_abduction" file="torso_upper_col_plate_shoulder_R_abduction.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="torso_upper_col_wishbone_R_ring" file="torso_upper_col_wishbone_R_ring.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="torso_upper_col_wishbone_R_strip" file="torso_upper_col_wishbone_R_strip.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_wall_L" file="torso_upper_col_wall_L.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_wall_R" file="torso_upper_col_wall_R.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_front" file="torso_upper_col_front.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_back" file="torso_upper_col_back.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_lid" file="torso_upper_col_lid.stl" scale="0.001 0.001 0.001"/>
     <mesh name="torso_upper_col_deck" file="torso_upper_col_deck.stl" scale="0.001 0.001 0.001"/>
-    <mesh name="torso_upper_col_flanks" file="torso_upper_col_flanks.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_L" file="shoulder_L.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_L_col_plate_out" file="shoulder_L_col_plate_out.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_L_col_plate_face" file="shoulder_L_col_plate_face.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_L_col_web" file="shoulder_L_col_web.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="shoulder_L_col_leg" file="shoulder_L_col_leg.stl" scale="0.001 0.001 0.001"/>
     <mesh name="humerus_rot_L" file="humerus_rot_L.stl" scale="0.001 0.001 0.001"/>
     <mesh name="humerus_rot_L_col_plate_out" file="humerus_rot_L_col_plate_out.stl" scale="0.001 0.001 0.001"/>
     <mesh name="humerus_rot_L_col_plate_face" file="humerus_rot_L_col_plate_face.stl" scale="0.001 0.001 0.001"/>
@@ -61,6 +60,7 @@
     <mesh name="shoulder_R_col_plate_out" file="shoulder_R_col_plate_out.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_R_col_plate_face" file="shoulder_R_col_plate_face.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_R_col_web" file="shoulder_R_col_web.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="shoulder_R_col_leg" file="shoulder_R_col_leg.stl" scale="0.001 0.001 0.001"/>
     <mesh name="upper_arm_R" file="upper_arm_R.stl" scale="0.001 0.001 0.001"/>
     <mesh name="upper_arm_R_col_plate_out" file="upper_arm_R_col_plate_out.stl" scale="0.001 0.001 0.001"/>
     <mesh name="upper_arm_R_col_plate_face" file="upper_arm_R_col_plate_face.stl" scale="0.001 0.001 0.001"/>
@@ -262,30 +262,29 @@
           <geom class="col" type="mesh" mesh="waist_link_col_cone" pos="0 0 0"/>
           <geom class="col" type="mesh" mesh="waist_link_col_flange" pos="0 0 0"/>
           <body name="torso_upper" pos="0.000000 0.000000 0.040000">
-            <inertial pos="-0.037166 0.000000 0.203197" mass="3.188336" fullinertia="0.0634228202 0.0342670244 0.0396480417 -7.09634825e-12 0.00618571863 1.80699257e-10"/>
+            <inertial pos="-0.000000 0.000000 0.136764" mass="2.743139" fullinertia="0.022039212 0.0152983208 0.0142004937 1.54036479e-18 -2.27504883e-19 -8.67361738e-19"/>
             <geom class="vis" mesh="torso_upper"/>
-            <geom class="col" type="cylinder" size="0.04900" fromto="-0.09290 0.12500 0.26900 -0.03100 0.12500 0.26900"/>
-            <geom class="col" type="cylinder" size="0.04900" fromto="-0.09290 -0.12500 0.26900 -0.03100 -0.12500 0.26900"/>
-            <geom class="col" type="mesh" mesh="torso_upper_col_plate_shoulder_L_abduction" pos="0 0 0"/>
-            <geom class="col" type="mesh" mesh="torso_upper_col_wishbone_L_ring" pos="0 0 0"/>
-            <geom class="col" type="mesh" mesh="torso_upper_col_wishbone_L_strip" pos="0 0 0"/>
-            <geom class="col" type="mesh" mesh="torso_upper_col_plate_shoulder_R_abduction" pos="0 0 0"/>
-            <geom class="col" type="mesh" mesh="torso_upper_col_wishbone_R_ring" pos="0 0 0"/>
-            <geom class="col" type="mesh" mesh="torso_upper_col_wishbone_R_strip" pos="0 0 0"/>
+            <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.02210 0.16500 0.00000 0.08400 0.16500"/>
+            <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 -0.02210 0.16500 0.00000 -0.08400 0.16500"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_wall_L" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_wall_R" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_front" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_back" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_lid" pos="0 0 0"/>
             <geom class="col" type="mesh" mesh="torso_upper_col_deck" pos="0 0 0"/>
-            <geom class="col" type="mesh" mesh="torso_upper_col_flanks" pos="0 0 0"/>
-            <site name="s_imu" type="box" pos="0 0 0.15750" size="0.02 0.02 0.01"/>
-            <body name="shoulder_L" pos="0.000000 0.125000 0.269000">
-              <joint name="shoulder_L_abduction" type="hinge" axis="1 0 0" range="0.00000 3.14159" armature="0.208983" frictionloss="1.422"/>
-              <inertial pos="-0.004107 -0.004468 -0.082249" mass="1.256664" fullinertia="0.00330411601 0.00354703419 0.00118481232 2.60791687e-06 0.000389118033 -4.39810897e-05"/>
+            <site name="s_imu" type="box" pos="0 0 0.10925" size="0.02 0.02 0.01"/>
+            <body name="shoulder_L" pos="0.000000 0.085000 0.165000">
+              <joint name="shoulder_L_flexion" type="hinge" axis="0 1 0" range="-2.96706 1.04720" armature="0.208983" frictionloss="1.422"/>
+              <inertial pos="0.028617 0.052705 -0.000000" mass="1.293615" fullinertia="0.00231368751 0.0014242464 0.00213785975 -0.000232159862 5.38088154e-16 5.07166618e-16"/>
               <geom class="vis" mesh="shoulder_L"/>
-              <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 -0.03290 -0.10400 0.00000 0.02900 -0.10400"/>
+              <geom class="col" type="cylinder" size="0.04900" fromto="0.06290 0.07000 0.00000 0.00100 0.07000 0.00000"/>
               <geom class="col" type="mesh" mesh="shoulder_L_col_plate_out" pos="0 0 0"/>
               <geom class="col" type="mesh" mesh="shoulder_L_col_plate_face" pos="0 0 0"/>
               <geom class="col" type="mesh" mesh="shoulder_L_col_web" pos="0 0 0"/>
-              <body name="upper_arm_L" pos="0.000000 0.030000 -0.104000">
-                <joint name="shoulder_L_flexion" type="hinge" axis="0 1 0" range="-2.96706 1.04720" armature="0.208983" frictionloss="1.422"/>
-                <inertial pos="-0.000000 0.003617 -0.128592" mass="1.292555" fullinertia="0.00631253316 0.00652156176 0.00141697822 1.54808061e-20 7.60872301e-20 -0.000382352144"/>
+              <geom class="col" type="mesh" mesh="shoulder_L_col_leg" pos="0 0 0"/>
+              <body name="upper_arm_L" pos="0.000000 0.070000 0.000000">
+                <joint name="shoulder_L_abduction" type="hinge" axis="1 0 0" range="-0.20944 3.14159" armature="0.208983" frictionloss="1.422"/>
+                <inertial pos="-0.003617 -0.000000 -0.128592" mass="1.292555" fullinertia="0.00652156176 0.00631253316 0.00141697822 -6.30645759e-21 0.000382352144 7.04494197e-21"/>
                 <geom class="vis" mesh="upper_arm_L"/>
                 <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.00000 -0.13710 0.00000 0.00000 -0.19900"/>
                 <geom class="col" type="mesh" mesh="upper_arm_L_col_plate_out" pos="0 0 0"/>
@@ -301,7 +300,7 @@
                   <geom class="col" type="mesh" mesh="humerus_rot_L_col_cheek" pos="0 0 0"/>
                   <body name="fore_arm_L" pos="0.000000 0.000000 -0.060000">
                     <joint name="elbow_L" type="hinge" axis="0 1 0" range="-1.91986 0.00000" armature="0.208983" frictionloss="1.422"/>
-                    <inertial pos="0.000000 -0.001587 -0.090522" mass="0.997296" fullinertia="0.00228086956 0.00238728094 0.000749316439 3.02512748e-13 4.04665416e-13 0.000110025167"/>
+                    <inertial pos="0.000000 -0.001587 -0.090522" mass="0.997296" fullinertia="0.00228086956 0.00238728094 0.000749316439 3.02512747e-13 4.04665392e-13 0.000110025167"/>
                     <geom class="vis" mesh="fore_arm_L"/>
                     <geom class="col" type="cylinder" size="0.03950" fromto="0.00000 0.00000 -0.07750 0.00000 0.00000 -0.14450"/>
                     <geom class="col" type="mesh" mesh="fore_arm_L_col_plate_out" pos="0 0 0"/>
@@ -348,17 +347,18 @@
                 </body>
               </body>
             </body>
-            <body name="shoulder_R" pos="0.000000 -0.125000 0.269000">
-              <joint name="shoulder_R_abduction" type="hinge" axis="1 0 0" range="-3.14159 0.00000" armature="0.208983" frictionloss="1.422"/>
-              <inertial pos="-0.004107 0.004468 -0.082249" mass="1.256664" fullinertia="0.00330411601 0.00354703419 0.00118481232 -2.60791687e-06 0.000389118033 4.39810897e-05"/>
+            <body name="shoulder_R" pos="0.000000 -0.085000 0.165000">
+              <joint name="shoulder_R_flexion" type="hinge" axis="0 1 0" range="-2.96706 1.04720" armature="0.208983" frictionloss="1.422"/>
+              <inertial pos="0.028617 -0.052705 -0.000000" mass="1.293615" fullinertia="0.00231368751 0.0014242464 0.00213785975 0.000232159862 5.38076586e-16 -5.07165751e-16"/>
               <geom class="vis" mesh="shoulder_R"/>
-              <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.03290 -0.10400 0.00000 -0.02900 -0.10400"/>
+              <geom class="col" type="cylinder" size="0.04900" fromto="0.06290 -0.07000 0.00000 0.00100 -0.07000 0.00000"/>
               <geom class="col" type="mesh" mesh="shoulder_R_col_plate_out" pos="0 0 0"/>
               <geom class="col" type="mesh" mesh="shoulder_R_col_plate_face" pos="0 0 0"/>
               <geom class="col" type="mesh" mesh="shoulder_R_col_web" pos="0 0 0"/>
-              <body name="upper_arm_R" pos="0.000000 -0.030000 -0.104000">
-                <joint name="shoulder_R_flexion" type="hinge" axis="0 1 0" range="-2.96706 1.04720" armature="0.208983" frictionloss="1.422"/>
-                <inertial pos="-0.000000 -0.003617 -0.128592" mass="1.292555" fullinertia="0.00631253316 0.00652156176 0.00141697822 -2.63205252e-19 -1.36081073e-21 0.000382352144"/>
+              <geom class="col" type="mesh" mesh="shoulder_R_col_leg" pos="0 0 0"/>
+              <body name="upper_arm_R" pos="0.000000 -0.070000 0.000000">
+                <joint name="shoulder_R_abduction" type="hinge" axis="1 0 0" range="-3.14159 0.20944" armature="0.208983" frictionloss="1.422"/>
+                <inertial pos="-0.003617 0.000000 -0.128592" mass="1.292555" fullinertia="0.00652156176 0.00631253316 0.00141697822 1.32801147e-19 0.000382352144 1.49878577e-19"/>
                 <geom class="vis" mesh="upper_arm_R"/>
                 <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.00000 -0.13710 0.00000 0.00000 -0.19900"/>
                 <geom class="col" type="mesh" mesh="upper_arm_R_col_plate_out" pos="0 0 0"/>
@@ -428,16 +428,16 @@
 
   <actuator>
     <position name="act_waist_yaw" joint="waist_yaw" kp="800" dampratio="1" ctrlrange="-0.78540 0.78540" forcerange="-72 72"/>   <!-- AK60-39 -->
-    <position name="act_shoulder_L_abduction" joint="shoulder_L_abduction" kp="800" dampratio="1" ctrlrange="0.00000 3.14159" forcerange="-120 120"/>   <!-- AK80-64 -->
     <position name="act_shoulder_L_flexion" joint="shoulder_L_flexion" kp="800" dampratio="1" ctrlrange="-2.96706 1.04720" forcerange="-120 120"/>   <!-- AK80-64 -->
+    <position name="act_shoulder_L_abduction" joint="shoulder_L_abduction" kp="800" dampratio="1" ctrlrange="-0.20944 3.14159" forcerange="-120 120"/>   <!-- AK80-64 -->
     <position name="act_shoulder_L_rotation" joint="shoulder_L_rotation" kp="500" dampratio="1" ctrlrange="-1.22173 1.57080" forcerange="-120 120"/>   <!-- AK80-64 -->
     <position name="act_elbow_L" joint="elbow_L" kp="500" dampratio="1" ctrlrange="-1.91986 0.00000" forcerange="-120 120"/>   <!-- AK80-64 -->
     <position name="act_forearm_L_roll" joint="forearm_L_roll" kp="200" dampratio="1" ctrlrange="-1.48353 1.48353" forcerange="-72 72"/>   <!-- AK60-39 -->
     <position name="act_wrist_L_flexion" joint="wrist_L_flexion" kp="150" dampratio="1" ctrlrange="-0.43633 0.43633" forcerange="-72 72"/>   <!-- AK60-39 -->
     <position name="act_wrist_L_deviation" joint="wrist_L_deviation" kp="150" dampratio="1" ctrlrange="-0.52360 0.34907" forcerange="-72 72"/>   <!-- AK60-39 -->
     <position name="act_finger_L" joint="finger_L" kp="200" dampratio="1" ctrlrange="-1.57080 0.34907" forcerange="-24 24"/>   <!-- AK45-36 -->
-    <position name="act_shoulder_R_abduction" joint="shoulder_R_abduction" kp="800" dampratio="1" ctrlrange="-3.14159 0.00000" forcerange="-120 120"/>   <!-- AK80-64 -->
     <position name="act_shoulder_R_flexion" joint="shoulder_R_flexion" kp="800" dampratio="1" ctrlrange="-2.96706 1.04720" forcerange="-120 120"/>   <!-- AK80-64 -->
+    <position name="act_shoulder_R_abduction" joint="shoulder_R_abduction" kp="800" dampratio="1" ctrlrange="-3.14159 0.20944" forcerange="-120 120"/>   <!-- AK80-64 -->
     <position name="act_shoulder_R_rotation" joint="shoulder_R_rotation" kp="500" dampratio="1" ctrlrange="-1.57080 1.22173" forcerange="-120 120"/>   <!-- AK80-64 -->
     <position name="act_elbow_R" joint="elbow_R" kp="500" dampratio="1" ctrlrange="-1.91986 0.00000" forcerange="-120 120"/>   <!-- AK80-64 -->
     <position name="act_forearm_R_roll" joint="forearm_R_roll" kp="200" dampratio="1" ctrlrange="-1.48353 1.48353" forcerange="-72 72"/>   <!-- AK60-39 -->
@@ -449,16 +449,16 @@
   <sensor>
     <!-- joint encoders: position + velocity, one pair per motor -->
     <jointpos name="enc_waist_yaw" joint="waist_yaw"/>
-    <jointpos name="enc_shoulder_L_abduction" joint="shoulder_L_abduction"/>
     <jointpos name="enc_shoulder_L_flexion" joint="shoulder_L_flexion"/>
+    <jointpos name="enc_shoulder_L_abduction" joint="shoulder_L_abduction"/>
     <jointpos name="enc_shoulder_L_rotation" joint="shoulder_L_rotation"/>
     <jointpos name="enc_elbow_L" joint="elbow_L"/>
     <jointpos name="enc_forearm_L_roll" joint="forearm_L_roll"/>
     <jointpos name="enc_wrist_L_flexion" joint="wrist_L_flexion"/>
     <jointpos name="enc_wrist_L_deviation" joint="wrist_L_deviation"/>
     <jointpos name="enc_finger_L" joint="finger_L"/>
-    <jointpos name="enc_shoulder_R_abduction" joint="shoulder_R_abduction"/>
     <jointpos name="enc_shoulder_R_flexion" joint="shoulder_R_flexion"/>
+    <jointpos name="enc_shoulder_R_abduction" joint="shoulder_R_abduction"/>
     <jointpos name="enc_shoulder_R_rotation" joint="shoulder_R_rotation"/>
     <jointpos name="enc_elbow_R" joint="elbow_R"/>
     <jointpos name="enc_forearm_R_roll" joint="forearm_R_roll"/>
@@ -466,16 +466,16 @@
     <jointpos name="enc_wrist_R_deviation" joint="wrist_R_deviation"/>
     <jointpos name="enc_finger_R" joint="finger_R"/>
     <jointvel name="vel_waist_yaw" joint="waist_yaw"/>
-    <jointvel name="vel_shoulder_L_abduction" joint="shoulder_L_abduction"/>
     <jointvel name="vel_shoulder_L_flexion" joint="shoulder_L_flexion"/>
+    <jointvel name="vel_shoulder_L_abduction" joint="shoulder_L_abduction"/>
     <jointvel name="vel_shoulder_L_rotation" joint="shoulder_L_rotation"/>
     <jointvel name="vel_elbow_L" joint="elbow_L"/>
     <jointvel name="vel_forearm_L_roll" joint="forearm_L_roll"/>
     <jointvel name="vel_wrist_L_flexion" joint="wrist_L_flexion"/>
     <jointvel name="vel_wrist_L_deviation" joint="wrist_L_deviation"/>
     <jointvel name="vel_finger_L" joint="finger_L"/>
-    <jointvel name="vel_shoulder_R_abduction" joint="shoulder_R_abduction"/>
     <jointvel name="vel_shoulder_R_flexion" joint="shoulder_R_flexion"/>
+    <jointvel name="vel_shoulder_R_abduction" joint="shoulder_R_abduction"/>
     <jointvel name="vel_shoulder_R_rotation" joint="shoulder_R_rotation"/>
     <jointvel name="vel_elbow_R" joint="elbow_R"/>
     <jointvel name="vel_forearm_R_roll" joint="forearm_R_roll"/>
@@ -484,16 +484,16 @@
     <jointvel name="vel_finger_R" joint="finger_R"/>
     <!-- motor torque feedback (current sensing on the real drive) -->
     <actuatorfrc name="tau_waist_yaw" actuator="act_waist_yaw"/>
-    <actuatorfrc name="tau_shoulder_L_abduction" actuator="act_shoulder_L_abduction"/>
     <actuatorfrc name="tau_shoulder_L_flexion" actuator="act_shoulder_L_flexion"/>
+    <actuatorfrc name="tau_shoulder_L_abduction" actuator="act_shoulder_L_abduction"/>
     <actuatorfrc name="tau_shoulder_L_rotation" actuator="act_shoulder_L_rotation"/>
     <actuatorfrc name="tau_elbow_L" actuator="act_elbow_L"/>
     <actuatorfrc name="tau_forearm_L_roll" actuator="act_forearm_L_roll"/>
     <actuatorfrc name="tau_wrist_L_flexion" actuator="act_wrist_L_flexion"/>
     <actuatorfrc name="tau_wrist_L_deviation" actuator="act_wrist_L_deviation"/>
     <actuatorfrc name="tau_finger_L" actuator="act_finger_L"/>
-    <actuatorfrc name="tau_shoulder_R_abduction" actuator="act_shoulder_R_abduction"/>
     <actuatorfrc name="tau_shoulder_R_flexion" actuator="act_shoulder_R_flexion"/>
+    <actuatorfrc name="tau_shoulder_R_abduction" actuator="act_shoulder_R_abduction"/>
     <actuatorfrc name="tau_shoulder_R_rotation" actuator="act_shoulder_R_rotation"/>
     <actuatorfrc name="tau_elbow_R" actuator="act_elbow_R"/>
     <actuatorfrc name="tau_forearm_R_roll" actuator="act_forearm_R_roll"/>
@@ -502,16 +502,16 @@
     <actuatorfrc name="tau_finger_R" actuator="act_finger_R"/>
     <!-- hard-stop detection: non-zero when a joint is jammed on its limit -->
     <jointlimitfrc name="lim_waist_yaw" joint="waist_yaw"/>
-    <jointlimitfrc name="lim_shoulder_L_abduction" joint="shoulder_L_abduction"/>
     <jointlimitfrc name="lim_shoulder_L_flexion" joint="shoulder_L_flexion"/>
+    <jointlimitfrc name="lim_shoulder_L_abduction" joint="shoulder_L_abduction"/>
     <jointlimitfrc name="lim_shoulder_L_rotation" joint="shoulder_L_rotation"/>
     <jointlimitfrc name="lim_elbow_L" joint="elbow_L"/>
     <jointlimitfrc name="lim_forearm_L_roll" joint="forearm_L_roll"/>
     <jointlimitfrc name="lim_wrist_L_flexion" joint="wrist_L_flexion"/>
     <jointlimitfrc name="lim_wrist_L_deviation" joint="wrist_L_deviation"/>
     <jointlimitfrc name="lim_finger_L" joint="finger_L"/>
-    <jointlimitfrc name="lim_shoulder_R_abduction" joint="shoulder_R_abduction"/>
     <jointlimitfrc name="lim_shoulder_R_flexion" joint="shoulder_R_flexion"/>
+    <jointlimitfrc name="lim_shoulder_R_abduction" joint="shoulder_R_abduction"/>
     <jointlimitfrc name="lim_shoulder_R_rotation" joint="shoulder_R_rotation"/>
     <jointlimitfrc name="lim_elbow_R" joint="elbow_R"/>
     <jointlimitfrc name="lim_forearm_R_roll" joint="forearm_R_roll"/>
@@ -545,7 +545,7 @@
   <keyframe>
     <!-- Both hooks latched on rung_front_line_0 (z = 1.00). -->
     <key name="hang_on_rung"
-         qpos="0.431792 -0.000664 -0.093684 0.993610 -0.000052 -0.112866 -0.000007 -0.000049 0.001626 -2.796405 0.000145 -0.006287 -0.087050 -0.018301 0.003549 0.013177 -0.001531 -2.796423 -0.000161 -0.006273 0.087004 -0.018221 -0.003072 0.013026"
-         ctrl="0.000000 0.000000 -2.792527 0.000000 0.000000 -0.087266 0.000000 0.000000 0.000000 0.000000 -2.792527 0.000000 0.000000 0.087266 0.000000 0.000000 0.000000"/>
+         qpos="0.431780 0.000379 -0.093808 0.993647 0.000066 -0.112539 -0.000006 -0.000003 -2.797114 -0.000073 0.000180 -0.006550 -0.086958 -0.018658 0.002329 0.013055 -2.797117 0.000125 -0.000165 -0.006547 0.086991 -0.018719 -0.001439 0.013091"
+         ctrl="0.000000 -2.792527 0.000000 0.000000 0.000000 -0.087266 0.000000 0.000000 0.000000 -2.792527 0.000000 0.000000 0.000000 0.087266 0.000000 0.000000 0.000000"/>
   </keyframe>
 </mujoco>

@@ -347,22 +347,6 @@ def cheek_profile(half_w, z_top, r_b, z_b, c=0.0, u_b=0.0):
     return _bd.make_face(outline)
 
 
-def yoke_profile(lo, hi, z_foot, cu, cv, r_out, r_in, side):
-    """A ring on an actuator's face and a band running down to the frame.
-
-    The hull the rest of the robot uses would be a solid triangle here, and
-    the arm that hangs off this actuator sweeps right through the middle of
-    it. So the ring is joined by a band of constant width instead, tangent to
-    the ring and laid down ONE side of it - the inboard side, which is the
-    one the arm never reaches.
-    """
-    t = _tangent(lo, z_foot, r_out, cu, cv, side)
-    band = _bd.make_face(_bd.Polyline(
-        (lo, z_foot), (hi, z_foot), (t[0] + hi - lo, t[1]), t, close=True))
-    ring = _bd.Pos(cu, cv) * _bd.Circle(r_out)
-    return (band + ring) - _bd.Pos(cu, cv) * _bd.Circle(r_in)
-
-
 def hook_profile(neck_c, neck_w, z_neck, half_w, z_wide, z_bot, r, bow=0.18):
     """The hooked hand's outline, in its own plane.
 

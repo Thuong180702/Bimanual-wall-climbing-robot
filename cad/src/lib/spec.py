@@ -10,25 +10,40 @@ LINES is at least r1 + r2 + 3 mm, or if their finite bodies miss along the
 link. Each change is checked by check_clearance() and by a CAD interference
 run on the built assembly.
 
-  torso_upper -> shoulder_abduction   z 0.165 -> 0.269   (+104 mm)
-  shoulder    -> shoulder_flexion     z 0     -> -0.104  (-104 mm)
-      the two together leave the shoulder FLEXION axis at world z = 0.405,
-      exactly where v1 had it: the arm kinematics below the shoulder are
-      untouched, the torso got taller instead. Two AK80-64 (r 49 each) on
-      perpendicular axes need 101 mm between those axes; 104 given.
+  The shoulder: see THE SHOULDER IS PITCH-FIRST below.
   wrist       -> wrist_deviation      z -0.020 -> -0.084 (-64 mm)
       two AK60-39 (r 39.5 each) need 82 mm; 84 given.
   wrist_dev   -> finger               z -0.020 -> -0.072 (-52 mm)
       AK60-39 (r 39.5) and AK45-36 (r 27.5) need 70 mm; 72 given.
-  torso_up width 0.240 -> 0.145, height 0.165 -> 0.315
-      the abduction actuator is Ø98 on a lateral axis at y = 0.125, so it
-      reaches in to y = 0.076 and the frame has to end before that; and the
-      frame runs 46 mm past the shoulder axis so the shoulder housings sit in
-      the torso's silhouette instead of perched on its lid.
 
-  Net effect: the hand sits 95 mm further from the wrist than in v1, and the
-  robot is 95 mm taller. Everything between the shoulder and the wrist is
-  dimensionally identical to v1.
+  Net effect: the hand sits 116 mm further from the wrist than in v1.
+  Everything between the shoulder and the wrist is dimensionally identical
+  to v1.
+
+THE SHOULDER IS PITCH-FIRST, like the humanoids it was checked against.
+v2 first stacked it the other way - abduction on the torso, flexion 104 mm
+BELOW it - and with the arm raised to hang, the arm grew out of a pivot under
+the abduction motor and folded back up past it. On the true CAD meshes that
+cost: flaring the raised arm swung its root 105 mm inward and drove it into
+the torso from -38 deg, and the -170 flexion stop pressed it on the torso.
+Twelve published humanoids, measured off their own URDF/MJCF (Unitree H1,
+H1-2, G1; Booster T1; Fourier N1; PNDbotics Adam Lite; Berkeley Humanoid Lite;
+ToddlerBot; Robotis OP3; iCub; Apptronik Apollo; PAL TALOS): ten put shoulder
+PITCH on the torso, then ROLL offset SIDEWAYS by 27-78 mm at almost the same
+height (|dz| <= 15 mm), then YAW down the upper arm. None drops the second
+shoulder axis below the first.
+
+  torso_upper -> shoulder_flexion    y 0.085, z 0.165: a lateral axis, the
+      actuator body inboard in the torso, at v1's shoulder height
+  shoulder    -> shoulder_abduction  y +0.070, same height: the roll actuator
+      sits outboard of the pitch output. 70 = its 49 mm radius + 1.5 of air +
+      a 16 mm web + the 2 mm the output plate's spigot recess takes + 1.5.
+      The web is what carries 120 N.m of roll torque into the pitch output
+      (16 mm is the spine the old shoulder bracket needed for the same load);
+      65 left it 4.5 mm. The survey spans 27-78; Fourier N1 uses 78.
+  => the arm's root is at y 0.155, z 0.165, exactly v1's, so the hands, the
+     reach and every lesson's goals are v1's; and a flare now turns the raised
+     arm about a point on its own root instead of swinging the root inward.
 
 THE CROSS-AXIS ACTUATORS NOW ALTERNATE. All four of them - shoulder flexion,
 elbow, wrist flexion, finger - used to have their bodies inboard, so every one
@@ -40,10 +55,10 @@ themselves - its lateral offsets read -30.1, +30.1, +31.5, -31.5, +37.5, -37.5.
 
 TWO LIMITS ALSO MOVED, both measured in tools/check_fit.py:
 
-  shoulder_flexion  -180 -> -170 deg.  Past -173 the shoulder ROTATION
-      actuator grazes the ABDUCTION actuator. v1's own README already said not
-      to go there - at -180 the torso hangs flat against the wall and rams the
-      rung below - so this costs nothing that was being used.
+  shoulder_flexion  -180 -> -170 deg.  v1's own README said not to go there -
+      at -180 the torso hangs flat against the wall and rams the rung below.
+      (On the abduction-first shoulder the rotation actuator also grazed the
+      abduction one past -173; pitch-first, the true CAD is clear to -180.)
   elbow             -120 -> -110 deg.  -118 was where the two ACTUATOR bodies
       touch; -112.3 is where the two BRACKETS do - at full fold the forearm
       web sweeps into the Ø72 plate on the shoulder-rotation flange, 434 mm^3
@@ -52,13 +67,9 @@ TWO LIMITS ALSO MOVED, both measured in tools/check_fit.py:
       that is used; the upper arm is 60 mm from the rotation flange to the
       elbow axis and two Ø98 actuators that close do not fold further.
 
-And shoulder_abduction's actuator slides 30 mm back along its own axis
-(MOUNT_AT) rather than sitting on the joint origin, so the raised arm's
-rotation actuator sweeps past it. Sliding an actuator along its own axis is
-kinematically free. 40 mm was a guess; tools/check_swing.py sweeps that pair
-over BOTH joints between them and finds the clash starts below 27 mm, so 30
-is the number with a margin - and it brings 1.7 kg of shoulder actuator
-10 mm back toward the middle of the torso.
+MOUNT_AT can slide an actuator along its own axis, which is kinematically
+free. The abduction-first shoulder needed it (30 mm, so the raised arm's
+rotation actuator swept past the abduction actuator); pitch-first does not.
 """
 import math
 
@@ -140,14 +151,25 @@ IFACE = {
 D = math.radians
 
 
+SH_Y, SH_Z = 0.085, 0.165      # shoulder pitch axis in the torso frame
+SH_ROLL = 0.070                 # pitch output -> roll axis, sideways
+
+
 def _arm(s, sg):
     """One arm. sg = +1 left, -1 right; the limits mirror about the sagittal plane."""
     return [
-        ("shoulder_%s_abduction" % s, "torso_upper", "shoulder_%s" % s,
-         (1, 0, 0), (0.0, sg * 0.125, 0.269),
-         (D(0), D(180)) if sg > 0 else (D(-180), D(0)), (-1, 0, 0)),
-        ("shoulder_%s_flexion" % s, "shoulder_%s" % s, "upper_arm_%s" % s,
-         (0, 1, 0), (0.0, sg * 0.030, -0.104), (D(-170), D(60)), (0, -sg, 0)),
+        # pitch first, on the torso: its body inboard, its output facing out
+        ("shoulder_%s_flexion" % s, "torso_upper", "shoulder_%s" % s,
+         (0, 1, 0), (0.0, sg * SH_Y, SH_Z), (D(-170), D(60)), (0, -sg, 0)),
+        # then roll, outboard at the same height. Its body points forward with
+        # the arm down, so with the arm raised to hang it points AWAY from the
+        # wall. The flare of a raised arm is POSITIVE abduction on the left.
+        # Inward it stops at -12: the upper arm's cheek meets this shoulder
+        # bracket's web from -15 (tools/check_pair.py). The humanoids surveyed
+        # stop their roll inward at -7 to -25 (N1 -10, BHL -15, H1 -19.5).
+        ("shoulder_%s_abduction" % s, "shoulder_%s" % s, "upper_arm_%s" % s,
+         (1, 0, 0), (0.0, sg * SH_ROLL, 0.0),
+         (D(-12), D(180)) if sg > 0 else (D(-180), D(12)), (1, 0, 0)),
         ("shoulder_%s_rotation" % s, "upper_arm_%s" % s, "humerus_rot_%s" % s,
          (0, 0, 1), (0.0, 0.0, -0.200),
          (D(-70), D(90)) if sg > 0 else (D(-90), D(70)), (0, 0, 1)),
@@ -180,7 +202,11 @@ TORSO_LOW = (0.140, 0.180, 0.200)     # d, w, h; w 0.210 -> 0.180 to clear the e
 # reaches 114 mm. The section is therefore that box intersected with a 180 mm
 # circle - a stadium, flat front and back, round left and right.
 TORSO_LOW_R = 0.090
-TORSO_UP = (0.150, 0.145, 0.315)      # w 0.240 -> 0.165, h 0.165 -> 0.260: see below
+# The chest is a box round the two shoulder pitch actuators (build.torso_upper):
+# as deep as the lower torso; as wide as its side walls, which are 6 mm plates
+# on the actuators' front faces (y = SH_Y - 8 mm .. - 2 mm); as tall as the
+# actuators' tops plus 1.5 mm of air and a 3 mm lid.
+TORSO_UP = (0.140, 2 * (SH_Y - 0.002), SH_Z + 0.049 + 0.0015 + 0.003)
 WAIST_DIA, WAIST_H = 0.100, 0.040
 HOOK = dict(back=0.110, lip=0.040, thk=0.012, width=0.065)
 # The one mating interface this design INVENTS rather than measures: the
@@ -205,11 +231,9 @@ PAYLOAD = [("battery_48V_6Ah", 1.60, (0.0, 0.0, 0.070)),
 # Where along its own axis an actuator's OUTPUT FLANGE sits, measured from the
 # joint origin in the body_dir direction, metres. The joint axis is a line, so
 # sliding the actuator along it changes nothing kinematically - it is free
-# clearance. shoulder_abduction uses it: with a 98 mm rotation actuator on the
-# raised arm, the abduction actuator has to sit back out of its sweep.
+# clearance. The abduction-first shoulder slid its abduction actuator 30 mm
+# back out of the raised arm's sweep; nothing needs it pitch-first.
 MOUNT_AT = {}
-for _s in "LR":
-    MOUNT_AT["shoulder_%s_abduction" % _s] = 0.030
 
 # The hooks are bolted on TURNED OVER: a hook's frame is its finger joint's
 # frame turned 180 deg about the forearm axis (z). v1 learnt this the hard way

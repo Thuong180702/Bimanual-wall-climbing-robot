@@ -41,6 +41,17 @@ before it learned the 11.1 kg robot and is void: start a new run, do not
 quietly be wrong; checkpoints now record which robot they learned (a hash of
 `scene.xml`) and `--resume` refuses a different one unless given `--new-robot`.
 
+**Then the shoulder was rebuilt pitch-first** (`cad/src/lib/spec.py`). The user
+saw the raised arm grow out of a pivot *below* the abduction motor and fold back
+up past it; ten of twelve published humanoids put the pitch actuator in the
+torso and the roll actuator beside its output instead, and so does this robot
+now. It is 21.5 kg; each arm's joints run flexion, then abduction, in `qpos` and
+`ctrl`; and from the hang, positive abduction on the left is the outward flare,
+which `scene.xml` has all of (−12…180°) — the lessons no longer widen anything.
+Policies trained before it are void as well, and the robot stamp refuses them.
+Canary on this Mac, 1.5M steps with 10 envs: lesson −2 passed before 100k, −1 at
+~456k, and 0 was at 57 % with lesson 1 unlocked by the end.
+
 The swap loaded cleanly and was broken in four ways, all found by this
 directory's own checks — `python -m rl.climb_task` failed its incentive test —
 and all fixed at the source:
@@ -57,8 +68,9 @@ and all fixed at the source:
   18–52 mm from any real metal. The hang held four shoulder actuators at 88 % of
   peak torque against 1500 N of contact. Each CAD part is its own hull now; the
   hang holds on ≤3.2 N·m per joint, and of the self-contacts reported in the
-  climbing envelope 14 % are hull artefacts, down from 71 % — the flare the
-  wide-shoulder lessons exist for is no longer blocked by air.
+  climbing envelope 14 % were hull artefacts, down from 71 % (2 % since the
+  chest became a box of plates, pitch-first) — the flare the lessons exist for
+  is no longer blocked by air.
 - **The two idle baselines were the old robot's.** `TAU_IDLE` 30 N·m and
   `WEIGHT` 109 N were typed in; the new robot hangs still on ~61 N·m and weighs
   215 N, so standing still was charged as effort and as fighting: −58 over
@@ -89,9 +101,10 @@ timeout, fluttering both hooks, the left hand never travelling). The physics is
 not what blocks it: the stuck policy fails on both models, and trained policies
 transfer between them both ways (20/20 and 16/20 on lesson −2). The early
 curriculum's seed variance is large; **if lesson −2 has not passed by ~1M steps,
-start again under a new `--name`** rather than waiting it out. Every trained
-policy here also rests its arms at the −170° flexion stop — see `urdf/README.md`
-on what that costs the real machine.
+start again under a new `--name`** rather than waiting it out. Policies trained
+on the abduction-first shoulder rested their arms at the −170° flexion stop,
+leaning on a real 1.4 mm contact with the torso; pitch-first there is nothing
+there to lean on.
 
 ## Lessons
 
@@ -208,11 +221,11 @@ valid. Only `urdf/lessons/*` get the pad.
 
 ## Design decisions
 
-- **Wide shoulders.** Lessons open shoulder abduction 60° outward (the
-  `scene_wide_shoulders.xml` edit). A human climbs by flaring the shoulders in the
-  wall plane and flexing the elbows; the original ranges only travel inward, so the
-  posture the user asked for cannot exist without this. The classical controller is
-  tuned against the narrow ranges and still runs on `scene.xml` only.
+- **The flare is in the model.** A human climbs by flaring the shoulders in the
+  wall plane and flexing the elbows. The abduction-first shoulder only travelled
+  inward from the hang, so the lessons used to open it 60° outward; the
+  pitch-first one flares with positive abduction on the left, and the lessons
+  take `scene.xml`'s range (−12…180°) as it is.
 - **Obs are hardware-legal** (encoders, raw IMU, F/T, pads, own setpoints, goal
   relative to the anchor-rooted estimate, and the 3 nearest rungs per hand).
   **Reward and success use ground truth** — a training-time oracle, per the model

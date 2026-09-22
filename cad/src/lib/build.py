@@ -14,7 +14,7 @@ from cadgen import build123d as _bd
 
 from .connect import (bolt_access, bolt_ring, cheek, face_od, face_plate,
                       hook_profile, mate_bore_r, output_plate,
-                      plane_at, yoke_profile)
+                      plane_at)
 from .spec import (BODY_DIR, CLEAR, FIXED, HOOK, IFACE, JOINTS, MOTOR_OF,
                    MOUNT_AT, MOUNT_ROT, PLATE, SHELL, TORSO_BC, TORSO_LOW,
                    TORSO_LOW_R, TORSO_N, TORSO_TH, TORSO_UP, WAIST_DIA,
@@ -37,10 +37,8 @@ def clear_bolts(web, faces, reach=0.05):
 def mount_plane(joint, origin):
     """That actuator's own frame, where it actually sits.
 
-    MOUNT_AT slides an actuator along its own axis, which is kinematically
-    free - the shoulder abduction one is slid 30 mm back so the raised arm's
-    rotation actuator sweeps past it - so the flange is not always on the
-    joint origin.
+    MOUNT_AT can slide an actuator along its own axis, which is kinematically
+    free, so the flange need not be on the joint origin (spec.MOUNT_AT).
     """
     a = MOUNT_AT.get(joint[0], 0.0)
     b = BODY_DIR[joint[0]]
@@ -228,11 +226,17 @@ def hang(name, t=ARM_CHEEK_T, stand=0.0, plate_t=PLATE):
     offers, so the cheek's straight edge is that flange and its round end is
     the parent's output flange. Between them stands the child's rear pilot
     boss, which the cheek is bored for.
+
+    The parent's output may face across the arm (Y: the elbow) or fore-and-aft
+    (X: the pitch-first shoulder's roll actuator); the cheek lies against it
+    either way.
     """
     pj, cj = PJOINT[name], CHILD_OF[name][0]
     p_key, c_key = MOTOR_OF[pj[0]], MOTOR_OF[cj[0]]
     dp, dc = IFACE[p_key], IFACE[c_key]
     pl_p, pl_c = mount_plane(pj, (0.0, 0.0, 0.0)), mount_plane(cj, cj[4])
+    ax = "Y" if abs(pl_p.z_dir.Y) > 0.9 else "X"
+    assert abs(getattr(pl_p.z_dir, ax)) > 0.9, "hang(%s): parent output not across" % name
 
     a_od = dp["out_od"] * MM                         # the parent's output face
     b_od = face_od(c_key, "rear")                    # the child's rear flange
@@ -241,16 +245,16 @@ def hang(name, t=ARM_CHEEK_T, stand=0.0, plate_t=PLATE):
 
     # the cheek starts where the plate's spigot counterbore ends, so it is
     # clear of the spigot and still 3 mm deep into the plate
-    y0 = _pt(pl_p, dp["out_z"] * MM + (stand if stand > 0.0 else
-             dp["out_spigot_h"] * MM + CLEAR + 0.0005))[1]
+    w0 = _pt(pl_p, dp["out_z"] * MM + (stand if stand > 0.0 else
+             dp["out_spigot_h"] * MM + CLEAR + 0.0005))["XY".index(ax)]
     z_rear = _pt(pl_c, dc["rear_z"] * MM)[2]
     z_pilot = _pt(pl_c, (dc["rear_z"] - dc["rear_pilot_h"]) * MM)[2]
     r_cable = max(dp["out_bore"] - 2.0, 4.0) / 2 * MM
     r_pilot = dc["rear_pilot"] / 2 * MM + PILOT_CLEAR
     z_boss = (z_rear + z_pilot) / 2.0
-    web = cheek(b_od / 2, z_rear, a_od / 2, 0.0, y0, grow(pl_p, "Y") * t,
+    web = cheek(b_od / 2, z_rear, a_od / 2, 0.0, w0, grow(pl_p, ax) * t,
                 lighten=[(0.0, 0.0, r_cable), (0.0, z_boss, r_pilot)]
-                + _span_holes(z_boss + r_pilot, -r_cable))
+                + _span_holes(z_boss + r_pilot, -r_cable), across=ax)
     web = clear_bolts(web, [(pl_p, p_key, "output"), (pl_c, c_key, "rear")])
     return {"plate_out": top, "plate_face": side, "cheek": web}
 
@@ -261,23 +265,20 @@ def fore_arm_L():
 
 
 def upper_arm_L():
-    """shoulder-flexion output -> shoulder-rotation housing, rear face.
+    """shoulder-abduction (roll) output -> shoulder-rotation housing, rear face.
 
-    The same part as the forearm, one size up and 200 mm long instead of 145:
-    two AK80-64, a Ø72 round end and a Ø97 straight one, with the rotation
-    actuator's Ø71 pilot boss bored out of the web between them. The clear run
-    of web left over is 97 mm, so it takes two lightening holes rather than
-    the forearm's one.
+    The upper arm as the pitch-first humanoids hang theirs: off the roll
+    actuator's output, with the rotation actuator on the arm's own axis below,
+    its body pointing back up at the shoulder. The roll output faces aft (with
+    the arm down), so the cheek lies across the arm in the YZ plane rather than
+    fore-and-aft - otherwise the same part as the forearm, one size up and
+    200 mm long: two AK80-64, a Ø72 round end, a Ø97 straight one, the
+    rotation actuator's Ø71 pilot boss bored out of the web between them and
+    two lightening holes in the 97 mm of clear web left.
 
-    It is also the web that carries the shoulder-rotation actuator's reaction
-    in TORSION - 120 N.m along the link at stall. A 12 x 97 plate takes that
-    at 26 MPa and twists 0.7 deg over its length, so 12 mm holds here too.
-
-    It stands 9 mm off its flange rather than the usual 2. Folded right back -
-    shoulder flexion -170, which the climbing envelope does use - the outer
-    rim of shoulder_L's own web sweeps through where this web would otherwise
-    start: 585 mm3, measured, from -165 deg on. Six millimetres of stand-off
-    buys the last 7 degrees of the range back for 77 g.
+    It carries the rotation actuator's reaction in TORSION - 120 N.m along the
+    link at stall. A 12 x 97 plate takes that at 26 MPa and twists 0.7 deg over
+    its length, so 12 mm holds here too.
     """
     return hang("upper_arm_L", stand=0.009, plate_t=0.013)
 
@@ -402,31 +403,73 @@ def wrist_L():
     return corner("wrist_L")
 
 
-def shoulder_L():
-    """shoulder-abduction output -> shoulder-flexion housing, REAR face.
+def side_corner(name, face="rear", plate_t=PLATE, web_min=0.016):
+    """A link whose child actuator sits BESIDE the parent's output, at the same
+    height and on a perpendicular axis - the pitch-first shoulder (spec.py).
 
-    A corner like the wrist, but with both actuators the big AK80-64 and the
-    joints 104 mm apart. Two things differ.
-
-    It bolts the flexion actuator's FAR flange, not its near one. Both of its
-    faces are available; the near one is on the same side as its output, which
-    is where upper_arm_L has to grow, and a 16 mm leg there would have cost
-    that link an 11 mm stand-off and a 15 mm-thick Ø72 plate to carry it -
-    about 130 g. The far flange puts this bracket on the inboard side instead,
-    31 mm clear of the torso, and leaves the whole outboard side free.
-
-    And the spine is 18 x 16, not the wrist's 16 x 14. The AK80-64 stalls at
-    120 N.m about both of these axes: W = 768 mm3 across and 864 along, so
-    156 and 139 MPa against 276 for 6061-T6, and 87 and 95 MPa at the 67 and
-    82 N.m the hang measurement actually asks for.
-
-    It also stands 6 mm off its own flange. The torso's shoulder yoke has to
-    reach this same actuator from behind, and its band and this bracket's leg
-    were sharing 2 mm of the same millimetres: 1036 mm3, measured. Six here
-    and two off the yoke's thickness leaves 3 mm of air between them.
+    Seen from above it is an L. One leg is a web lying on the parent's output
+    plate, as thick as the gap to the child actuator's flank allows, running
+    fore-and-aft past that flank; the other turns across the child's flange.
+    Each leg's outline is the tangent hull of the two faces it joins, so the
+    part follows both rims; nothing goes round the actuator, and the child's
+    output side is left clear for the next link.
     """
-    return corner("shoulder_L", face="rear", stand=0.006, plate_t=0.010,
-                  spine={"X": 0.018, "Y": 0.016})
+    pj, cj = PJOINT[name], CHILD_OF[name][0]
+    p_key, c_key = MOTOR_OF[pj[0]], MOTOR_OF[cj[0]]
+    dp, dc = IFACE[p_key], IFACE[c_key]
+    pl_p, pl_c = mount_plane(pj, (0.0, 0.0, 0.0)), mount_plane(cj, cj[4])
+    assert abs(pl_p.z_dir.Y) > 0.9 and abs(pl_c.z_dir.X) > 0.9, \
+        "side_corner(%s): wants the parent output along Y, the child axis along X" % name
+    sg = grow(pl_p, "Y")                             # the side the child is on
+    a_od = dp["out_od"] * MM
+    b_od = face_od(c_key, face)
+    top = pl_p * output_plate(p_key, a_od, plate_t)
+    side = pl_c * face_plate(c_key, face, b_od)
+
+    # the web: from where the output plate's spigot recess ends to the child's flank
+    y0 = _pt(pl_p, (dp["out_z"] + dp["out_spigot_h"]) * MM + CLEAR + 0.0005)[1]
+    y1 = cj[4][1] - sg * (dc["od"] / 2 * MM + CLEAR)
+    t = abs(y1 - y0)
+    assert t >= web_min, "side_corner(%s): %.1f mm of web, want %.1f" % (
+        name, t * 1000, web_min * 1000)
+    sb = side.bounding_box()
+    xs0, xs1, zc = sb.min.X, sb.max.X, cj[4][2]
+    foot = _bd.Pos((xs0 + xs1) / 2, zc) * _bd.Rectangle(xs1 - xs0, b_od)
+    hull_xz = _bd.make_hull(_bd.Circle(a_od / 2).edges() + foot.edges())
+    web = _bd.extrude(_bd.Plane.XZ * hull_xz, amount=t)      # Plane.XZ extrudes along -Y
+    web = _bd.Pos(0, min(y0, y1) - web.bounding_box().min.Y, 0) * web
+
+    # the leg: across the child's flange, from the web's end to the whole face
+    end = _bd.Pos((y0 + y1) / 2, zc) * _bd.Rectangle(t, b_od)
+    disc = _bd.Pos(cj[4][1], zc) * _bd.Circle(b_od / 2)
+    hull_yz = _bd.make_hull(end.edges() + disc.edges())
+    leg = _bd.Pos(xs0, 0, 0) * _bd.extrude(_bd.Plane.YZ * hull_yz, amount=xs1 - xs0)
+    leg -= _bd.Pos(xs0 - 0.01, cj[4][1], zc) * _bd.Rot(0, 90, 0) * _bd.Cylinder(
+        radius=mate_bore_r(c_key, face), height=xs1 - xs0 + 0.02,
+        align=(_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN))
+
+    faces = [(pl_p, p_key, "output"), (pl_c, c_key, face)]
+    return {"plate_out": top, "plate_face": side,
+            "web": clear_bolts(web, faces), "leg": clear_bolts(leg, faces)}
+
+
+def shoulder_L():
+    """shoulder-flexion (pitch) output -> shoulder-abduction (roll) housing, REAR face.
+
+    The shoulder the way ten of the twelve humanoids measured for spec.py build
+    it: the pitch actuator on the torso, the roll actuator beside its output at
+    the same height, its axis fore-and-aft. Two AK80-64.
+
+    The web is 17.5 mm, the whole gap between the Ø72 output plate and the roll
+    actuator's flank: the roll actuator's 120 N.m reaches the pitch output
+    through it, as torsion about the roll axis - on a 97 x 17.5 section that is
+    about 14 MPa against 6061-T6's ~160 in shear.
+
+    It takes the roll actuator's FAR flange. The near one is on the output
+    side, where upper_arm_L bolts on and swings; this leaves that whole side to
+    the upper arm, and the bracket sits on the inboard flank and behind.
+    """
+    return side_corner("shoulder_L", face="rear", plate_t=0.010)
 
 
 def wrist_dev_L():
@@ -531,13 +574,8 @@ def hook_L():
 MIN_ = (_bd.Align.MIN,) * 3
 CMIN = (_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN)
 FLOOR = 0.005               # the lower torso's floor, under the battery
-TORSO_WEB = 0.010           # the shoulder wishbone
-YOKE_W = 0.030              # ...and how wide its bands are. Wider and
-                            # the band's outboard edge reaches into the
-                            # ring shoulder_L carries on the flexion
-                            # actuator's rear flange - measured, 51 mm3.
-TORSO_FLANK = 0.005         # the upper torso's side panels
 DECK = 0.006
+CHEST_BAND = 0.018          # the metal left round a window in the chest
 
 
 def _prism(face, z0, h):
@@ -621,14 +659,18 @@ def waist_link():
 
 
 def torso_upper():
-    """The upper frame: a shoulder wishbone, two side panels and a deck.
+    """The chest: a box round the two shoulder PITCH actuators, carried the way
+    the pitch-first humanoids carry theirs (Berkeley Humanoid Lite, Robotis
+    OP3, the Unitree torsos): each actuator's body inside the chest, its FRONT
+    face bolted to the chest's side wall, its output flange showing through it.
 
-    The two abduction actuators sit 250 mm apart on a lateral pair of Ø97
-    faces, both normal to X, so ONE transverse plate can lie flat on both -
-    a wishbone whose two arms are the same tangent hull the rest of the robot
-    is drawn with, meeting over the waist. The side panels give it the
-    fore-and-aft stiffness a 12 mm plate on its own has not got, and the deck
-    takes it down to the waist adapter's Ø88 circle.
+    So the side walls ARE the two mounting plates - 6 mm on the Ø97 front
+    annulus, eight M3 heads outside. No thicker: shoulder_L's web starts 3 mm
+    past the output flange and turns over those heads. The deck takes the box
+    down to the waist adapter's Ø88 circle; a front panel, a back panel and a
+    lid close it. Open, each wall would be a plate bending on its own under a
+    pitch actuator's reaction; closed, that reaction goes round the box as
+    shear, and the panels can be 3 mm webs with windows in them.
     """
     d, w, h = TORSO_UP
     parts = {}
@@ -636,49 +678,37 @@ def torso_upper():
         key = MOTOR_OF[cj[0]]
         pl_c = mount_plane(cj, cj[4])
         b_od = face_od(key, "front")
-        parts["plate:" + cj[0]] = pl_c * face_plate(key, "front", b_od)
-        sg = 1.0 if cj[4][1] > 0 else -1.0
-        x_lo = _pt(pl_c, IFACE[key]["hou_z"] * MM)[0]
-        prof = yoke_profile(-sg * YOKE_W, 0.0, 0.002,
-                            cj[4][1], cj[4][2], b_od / 2,
-                            mate_bore_r(key, "front"), -sg)
-        arm = _bd.extrude(_bd.Plane.YZ * prof, amount=TORSO_WEB)
-        bb = arm.bounding_box()
-        arm = _bd.Pos(x_lo - bb.min.X, 0, 0) * arm
-        arm = clear_bolts(arm, [(pl_c, key, "front")])
-        # Two parts per arm - the ring round the actuator face and the strip
-        # down to the deck - because the collision engine hulls each part, and
-        # hulled whole the arm fills the triangle between strip and ring: the
-        # space the raised upper arm's root swings through when the shoulders
-        # flare (8 mm deep, on a third of the poses in the climbing envelope).
-        ring = _bd.Location(_bd.Plane(origin=(x_lo - 0.01, cj[4][1], cj[4][2]),
-                                      z_dir=(1, 0, 0))) * _bd.Cylinder(
-            radius=b_od / 2 + 0.0005, height=TORSO_WEB + 0.02,
-            align=(_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN))
-        side = cj[0].split("_")[1]
-        parts["wishbone_%s_ring" % side] = arm & ring
-        parts["wishbone_%s_strip" % side] = arm - ring
+        ya = _pt(pl_c, IFACE[key]["hou_z"] * MM)[1]
+        yb = _pt(pl_c, IFACE[key]["hou_z"] * MM + PLATE)[1]
+        assert abs(max(abs(ya), abs(yb)) - w / 2) < 1e-6, \
+            "TORSO_UP's width is not the side walls' outer faces"
+        zc = cj[4][2]
+        z_lo, z_hi = DECK + CHEST_BAND, zc - b_od / 2 - CHEST_BAND
+        prof = (_bd.Pos(0, h / 2) * _bd.Rectangle(d, h)
+                - _bd.Pos(0, zc) * _bd.Circle(b_od / 2)
+                - _bd.Pos(0, (z_lo + z_hi) / 2) * _bd.RectangleRounded(
+                    d - 2 * CHEST_BAND, z_hi - z_lo, 0.010))
+        wall = _bd.extrude(_bd.Plane.XZ * prof, amount=PLATE)   # along -Y
+        wall = _bd.Pos(0, min(ya, yb) - wall.bounding_box().min.Y, 0) * wall
+        parts["wall_" + cj[0].split("_")[1]] = wall + pl_c * face_plate(key, "front", b_od)
 
-    # the deck spans the frame, not just the bolt circle, so the side panels
-    # land on it too and the yoke is not carrying them
-    deck = _bd.extrude(_bd.Plane.XY * (
-        _bd.Rectangle(d, w) - _bd.Circle(0.038)
-        - _bd.Pos(0.052, 0.052) * _bd.Circle(0.022)
-        - _bd.Pos(-0.052, 0.052) * _bd.Circle(0.022)
-        - _bd.Pos(0.052, -0.052) * _bd.Circle(0.022)
-        - _bd.Pos(-0.052, -0.052) * _bd.Circle(0.022)), amount=DECK)
-    deck -= bolt_ring(TORSO_BC, TORSO_N, TORSO_TH + 0.0004, -0.005, DECK + 0.005)
-    parts["deck"] = deck
-
-    flank = None
     for sg in (1.0, -1.0):
-        y0 = sg * (w / 2 - TORSO_FLANK) if sg > 0 else sg * w / 2
-        p = _bd.Pos(0, y0, 0) * _bd.Box(d, TORSO_FLANK, cj[4][2],
-                                        align=(_bd.Align.CENTER, _bd.Align.MIN,
-                                               _bd.Align.MIN))
-        flank = p if flank is None else flank + p
-    flank -= _windows(d, w, cj[4][2], (0.26, 0.50, 0.74))
-    parts["flanks"] = flank
+        panel = _bd.extrude(_bd.Plane.YZ * (
+            _bd.Pos(0, h / 2) * _bd.Rectangle(w, h)
+            - _bd.Pos(0, h / 2) * _bd.RectangleRounded(
+                w - 2 * CHEST_BAND, h - 2 * CHEST_BAND, 0.012)), amount=WALL)
+        # Plane.YZ extrudes along +X, from 0 to WALL
+        parts["front" if sg > 0 else "back"] = _bd.Pos(
+            d / 2 - WALL if sg > 0 else -d / 2, 0, 0) * panel
+
+    parts["lid"] = _bd.Pos(0, 0, h - WALL) * _bd.extrude(_bd.Plane.XY * (
+        _bd.Rectangle(d, w)
+        - _bd.RectangleRounded(d - 2 * CHEST_BAND, w - 2 * CHEST_BAND, 0.012)),
+        amount=WALL)
+    deck = _bd.extrude(_bd.Plane.XY * (_bd.Rectangle(d, w) - _bd.Circle(0.038)),
+                       amount=DECK)
+    parts["deck"] = deck - bolt_ring(TORSO_BC, TORSO_N, TORSO_TH + 0.0004,
+                                     -0.005, DECK + 0.005)
     return parts
 
 

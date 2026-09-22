@@ -13,7 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
 from cadgen import build123d as bd
 from lib.build import BUILDERS, fuse
-from lib.spec import JOINTS
+from lib.spec import JOINTS, MOUNT_ROT
 
 N = 13
 
@@ -24,7 +24,10 @@ def sweep(j):
     worst, at = 0.0, 0.0
     for i in range(N):
         q = math.degrees(lim[0] + (lim[1] - lim[0]) * i / (N - 1.0))
-        v = (a & (bd.Location(off, tuple(k * q for k in ax)) * c)).volume * 1e9
+        # the child frame: its offset, its fixed mounting turn (the hooks), then the joint
+        place = (bd.Location(off) * bd.Rot(0, 0, math.degrees(MOUNT_ROT.get(ch, 0.0)))
+                 * bd.Location((0, 0, 0), tuple(k * q for k in ax)))
+        v = (a & (place * c)).volume * 1e9
         if v > worst:
             worst, at = v, q
     ok = worst <= 1.0

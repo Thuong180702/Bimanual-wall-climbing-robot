@@ -1,11 +1,20 @@
 > **Not yet tuned for the real-actuator robot (Sept 2026).** `urdf/` is now the
-> 21.9 kg robot generated from `cad/` (the hooks still mounted turned over, as
-> since the re-mount). On it `test_climb` passes phases 0-4 and 7 — keyframe, hold
-> map, estimator and Jacobians, one step with each hand, the slide characterisation
-> — and fails 5, 6 and 8 (traverse, climb down, route), which fall: the servo
-> weights and move parameters in `moves.py` were swept on the 11.1 kg robot.
+> 21.5 kg robot generated from `cad/` (the hooks still mounted turned over, as
+> since the re-mount), with a pitch-first shoulder. On it `test_climb` passes
+> phases 0, 1, 2, 4 and 7 — keyframe, hold map, estimator and Jacobians, one step
+> with the right hand, the slide characterisation — and fails 3, 5, 6 and 8. 5, 6
+> and 8 (traverse, climb down, route) fall, as they did before the shoulder
+> changed: the servo weights and move parameters in `moves.py` were swept on the
+> 11.1 kg robot. Phase 3's left-hand step lands 22 mm from its hold measured from
+> the anchored hand, but the anchored bare hook slides ~150 mm along the rung
+> while it moves (67 mm on the abduction-first shoulder) — outside the test's
+> 100 mm world tolerance. That is the slide phase 7 measures.
 > Phase 7's pulls are fractions of body weight now; the numbers quoted below in
-> newtons are the old robot's.
+> newtons are the old robot's. **Every row below about which way the shoulder
+> abduction goes was measured on the abduction-first shoulder**, where from the
+> hang it only travelled inward. Pitch-first, positive abduction on the left IS
+> the outward flare and `scene.xml` has all of it (−12…180°); `_flare` now does
+> what its name says, and phases 6 and 8 fall with either sign.
 
 # Climbing controller
 
@@ -117,7 +126,7 @@ Numbers, not guesses — each one changed the design.
 | Shoulder flexion cannot be given up | freezing it and leaving the solvers abduction, rotation, the elbow, the roll, both wrists and the waist — 13 joints instead of 15 — makes the hold below **geometrically unreachable**: `solve_hanging_pose` finds a holdable posture on **5 of 5 seeds with flexion and 0 of 5 without**, and phases 3, 4, 5, 6 and 8 all fall. Abduction turns about x, the wall normal, so it only swings the arm *within* the plane of the wall; flexion turns about y, along the rung, and is the only shoulder joint that moves the hand toward or away from the wall. Left free, the solvers use it for nearly everything — over one traverse it sweeps **−162° to −75°** while abduction moves 2°, and over one climb it reaches −28° |
 | Which way the elbow points is not a choice | at the hang, `shoulder_rotation` sits at **+90° of a −70…+90 range** and `forearm_roll` at **+85° of ±85** — both on their stops. With the elbow straight the two are redundant, so turning the shoulder to face the elbow outward turns the hook off the rung degree for degree (10° → 10°, 20° → 20°, 30° → 30°) and the roll that would cancel it has no travel left. The roll chain is entirely spent orienting the hook onto a horizontal rung. The mirrored configuration (rotation −70, roll −85) is worse, not better: 53.6° against 45.0 |
 | Forward kinematics with the base pinned is a trap | held at the keyframe pose, FK says the elbow turns the hook off its rung one-for-one and abduction cancels it — elbow −30 alone gives 30.1°, at 30° of abduction it gives 10.2°, against a throat that tolerates ~21°. Both readings are true of a pinned base and neither survives a floating one: the body re-hangs instead of the hook turning. Capping the elbow bend at the abduction on that reasoning took the landing from **13 mm to 128 mm**, outside the capture window. Wrist load is the only test of this that has been right |
-| Widening the shoulder range breaks the controller | `urdf/scene_wide_shoulders.xml` is the model with abduction opened 60° outward on each side (joint range **and** actuator ctrlrange). The arms do spread — 309 mm at 0°, **467 at −20°, 602 at −40°, 696 at −60°** — and the climber's flare finally exists. It also fails everything: with the outward flare the robot is on the floor in 9 s, and with the old inward one **phases 3, 4, 5 and 8 still fail** and the descent falls from 13 mm to 28 mm with the load split 52/58 instead of 108/1. The ctrlrange is what bounds every solver here — the IK, the joint-limit locking, the posture sampler, both planners — so widening it moves the search space every measurement in this table was tuned against. The model change is right and it needs the controller re-tuned behind it; `scene.xml` stays as it was |
+| Widening the shoulder range breaks the controller | on the abduction-first shoulder, a copy of `scene.xml` with abduction opened 60° outward on each side (joint range **and** actuator ctrlrange). The arms do spread — 309 mm at 0°, **467 at −20°, 602 at −40°, 696 at −60°** — and the climber's flare finally exists. It also fails everything: with the outward flare the robot is on the floor in 9 s, and with the old inward one **phases 3, 4, 5 and 8 still fail** and the descent falls from 13 mm to 28 mm with the load split 52/58 instead of 108/1. The ctrlrange is what bounds every solver here — the IK, the joint-limit locking, the posture sampler, both planners — so widening it moves the search space every measurement in this table was tuned against. The model change is right and it needs the controller re-tuned behind it; `scene.xml` stays as it was |
 | The shoulders cannot open outwards at all | `shoulder_L_abduction` runs **0…180°** and the hang sits at **0**, its lower edge; the right mirrors it. So the only travel the joint has swings the arm *across* the body. Measured with the elbows bent 45°, the two elbows go from **310 mm apart at 0° to 57 mm at 30° and 239 mm crossed at 90°**. Opening outward — a climber flaring their elbows — needs negative abduction on the left, which is out of range; it would give **638 mm of spread at −45°**. Changing this is a two-attribute edit to `scene.xml` and nothing else here can substitute for it |
 | The pull-up that works closes the shoulders, not opens them | `_tuck` tucks the arms across the body and bends the elbows, and it beats the forward swing by a distance: the climb after it lands **13 mm** from the hold in 51 s, against 144 mm in 90 s, and the trailing hand's descent, which had never once completed, completes. It also transfers the weight by itself — 108 N against 1 N — where the forward swing needed `_commit` to push it and still only reached 53/62. It was written to open the shoulders outward and does the opposite; the result is real, the reason it was expected to work is not |
 | ...and it lifts less, which is the point | tucked: torso 0.294, wall gap 67 mm. Forward: torso 0.500, gap 193 mm. The one that lifts 200 mm more and sits 126 mm further off the wall is the one that lands 10x worse. Height was never what the pull-up was for -- it is which **branch** the arm ends up in. Every posture that takes a hold sits at abduction 85-176 deg, the hang keyframe sits at 0, and no local IK crosses between them; the tuck crosses it |

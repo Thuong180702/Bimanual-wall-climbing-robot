@@ -112,7 +112,7 @@ if __name__ == "__main__":
     import math as _m
     d = _m.radians
     HANG = {"shoulder_L_flexion": d(-160.1), "shoulder_R_flexion": d(-160.1),
-            "wrist_L_flexion": d(-5), "wrist_R_flexion": d(5)}
+            "forearm_L_roll": d(-5), "forearm_R_roll": d(5)}
     poses = [
         ("all joints at zero (arms straight down)", {}),
         ("scene.xml keyframe hang_on_rung", HANG),
@@ -122,6 +122,13 @@ if __name__ == "__main__":
         ("arms abducted 90 deg", {"shoulder_L_abduction": d(90),
                                   "shoulder_R_abduction": d(-90)}),
         ("elbows fully flexed", {"elbow_L": d(-120), "elbow_R": d(-120)}),
+        ("hang + both arms flared 40 deg", dict(HANG, **{
+            "shoulder_L_abduction": d(40), "shoulder_R_abduction": d(-40)})),
+        ("hang + flared 40, elbows bent 90 (the climber's pull)", dict(HANG, **{
+            "shoulder_L_abduction": d(40), "shoulder_R_abduction": d(-40),
+            "elbow_L": d(-90), "elbow_R": d(-90)})),
+        ("arms at the -170 flexion stop", {"shoulder_L_flexion": d(-170),
+                                           "shoulder_R_flexion": d(-170)}),
         ("waist hard over, arms down", {"waist_yaw": d(45)}),
         ("waist hard over while hanging", dict(HANG, waist_yaw=d(45))),
         ("README reach pose: abd 180, flex -177, elbow -114",

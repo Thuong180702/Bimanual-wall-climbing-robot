@@ -85,15 +85,21 @@ each link has a lateral offset. All four of the arm's cross-axis actuators
 used to have their bodies inboard - shoulder flexion, elbow, wrist flexion,
 finger - and none of it cancelled: `balance.py` measured the arm's centre of
 mass 13.5 mm inboard of the axis it hangs on. The elbow and the finger are
-turned round, so the four now go in, out, in, out and the offset is 4.3 mm.
+turned round, so the four now go in, out, in, out and the offset is 1.6 mm.
 It is what OpenArm does with its joint origins, whose lateral offsets read
 -30.1, +30.1, +31.5, -31.5, +37.5, -37.5.
 
-`MOUNT_AT` for the shoulder came down 40 -> 30 mm at the same time. It is
-there so the raised arm's rotation actuator sweeps past the abduction one, and
-40 was a guess; `check_swing.py` sweeps that pair over both joints between
-them and puts the clash below 27 mm. Thirty keeps a margin and brings 1.7 kg
-of shoulder actuator 10 mm back toward the middle.
+**The shoulder is pitch-first, like the humanoids it was checked against** -
+twelve of them, measured off their own URDF/MJCF (`spec.py` lists them). The
+flexion (pitch) actuator sits in the chest, body inboard, output facing out;
+the abduction (roll) actuator sits beside that output at the same height, axis
+fore-and-aft; the upper arm hangs off the roll output. Seen from above,
+`shoulder_L` is an L: a web on the pitch output plate running past the roll
+actuator's flank, and a leg across its far flange. The first v2 stacked it the
+other way - abduction on the torso, flexion 104 mm below it - and raising the
+arm flipped that 104 mm link over the top: the arm grew out of a pivot above
+the abduction motor, and flaring it swung its root 105 mm inward into the
+torso. `MOUNT_AT` existed for that layout only and is empty now.
 
 **The three torso links are frames, not connectors**, so they are panels and
 decks rather than cheeks - but the rule they are drawn to is the same: every
@@ -102,22 +108,24 @@ hole for every one of its bolts. `base_link` is a stadium-section shell (the
 140 x 180 box cut back to R90, because the waist turns the upper body over it
 and the elbow actuator sweeps a 93 mm circle) with the waist actuator nose-up
 on a deck in its top. `waist_link` is a cone that takes the Ø54 output flange
-out to the frame's Ø88 bolt circle in one surface. `torso_upper` is a yoke:
-two bands, each tangent to the Ø97 face its abduction actuator offers, laid
-down the INBOARD side of it - the side the arm never sweeps - onto a deck,
-with two side panels for fore-and-aft stiffness. The hull the arm links use
-would have been a solid triangle there, and the arm swings straight through
-the middle of it: 10 135 mm3, measured, before the bands replaced it.
+out to the frame's Ø88 bolt circle in one surface. `torso_upper` is the chest:
+a box round the two shoulder pitch actuators, carried the way Berkeley
+Humanoid Lite, OP3 and the Unitree torsos carry theirs - each actuator inside,
+its front face bolted to the side wall, its output flange showing through it.
+The side walls ARE those two mounting plates, 6 mm and no thicker, because
+`shoulder_L`'s web turns 3 mm past the output flange. A deck, a front and a
+back panel and a lid close the box, so a pitch actuator's reaction goes round
+it as shear and those four can be 3 mm webs with windows: 1.04 kg, against
+1.49 for the abduction-first yoke it replaced.
 
 **Which of the child's two flanges to bolt** is a real choice, not a rule.
 The near one leaves the bracket on the same side as that actuator's output,
 which is where the NEXT link has to grow, so the next link pays a stand-off;
 the far one puts the bracket behind the actuator and leaves that side clear.
 `wrist_dev_L` pays the stand-off because reaching behind the deviation
-actuator would mean going 48 mm back past it. `shoulder_L` takes the far
-flange instead, which put it on the inboard side, 31 mm clear of the torso,
-and saved `upper_arm_L` an 11 mm stand-off. `FACE` in `build.py` records the
-overrides.
+actuator would mean going 48 mm back past it. `shoulder_L` takes the roll
+actuator's far flange instead, which leaves its whole output side to the upper
+arm. `FACE` in `build.py` records the overrides.
 
 **Lightening** is worked out from the web, not typed in: `_span_holes()` takes
 the clear run left between the cable bore and the child's pilot boss and fills
@@ -169,7 +177,9 @@ circles by their cylindrical faces and z-positions.
 **MuJoCo collides a mesh's convex hull, never the mesh.** One mesh per link made
 the torso frame one hull, a block out to the shoulder plates, and the raised
 arms sank 10-22 mm into it. `gen_urdf.py` writes one collision mesh per bracket
-PART (stored as its hull) - see `src/lib/collide.py`.
+PART (stored as its hull) - see `src/lib/collide.py`. Over 1500 random poses of
+the climbing envelope, 2 % of the self-contacts MuJoCo reports are hull
+artefacts the true meshes do not make.
 
 **`Shape.scale()` does not scale a part that still carries a Location.** A part
 placed by `plane * shape` keeps that placement, and `.scale(1000)` on it moved

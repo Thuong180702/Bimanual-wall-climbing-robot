@@ -5,19 +5,16 @@ verified hanging keyframe are kept verbatim; the walls and rungs are replaced pe
 lesson. Every lesson therefore starts from the same keyframe, which pins the start
 rung at x = 0.44, z = 1.00, spanning at least y = +-0.16.
 
-The lessons use the WIDE-SHOULDER model: abduction opened 60 deg outward on each
-side, the same two-attribute edit as scene_wide_shoulders.xml. A human climber pulls
-up by flaring the shoulders out in the wall plane and flexing the elbows; the
-original ranges start at the hang posture and only travel inward, so that motion
-does not exist in scene.xml. The classical controller in ../controller is tuned
-against the narrow ranges (its solvers search the ctrlrange) and runs on scene.xml
-only; PPO learns from scratch, so it gets the corrected model from day one.
+A human climber pulls up by flaring the shoulders out in the wall plane and
+flexing the elbows. The shoulder is pitch-first (cad/src/lib/spec.py), so from the
+hang that flare is positive abduction on the left, and scene.xml has all of it -
+the lessons used to widen the range, which the abduction-first shoulder had only
+inward of the hang.
 
     python -m rl.lessons      # writes urdf/lessons/*.xml and smoke-checks each one
 """
 import hashlib
 import os
-import math, re
 import numpy as np
 from controller import SCENE, URDF
 
@@ -27,29 +24,6 @@ OUT = os.path.join(URDF, 'lessons')
 WALL_FRONT = '    <geom name="wall_front" type="box" material="wall" pos="0.550 0.30 1.00" size="0.05 1.35 2.00"/>'
 WALL_BACK = '    <geom name="wall_back"  type="box" material="wall" pos="-0.300 0.30 1.00" size="0.05 1.35 2.00"/>'
 WALL_SIDE = '    <geom name="wall_side"  type="box" material="wall" pos="0.125 -1.050 1.00" size="0.425 0.05 2.00"/>'
-
-# widening the shoulders: rewrite the abduction limit wherever it appears, on
-# the joint and on its position actuator. By attribute rather than by whole
-# line - scene.xml gained armature and frictionloss when the robot became a
-# real one, and a literal line match would have silently stopped widening.
-WIDE_LO = -1.04720
-
-
-def widen(xml):
-    def one(side, lo, hi):
-        j = 'name="shoulder_%s_abduction"' % side
-        a = 'joint="shoulder_%s_abduction"' % side
-        out = xml
-        for key, attr in ((j, "range"), (a, "ctrlrange")):
-            pat = re.compile(r'(%s[^/>]*?%s=")[^"]*(")' % (re.escape(key), attr))
-            out, n = pat.subn(r'\g<1>%.5f %.5f\g<2>' % (lo, hi), out)
-            assert n >= 1, "scene.xml changed: no %s on %s" % (attr, key)
-        return out
-    xml = one("L", WIDE_LO, math.pi)
-    xml = one("R", -math.pi, -WIDE_LO)
-    return xml
-
-
 
 # --- the grip pad: what makes the hook hold along its rung --------------------
 # The hook is a slot round a smooth cylinder, so along the rung axis nothing holds
@@ -310,7 +284,7 @@ LESSONS = {
             goal_rungs=['rung_back'],
             goals=[[-0.19, 0.157, 1.00], [-0.19, -0.157, 1.00]]),
     9: dict(name='far_reach', timeout=120.0,
-            title='a row 0.75 m up, beyond the 0.671 m static reach',
+            title='a row 0.75 m up, beyond the 0.56 m static reach',
             walls=[WALL_FRONT],
             rungs=[_ry('start', -0.90, 1.50, 1.00),
                    _ry('top', -0.90, 1.50, 1.75)],
@@ -339,7 +313,7 @@ def _stamp(lesson):
     h = hashlib.sha256()
     h.update(open(SCENE, 'rb').read())
     h.update(repr(sorted(LESSONS[lesson].items(), key=lambda kv: kv[0])).encode())
-    h.update(repr((WIDE_LO, PAD)).encode())
+    h.update(repr(PAD).encode())
     return h.hexdigest()[:16]
 
 
@@ -373,7 +347,6 @@ def write(lesson):
                       f'<mujoco model="{lesson_tag(lesson)}_{spec["name"]}">\n'
                       f'  <!-- stamp {_stamp(lesson)} -->')
     xml = xml.replace('meshdir="meshes/"', 'meshdir="../meshes/"')
-    xml = widen(xml)
     for old, new in PAD:
         assert old in xml, f"scene.xml changed; patch target not found: {old}"
         xml = xml.replace(old, new)
@@ -454,7 +427,7 @@ def main():
         for _ in range(int(1.0 / e.model.opt.timestep)):
             e.step(ctrl)
         drift = np.linalg.norm(e.data.xpos[e.base] - p0) * 1000.0
-        # 0.6 mm on the 21.9 kg robot. It read 3.8 while the hooks hung back to
+        # 0.7 mm on the 21.5 kg robot. It read 3.8 while the hooks hung back to
         # front and the arms were jammed into the torso -- a drift budget is a
         # symptom detector, so it stays where it was rather than following one.
         assert drift < 5.0, f"lesson {k}: keyframe drifted {drift:.1f} mm"
@@ -467,8 +440,6 @@ def main():
             d = min(np.linalg.norm(gp - (c + np.clip((gp - c) @ a, -h, h) * a))
                     for c, a, h in segs.values())
             assert d < 0.02, f"lesson {k}: goal {gp} is {d*1000:.0f} mm off every rung"
-        lo = e.model.jnt_range[e.model.joint('shoulder_L_abduction').id][0]
-        assert lo < -1.0, "shoulders were not widened"
         pad = [g for g in range(e.model.ngeom)
                if e.model.geom_bodyid[g] in (e.hook['L'], e.hook['R'])
                and e.model.geom_priority[g] == 1]

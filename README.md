@@ -1,6 +1,6 @@
 # Bimanual wall-climbing robot
 
-A 21.9 kg two-armed robot that hangs from wall rungs by hooked hands, in MuJoCo.
+A 21.5 kg two-armed robot that hangs from wall rungs by hooked hands, in MuJoCo.
 Two subsystems share one model:
 
 | | |
@@ -30,13 +30,18 @@ hand-written: `cad/tools/gen_urdf.py` and `urdf/_gen_scene.py` write it.
 
 The robot this replaced — aluminium cylinders with masses derived from
 geometry, 11.13 kg, fine in simulation and impossible to build — is in git
-history. The cost of being real is **21.89 kg instead of 11.13**, more than
-half of it in the actuators. The two things that did not change are the ones
-everything else rests on: the kinematics, and the vertical reach that set the
-rung spacing — 0.676 m, against v1's 0.671.
+history. The cost of being real is **21.52 kg instead of 11.13**, more than
+half of it in the actuators. The arm's root, the arm and the hands are where v1
+had them. The shoulder is pitch-first, like ten of the twelve humanoids it was
+checked against: the first real-actuator version stacked it abduction-first and
+folded the raised arm up past its own abduction motor. Its vertical reach is
+0.56 m, lower than v1's 0.671 and that version's 0.676 - both came from poses
+no real shoulder makes - and still above the 0.45 m the rung rows are spaced.
 
 **The classical controller has not been retuned for it.** Its state estimate,
-hold map, Jacobians and single steps pass on the new robot (phases 0-4 and 7);
+hold map, Jacobians and the right hand's single step pass on the new robot
+(phases 0, 1, 2, 4 and 7). The left hand's step lands true relative to the
+anchored hand, but that bare hook slides ~150 mm along the rung meanwhile (3);
 the traverse, the climb down and the route (5, 6, 8) fall, because their gains
 were swept at 11 kg. The RL task needed no retuning, only its two baselines read
 off the model instead of typed in. Every policy trained before this is void: it

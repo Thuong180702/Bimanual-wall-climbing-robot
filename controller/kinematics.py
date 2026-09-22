@@ -18,9 +18,9 @@ import numpy as np, mujoco
 
 # 17 drives, in actuator order (== qpos[7:] order)
 JOINTS = ['waist_yaw',
-          'shoulder_L_abduction', 'shoulder_L_flexion', 'shoulder_L_rotation', 'elbow_L',
+          'shoulder_L_flexion', 'shoulder_L_abduction', 'shoulder_L_rotation', 'elbow_L',
           'forearm_L_roll', 'wrist_L_flexion', 'wrist_L_deviation', 'finger_L',
-          'shoulder_R_abduction', 'shoulder_R_flexion', 'shoulder_R_rotation', 'elbow_R',
+          'shoulder_R_flexion', 'shoulder_R_abduction', 'shoulder_R_rotation', 'elbow_R',
           'forearm_R_roll', 'wrist_R_flexion', 'wrist_R_deviation', 'finger_R']
 IDX = {n: i for i, n in enumerate(JOINTS)}
 WAIST = [0]
@@ -149,6 +149,11 @@ class Estimator:
     def __init__(self, model):
         self.m = model
         self.d = mujoco.MjData(model)
+        # everything here indexes qpos[7:] by JOINTS; a model whose tree order
+        # differs (the shoulder going pitch-first swapped two) scrambles it silently
+        order = [model.joint(i).name for i in range(model.njnt)
+                 if model.jnt_type[i] == mujoco.mjtJoint.mjJNT_HINGE]
+        assert order == JOINTS, "model joint order %s is not JOINTS" % order
         self.hook = {s: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'hook_' + s)
                      for s in 'LR'}
         self.torso = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'torso_upper')

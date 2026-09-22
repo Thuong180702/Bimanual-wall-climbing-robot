@@ -1,9 +1,10 @@
 """Does a link hit an actuator it is NOT bolted to?
 
 check_one asks about a link and its own two actuators; check_pair asks about
-two neighbours. Neither sees the case that set MOUNT_AT: the shoulder ROTATION
-actuator, two joints down, sweeping into the ABDUCTION actuator when the arm
-comes up. This sweeps that pair over both joints between them.
+two neighbours. Neither sees an actuator on the TORSO being swept by the upper
+arm and its rotation actuator, two joints down - the case that set MOUNT_AT on
+the old abduction-first shoulder. This sweeps that pair over both joints
+between them.
 """
 import math, os, sys
 
@@ -25,26 +26,29 @@ def solid_at(joint, origin):
 
 
 def main():
-    abd, flx, rot = J["shoulder_L_abduction"], J["shoulder_L_flexion"], \
-        J["shoulder_L_rotation"]
-    fixed = solid_at(abd, abd[4])                    # in torso_upper's frame
-    arm = fuse(BUILDERS["upper_arm_L"]()) + solid_at(rot, rot[4])
+    """the actuator on the torso vs the upper arm and the rotation actuator,
+    swept over both shoulder joints between them, in chain order"""
+    j1 = [j for j in JOINTS if j[1] == "torso_upper" and "_L_" in j[0]][0]
+    j2 = [j for j in JOINTS if j[1] == j1[2]][0]
+    rot = [j for j in JOINTS if j[1] == j2[2]][0]
+    fixed = solid_at(j1, j1[4])                      # in torso_upper's frame
+    arm = fuse(BUILDERS[j2[2]]()) + solid_at(rot, rot[4])
     worst, at = 0.0, None
     for i in range(N):
-        qa = math.degrees(abd[5][0] + (abd[5][1] - abd[5][0]) * i / (N - 1.0))
-        La = bd.Location(abd[4], tuple(k * qa for k in abd[3]))
+        q1 = math.degrees(j1[5][0] + (j1[5][1] - j1[5][0]) * i / (N - 1.0))
+        L1 = bd.Location(j1[4], tuple(k * q1 for k in j1[3]))
         for k in range(N):
-            qf = math.degrees(flx[5][0] + (flx[5][1] - flx[5][0]) * k / (N - 1.0))
-            Lf = bd.Location(flx[4], tuple(v * qf for v in flx[3]))
-            v = (fixed & (La * Lf * arm)).volume * 1e9
+            q2 = math.degrees(j2[5][0] + (j2[5][1] - j2[5][0]) * k / (N - 1.0))
+            L2 = bd.Location(j2[4], tuple(v * q2 for v in j2[3]))
+            v = (fixed & (L1 * L2 * arm)).volume * 1e9
             if v > worst:
-                worst, at = v, (qa, qf)
+                worst, at = v, (q1, q2)
     ok = worst <= 1.0
-    print("  %-4s abduction actuator vs upper arm + rotation actuator"
-          % ("PASS" if ok else "FAIL"))
+    print("  %-4s %s actuator vs %s + rotation actuator"
+          % ("PASS" if ok else "FAIL", j1[0], j2[2]))
     print("       worst %9.1f mm3%s" % (
         worst, "" if at is None else
-        " at abduction %.0f, flexion %.0f deg" % at))
+        " at %s %.0f, %s %.0f deg" % (j1[0], at[0], j2[0], at[1])))
     return not ok
 
 

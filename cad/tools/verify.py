@@ -137,7 +137,7 @@ def main():
             offenders.append("%s: %s" % (pose, ln.split()[0]))
     check("every legal operating pose is clear of self-intersection",
           not offenders, ", ".join(offenders) or
-          "8 poses; only v1's own out-of-envelope reach pose collides")
+          "%d named poses" % sum(ln.startswith("--- ") for ln in lines))
 
     print("\n%s  %d check(s) failed" % ("ALL CHECKS PASS" if not FAIL else "FAILURES:",
                                         len(FAIL)))

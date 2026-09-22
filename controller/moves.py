@@ -24,7 +24,8 @@ from .holds import SLIDE, GRASP_STEP
 SEAT_DEPTH = 0.008        # m short of the rung axis the hook aims, so the rung
                           # seats rather than perching at the mouth of the throat
 PULL_UP = 0.20            # m of body lift commanded before a hand comes off the wall
-ABDUCT = np.radians(90)   # shoulders closing across the body; the chain stops it near 20-30
+ABDUCT = np.radians(90)   # the shoulders flaring OUTWARD: + on the left since the shoulder
+                          # went pitch-first. On the abduction-first one it tucked (_flare)
 ELBOW_STEPS = np.radians([-15.0, -30.0, -45.0, -60.0])   # bent in steps, each one checked
 TORSO_DROP = 0.50         # m the torso ends up below the hands after that lift. Measured
                           # from 0.73 m at rest; it is the posture a reach captures from,
@@ -611,6 +612,14 @@ def _pull_up(ctx, anchor, mover=None):
 def _flare(ctx, anchor, mover=None):
     """Pull up by opening the shoulders outward and bending the elbows. For a climb.
 
+    Since the shoulder went pitch-first (cad/src/lib/spec.py) this does what its name
+    says: from the hang, positive abduction on the left IS the outward flare, and
+    scene.xml has all of it. Everything measured below was measured on the
+    abduction-first shoulder, where the same command tucked the arms ACROSS the body -
+    that tuck no longer exists (inward now stops at -12 deg), and the numbers are its,
+    not this function's. Re-measure before trusting any of them; phases 6 and 8 fall
+    with either sign.
+
     This is the climber's motion, and it needed a model change to exist. The abduction
     joints ran 0..180 deg on the left and -180..0 on the right with the hang sitting at 0,
     the edge -- so the only travel they had swung the arms *across* each other. Measured
@@ -642,7 +651,7 @@ def _flare(ctx, anchor, mover=None):
         return
     both = WAIST + ARM['L'] + ARM['R']
     t = ctx.ctrl.copy()
-    t[ARM['L'][0]], t[ARM['R'][0]] = ABDUCT, -ABDUCT     # positive on the left is inward
+    t[ARM['L'][0]], t[ARM['R'][0]] = ABDUCT, -ABDUCT     # positive on the left is outward
     yield from _follow(ctx, both, [t], rate=SERVO_RATE, measured=False)
     yield from _settle(ctx)
 
