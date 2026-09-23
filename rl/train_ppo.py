@@ -918,6 +918,14 @@ def main():
                     reset_num_timesteps=not a.resume)
     except KeyboardInterrupt:
         print("\ninterrupted -- saving")
+    except (BrokenPipeError, EOFError, ConnectionResetError) as e:
+        # A worker process ended. On Windows that is what Ctrl-C usually looks
+        # like from here -- the console signal reaches the workers first and the
+        # parent reads a closed pipe instead of KeyboardInterrupt -- and it is
+        # also what an out-of-memory kill looks like. Either way the run is over
+        # and the last checkpoint window must not go with it: win17 lost the
+        # 55k steps since its last one this way, at 41.7M.
+        print(f"\na worker process ended ({type(e).__name__}) -- saving")
     ckpt.save()
     for k in pool:
         n, r = cur.rate(k)

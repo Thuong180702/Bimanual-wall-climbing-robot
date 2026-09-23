@@ -170,6 +170,13 @@ degraded:
 `--steps` means *additional* steps, not a new total. Periodic checkpoints every
 `--ckpt-every` steps (default 100 000) on top of the Ctrl-C one.
 
+`Ctrl-C` on Windows usually reaches the worker processes first, so the trainer
+sees a closed pipe rather than a `KeyboardInterrupt`; that path saves too (as
+does a worker killed by the OS), because `win17` lost the 55k steps since its
+last checkpoint to it at 41.7M. For a run that should survive that on its own,
+loop the resume: `for /L %i in (1,1,50) do python -m rl.train_ppo --name win17
+--resume --lessons=... --steps 30000000`.
+
 **A run looks after itself.** It does not need someone watching for a drift and
 resuming from best by hand: if the best checkpoint's lessons fall a whole lesson
 below that best for a million steps, the run goes back to `best_*` by itself and
