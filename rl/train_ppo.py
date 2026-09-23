@@ -25,6 +25,20 @@ the drift that took apart every long run since win11. The target starts at
 KL_START and the guard halves it on each rollback, so a run takes the biggest
 step that has not yet cost it a lesson rather than a small one forever.
 
+## Where the simulator runs
+
+    python -m rl.train_ppo --name g1                    # picks by itself (rl.hardware)
+    python -m rl.train_ppo --name g1 --backend mjx      # force either one
+    python -m rl.train_ppo --name g1 --backend cpu
+
+With an NVIDIA GPU that JAX can use and `mujoco-mjx` installed, the physics and the
+whole task run on the GPU (`rl.mjx_task`, MJX_ENVS envs in one batch) and the
+policy trains there too. Otherwise it is the CPU path below, unchanged: C MuJoCo in
+one process per core. The curriculum, the guard, the checkpoints and the policy are
+the same code on both, and a checkpoint from either resumes on the other; the GPU
+simulates `rl.mjx_scene`'s simplified robot, which `python -m rl.mjx_check`
+compares against this one.
+
 ## Why one policy and not nine
 
 Three shapes were on the table. This is the middle one, and the reasons are
@@ -57,12 +71,12 @@ try:
     import gymnasium as gym
     from stable_baselines3 import PPO
     from stable_baselines3.common.callbacks import BaseCallback
-    from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
+    from stable_baselines3.common.vec_env import SubprocVecEnv, VecEnv, VecMonitor, VecNormalize
 except ImportError as e:
     raise SystemExit(f"missing training deps ({e}); pip install gymnasium stable-baselines3")
 
 from controller import SCENE
-from . import default_envs
+from . import default_envs, hardware
 from .climb_task import ClimbTask
 from .lessons import LESSONS, lesson_key
 
@@ -117,6 +131,15 @@ LR_MAX = 3e-4        # the ETH legged-robot work -- never above 3e-4, the rate t
                      # 0.6-1.1. Halving it is what the guard's LR_DECAY used to do on
                      # its own: with an adaptive rate, a halved rate is pulled back up
                      # within a few updates, and only the target sticks.
+MJX_ENVS = 4096      # envs in one GPU batch, 33 KB of state each (130 MB). ponytail:
+                     # the usual MJX size, unmeasured on a GPU here -- `python -m
+                     # rl.mjx_task --envs N` on the card decides
+# PPO on the GPU batch. The CPU numbers below (256 steps x 12 envs, 512 per
+# minibatch, 10 epochs) would make one update a million samples; this is the
+# massively-parallel shape instead (rsl_rl's: short rollouts, 4 minibatches, 5
+# epochs), with every other setting -- gamma, lambda, entropy, the adaptive rate and
+# its KL target -- the CPU path's.
+MJX_PPO = dict(n_steps=32, minibatches=4, n_epochs=5)
 
 
 class Tee:
@@ -193,6 +216,70 @@ class MultiLesson(gym.Env):
 
     def step(self, a):
         return self.cur.step(a)
+
+
+class MjxVecEnv(VecEnv):
+    """The GPU path's envs: one `rl.mjx_task.Batch`, dressed as the VecEnv the CPU
+    path's SubprocVecEnv of MultiLessons is -- the same infos on an episode's end
+    (reason, lesson, steps, dist, the terminal observation, TimeLimit.truncated) and
+    the same `set_active`, so everything downstream is unchanged."""
+
+    def __init__(self, lessons, n, seed=0):
+        from . import mjx_task          # JAX only on this path
+        self.mt = mjx_task
+        self.batch = mjx_task.Batch(n, seed)
+        dim = np.asarray(self.batch.reset()).shape[1]
+        super().__init__(n, gym.spaces.Box(-np.inf, np.inf, (dim,), np.float32),
+                         gym.spaces.Box(-1.0, 1.0, (17,), np.float32))
+        self.set_active(lessons)
+
+    def set_active(self, active, weights=None):
+        self.batch.set_probs(dict(zip(active, weights if weights is not None
+                                      else [1.0] * len(active))))
+        return list(active)
+
+    def reset(self):
+        return np.asarray(self.batch.reset())
+
+    def step_async(self, actions):
+        self._actions = actions
+
+    def step_wait(self):
+        obs, end, r, term, trunc, info = self.batch.step(self._actions)
+        obs, term, trunc = np.asarray(obs), np.asarray(term), np.asarray(trunc)
+        done = term | trunc
+        infos = [{} for _ in range(self.num_envs)]
+        if done.any():
+            end = np.asarray(end)
+            why, lesson, steps, dist = (np.asarray(info[k]) for k in ('reason', 'lesson', 'steps', 'dist'))
+            for i in np.nonzero(done)[0]:
+                infos[i] = {'reason': self.mt.REASONS[why[i]], 'lesson': self.mt.LESSON_KEYS[lesson[i]],
+                            'steps': int(steps[i]), 'dist': float(dist[i]),
+                            'terminal_observation': end[i],
+                            'TimeLimit.truncated': bool(trunc[i] and not term[i])}
+        return obs, np.asarray(r, np.float32), done, infos
+
+    def env_method(self, method_name, *args, indices=None, **kwargs):
+        out = getattr(self, method_name)(*args, **kwargs)
+        return [out for _ in self._get_indices(indices)]
+
+    def get_attr(self, attr_name, indices=None):
+        return [getattr(self, attr_name, None) for _ in self._get_indices(indices)]
+
+    def set_attr(self, attr_name, value, indices=None):
+        setattr(self, attr_name, value)
+
+    def env_is_wrapped(self, wrapper_class, indices=None):
+        return [False for _ in self._get_indices(indices)]
+
+    def seed(self, seed=None):
+        if seed is not None:
+            import jax
+            self.batch.key = jax.random.PRNGKey(seed)
+        return [seed] * self.num_envs
+
+    def close(self):
+        pass
 
 
 class Curriculum(BaseCallback):
@@ -382,9 +469,9 @@ class Checkpoint(BaseCallback):
     """
 
     def __init__(self, run_dir, curriculum, every=100_000, best=None, best_active=None,
-                 rollbacks=0, kl_target=None):
+                 rollbacks=0, kl_target=None, backend='cpu'):
         super().__init__()
-        self.dir, self.cur, self.every = run_dir, curriculum, every
+        self.dir, self.cur, self.every, self.backend = run_dir, curriculum, every, backend
         self.last, self.best = 0, best if best is not None else -1.0
         self.kl_target = kl_target or KL_START
         # the lessons the best checkpoint was scored over; `held` scores them now
@@ -471,7 +558,7 @@ class Checkpoint(BaseCallback):
         self.model.save(p + 'model')
         self.model.get_vec_normalize_env().save(p + 'vecnorm.pkl')
         state = {'timesteps': int(self.model.num_timesteps), 'robot': robot_stamp(),
-                 'best': self.best, 'best_active': self.best_active,
+                 'backend': self.backend, 'best': self.best, 'best_active': self.best_active,
                  'lr': self.model.lr_schedule(1.0), 'kl_target': self.kl_target,
                  'rollbacks': self.rollbacks,
                  **self.cur.state()}
@@ -764,12 +851,16 @@ def main():
     # Each env holds every lesson scene, ~330 MB without visual meshes (see
     # MultiLesson), and each worker process imports torch as well: budget RAM at
     # --envs x 0.6 GB.
-    ap.add_argument('--envs', type=int, default=default_envs())
-    ap.add_argument('--device', default='cpu',
+    ap.add_argument('--envs', type=int, default=None,
+                    help=f'default: the usable cores on the cpu backend, {MJX_ENVS} on mjx')
+    ap.add_argument('--device', default=None,
                     choices=['cpu', 'cuda', 'mps', 'auto'],
-                    help='policy device. cpu is the default because an MlpPolicy is '
-                         'usually too small to beat it; auto = cuda if present. '
-                         'Run `python -m rl.bench` on the machine before deciding')
+                    help='policy device. Default cpu on the cpu backend -- an MlpPolicy '
+                         'is usually too small to beat it, run `python -m rl.bench` '
+                         'before deciding -- and cuda on mjx, whose batches are not')
+    ap.add_argument('--backend', default='auto', choices=['auto', 'cpu', 'mjx'],
+                    help='where the simulator runs; auto = mjx when rl.hardware finds '
+                         'a GPU JAX can use, else cpu')
     ap.add_argument('--resume', action='store_true')
     ap.add_argument('--from-best', dest='from_best', action='store_true',
                     help='with --resume, continue from best_model.zip instead of the '
@@ -810,7 +901,8 @@ def main():
     ap.add_argument('--net', default=None,
                     help='hidden sizes for both nets, e.g. 256,256 (default 64,64); '
                          'fresh runs only')
-    ap.add_argument('--ckpt-every', type=int, default=100_000)
+    ap.add_argument('--ckpt-every', type=int, default=None,
+                    help='steps between checkpoints; default 100k on cpu, 1M on mjx')
     ap.add_argument('--self-check', action='store_true',
                     help='test the curriculum logic, train nothing')
     a = ap.parse_args()
@@ -829,6 +921,19 @@ def main():
     log = open(os.path.join(run, 'train.log'), 'a', encoding='utf-8', buffering=1)
     sys.stdout, sys.stderr = Tee(sys.stdout, log), Tee(sys.stderr, log)
     print(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')}  {' '.join(sys.argv)}")
+    print(hardware.report())
+    backend = hardware.backend()[0] if a.backend == 'auto' else a.backend
+    mjx = backend == 'mjx'
+    envs = a.envs or (MJX_ENVS if mjx else default_envs())
+    if a.device is None:
+        import torch
+        a.device = 'cuda' if mjx and torch.cuda.is_available() else 'cpu'
+    # the update's shape follows the batch; everything else is the run's own
+    shape = (dict(n_steps=MJX_PPO['n_steps'], n_epochs=MJX_PPO['n_epochs'],
+                  batch_size=envs * MJX_PPO['n_steps'] // MJX_PPO['minibatches'])
+             if mjx else dict(n_steps=256, n_epochs=10, batch_size=512))
+    print(f"[backend] {backend}: {envs} envs, policy on {a.device}, "
+          f"{envs * shape['n_steps']:,} steps per update")
     state = {}
     ck = 'best_' if a.from_best else ''
     if a.resume:
@@ -837,13 +942,21 @@ def main():
             raise SystemExit(f"nothing to resume: {f} does not exist")
         state = json.load(open(f))
         check_robot(state, a.new_robot)
+        was = state.get('backend', 'cpu')
+        if was != backend:
+            print(f"[backend] this run trained on {was} until now and carries on on "
+                  f"{backend}: the same task, and mjx's simplified robot is checked "
+                  f"against the full one by rl.mjx_check")
 
-    base = VecMonitor(SubprocVecEnv(
-        [(lambda i=i: MultiLesson(pool, seed=i)) for i in range(a.envs)]))
+    base = VecMonitor(MjxVecEnv(pool, envs) if mjx else SubprocVecEnv(
+        [(lambda i=i: MultiLesson(pool, seed=i)) for i in range(envs)]))
     if a.resume:
         venv = VecNormalize.load(os.path.join(run, ck + 'vecnorm.pkl'), base)
         venv.training = True
-        model = PPO.load(os.path.join(run, ck + 'model'), env=venv, device=a.device)
+        # custom_objects: a checkpoint carries its backend's rollout shape, and 256
+        # steps x 4096 envs would be a million-sample update
+        model = PPO.load(os.path.join(run, ck + 'model'), env=venv, device=a.device,
+                         custom_objects=shape)
         if a.ent_coef is not None:
             model.ent_coef = a.ent_coef
         if a.lr is not None:
@@ -866,10 +979,11 @@ def main():
         # (mac22); a linear learning-rate decay plus a VecNormalize variance floor
         # left -1 at 0 % for 1.1M (mac24) -- against 0.14M here. The swings are
         # real and unsolved; `best_` keeps the peak. Do not change these three
-        # without a 1M run that reaches lesson 1: that is the cheap canary.
+        # (the cpu `shape` above, the net) without a 1M run that reaches lesson 1:
+        # that is the cheap canary.
         net = [int(x) for x in a.net.split(',')] if a.net else None
-        model = PPO('MlpPolicy', venv, device=a.device, verbose=1,
-                    n_steps=256, batch_size=512, gamma=0.995, gae_lambda=0.95,
+        model = PPO('MlpPolicy', venv, device=a.device, verbose=1, **shape,
+                    gamma=0.995, gae_lambda=0.95,
                     learning_rate=3e-4 if a.lr is None else a.lr,
                     target_kl=a.target_kl,
                     policy_kwargs=None if net is None else dict(net_arch=net),
@@ -899,9 +1013,9 @@ def main():
     bf = os.path.join(run, 'best_state.json')
     if best is not None and not best_active and os.path.exists(bf):
         best_active = json.load(open(bf))['active']
-    ckpt = Checkpoint(run, cur, a.ckpt_every, best,
+    ckpt = Checkpoint(run, cur, a.ckpt_every or (1_000_000 if mjx else 100_000), best,
                       best_active if best is not None else None,
-                      state.get('rollbacks', 0), state.get('kl_target'))
+                      state.get('rollbacks', 0), state.get('kl_target'), backend)
 
     # Ctrl-C during a rollout would otherwise lose everything since the last
     # checkpoint; SIGTERM likewise, so a killed run is resumable too.

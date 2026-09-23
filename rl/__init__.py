@@ -3,7 +3,9 @@
     python -m rl.lessons      # generate + smoke-check the lesson scenes
     python -m rl.climb_task   # smoke-check the RL task API on every lesson
     python -m rl.bench        # where training time goes on this machine
-    python -m rl.train_ppo    # train (needs gymnasium + stable-baselines3)
+    python -m rl.train_ppo    # train (needs gymnasium + stable-baselines3); on the GPU
+                              # by itself when JAX can use one (rl.hardware)
+    python -m rl.mjx_check    # the GPU path (rl.mjx_task) against the CPU one
 """
 import os
 

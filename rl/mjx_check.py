@@ -1,0 +1,400 @@
+"""Cross-checks: is the GPU path the same task, on the same robot, as the CPU path?
+
+    python -m rl.mjx_check              # task, physics, policy -- each in its own process
+    python -m rl.mjx_check task         # the JAX task against ClimbTask, state by state
+    python -m rl.mjx_check physics      # MJX against C MuJoCo, same simplified robot
+    python -m rl.mjx_check policy       # a trained policy: full robot, simplified in C, MJX
+    python -m rl.mjx_check contacts     # which parts touch under a trained policy
+    python -m rl.mjx_check policy --run out/g1   # another run's best checkpoint
+
+Three things could each make a GPU-trained policy worthless on the CPU path, and
+each gets its own check, because a failure in one is invisible to the others:
+
+  task      the port. ClimbTask runs on C MuJoCo; at every control step its state
+            is handed to the JAX task (`mjx.put_data`) with the same substep
+            books and the same SLAM noise, and every observation, reward, book and
+            termination must come out equal. float64, so equal means ~1e-9.
+  physics   the engine. The same simplified robot in C MuJoCo and in MJX (float32,
+            a few solver iterations): the secured hang, a still hang, a side pull
+            along the rung, one control step from C's own state along the policy's
+            gait (what caught MJX's capsule-box test inventing contacts), and how
+            many contacts are really live at once against the MAX_CONTACTS the
+            solver is given.
+  policy    the robot. A trained policy (default: win17's best, learnt on the full
+            robot) replayed on the full robot, the simplified one in C, and MJX.
+            The model simplification and the engine are only good enough if it
+            climbs as well on all three. After a GPU run, `--run out/<name>` asks
+            the question the other way round: does what MJX taught hold on the
+            full robot?
+"""
+import os, pickle, subprocess, sys, time
+import numpy as np
+
+RUN = os.path.join('out', 'win17')      # the policy the checks replay; --run to change
+
+
+def _policy(run=None, best=True):
+    """(predict(obs batch) -> actions, pool) for a checkpoint, or None if absent"""
+    run = run or RUN
+    ck = 'best_' if best else ''
+    p = os.path.join(run, ck + 'model.zip')
+    if not os.path.exists(p):
+        return None
+    import json
+    from stable_baselines3 import PPO
+    model = PPO.load(p, device='cpu')
+    with open(os.path.join(run, ck + 'vecnorm.pkl'), 'rb') as f:
+        vn = pickle.load(f)
+    pool = json.load(open(os.path.join(run, ck + 'state.json')))['active']
+    from .lessons import lesson_key
+    return (lambda o: model.predict(vn.normalize_obs(np.asarray(o, np.float32)),
+                                    deterministic=True)[0]), [lesson_key(k) for k in pool]
+
+
+# --- task ---------------------------------------------------------------------------
+def check_task(lessons=(1, 1.5, 7), steps=260):
+    import jax
+    jax.config.update('jax_enable_x64', True)
+    import jax.numpy as jp
+    from mujoco import mjx
+    from .climb_task import ClimbTask
+    from .mjx_scene import c_path
+    from .mjx_task import MjxClimb, LESSON_KEYS, REASONS
+
+    task = MjxClimb()
+    start = jax.jit(task.start)
+    update = jax.jit(task.update)
+    pol = _policy()
+    pol = pol and pol[0]
+    worst = {}
+
+    def close(name, a, b, tol=1e-6):
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        err = float(np.max(np.abs(a - b))) if a.size else 0.0
+        worst[name] = max(worst.get(name, 0.0), err)
+        return err <= tol * max(1.0, float(np.max(np.abs(b))) if b.size else 1.0)
+
+    for k in lessons:
+        li = LESSON_KEYS.index(k)
+        t = ClimbTask(k, visual=False, xml=c_path(k))
+        t.env._slam_rng = np.random.default_rng(0)
+        rec = {}
+        slam, sense = t.env.slam, t._sense
+
+        def slam_rec():
+            p, R = slam()
+            rec['noise'] = p - t.env.data.xpos[t.env.base]
+            return p, R
+
+        def sense_rec():
+            rec['w'] = t._w_sum.copy()
+            return sense()
+
+        t.env.slam, t._sense = slam_rec, sense_rec
+        mc = t.env.model
+        T = None
+
+        def begin():
+            nonlocal T
+            o, _ = t.reset()
+            T = task.tables._replace(tau_idle=task.tables.tau_idle.at[li].set(t.tau_idle))
+            st, oj = start(T, li, mjx.put_data(mc, t.env.data), jp.asarray(t.ctrl),
+                           jp.asarray(t.env._no_grip_t), jax.random.PRNGKey(0),
+                           jp.asarray(rec['noise']))
+            assert close('obs', oj, o, 1e-5), f"lesson {k}: reset observation differs"
+            return st, o
+
+        st, o = begin()
+        rng = np.random.default_rng(1)
+        n, ends, grabs, banks, switches = 0, [], 0, 0, 0
+        for i in range(steps):
+            # hang, swing with the fingers shut, let the left hand go and re-close it,
+            # then the policy if there is one, else thrash -- every book gets written
+            if pol and i >= 120:
+                a = pol(o[None])[0]
+            elif i < 20:
+                a = np.zeros(17)
+            elif i < 70:
+                a = rng.uniform(-0.5, 0.5, 17)
+                a[[8, 16]] = -1.0
+            elif i < 120:
+                a = rng.uniform(-0.3, 0.3, 17)
+                a[8] = 1.0 if i < 95 else -1.0
+                a[16] = -1.0
+            else:
+                a = rng.uniform(-1, 1, 17)
+            anchor = t.anchor
+            o, r, te, tr, info = t.step(a)
+            st = st._replace(d=mjx.put_data(mc, t.env.data), ctrl=jp.asarray(t.ctrl),
+                             no_grip_t=jp.asarray(t.env._no_grip_t))
+            st, oj, rj, tej, trj, ij = update(T, st, jp.asarray(a), t._flight,
+                                             jp.asarray(rec['w']), jp.asarray(rec['noise']))
+            n += 1
+            why = REASONS[int(ij['reason'])]
+            ok = [close('obs', oj, o, 1e-5), close('reward', rj, r),
+                  close('hold points', np.asarray(st.hold_pt), [t.hold[s][1] for s in 'LR']),
+                  close('attitude', np.asarray(st.Rf), t._Rf),
+                  close('bank', ij['bank'], info['bank']), close('slide', ij['slide'], info['slide']),
+                  close('credit', ij['credit'], info['credit']),
+                  close('pending', ij['banked'], info['banked']),
+                  close('touch', ij['touch'], info['touch'], 1e-5),
+                  close('effort', ij['effort'], info['effort'], 1e-5),
+                  close('fight', ij['fight'], info['fight'], 1e-5),
+                  int(st.anchor) == 'LR'.index(t.anchor),
+                  list(np.asarray(ij['grabs'])) == list(info['grabs']),
+                  float(ij['flight']) == info['flight'], float(ij['parked']) == info['parked'],
+                  float(ij['stale']) == info['stale'], bool(tej) == te, bool(trj) == tr,
+                  why == info.get('reason', '')]
+            assert all(ok), (f"lesson {k} step {i}: JAX and ClimbTask disagree "
+                             f"{[j for j, x in enumerate(ok) if not x]}; worst so far {worst}")
+            grabs += int(info['first'])
+            banks += info['bank'] != 0.0
+            switches += t.anchor != anchor
+            if te or tr:
+                ends.append(info['reason'])
+                st, o = begin()
+        print(f"task: lesson {k}: {n} steps equal (ends {ends or 'none'}, {banks} banked "
+              f"steps, {switches} anchor switches, first grabs {grabs})")
+    print("task: largest differences " + ", ".join(f"{a} {b:.1e}" for a, b in worst.items()))
+    print("task: OK -- the JAX task is ClimbTask's, observation by observation")
+
+
+# --- physics ------------------------------------------------------------------------
+def check_physics(lessons=(1, 2, 7, 8)):
+    import jax, jax.numpy as jp
+    from mujoco import mjx
+    from . import climb_task as ct
+    from .climb_task import ClimbTask
+    from .mjx_scene import c_path, MAX_CONTACTS, ITERATIONS
+    from .mjx_task import MjxClimb, LESSON_KEYS
+
+    task = MjxClimb()
+    step = jax.jit(task.step)
+    reset = jax.jit(task.reset)
+    z = jp.zeros(17)
+    for k in lessons:
+        li = LESSON_KEYS.index(k)
+        t = ClimbTask(k, visual=False, xml=c_path(k))
+        t.reset()
+        st, _ = reset(task.tables, li, jax.random.PRNGKey(0))
+        dq = float(np.abs(np.asarray(st.d.qpos) - t.env.data.qpos).max())
+        c0 = [t._contact(s)[0] for s in 'LR']
+        j0 = np.asarray(task._contact(st.d)[0])
+        base_c, base_j = t.env.data.xpos[t.env.base].copy(), np.asarray(st.d.xpos[task.base])
+        for _ in range(50):                                   # 2 s of hanging still
+            t.step(np.zeros(17))
+            st, *_ = step(task.tables, st, z)
+        cs = [t._contact(s)[0] for s in 'LR']
+        js = np.asarray(task._contact(st.d)[0])
+        drift_c = np.linalg.norm(t.env.data.xpos[t.env.base] - base_c) * 1e3
+        drift_j = np.linalg.norm(np.asarray(st.d.xpos[task.base]) - base_j) * 1e3
+        print(f"physics: lesson {k:>4}: secured hang {dq*1e3:.2f} mrad/mm from C; hook loads "
+              f"C {c0[0]:.0f}/{c0[1]:.0f} MJX {j0[0]:.0f}/{j0[1]:.0f} N, after 2 s C "
+              f"{cs[0]:.0f}/{cs[1]:.0f} MJX {js[0]:.0f}/{js[1]:.0f} N; base drift C "
+              f"{drift_c:.1f} MJX {drift_j:.1f} mm")
+        assert dq < 0.02, f"lesson {k}: MJX's secured hang is {dq:.3f} from C's"
+        assert (js > 50).all() and np.allclose(js, cs, rtol=0.25), \
+            f"lesson {k}: MJX hangs on {js} N against C's {cs}"
+        assert drift_j < 5.0, f"lesson {k}: MJX drifted {drift_j:.1f} mm hanging still"
+
+    # the side pull climb_task's slide test uses: 0.23 x body weight along the rung
+    k, li = 1, LESSON_KEYS.index(1)
+    t = ClimbTask(k, visual=False, xml=c_path(k))
+    t.reset()
+    st, _ = reset(task.tables, li, jax.random.PRNGKey(0))
+    ax = np.array([0.0, 1.0, 0.0])
+    f = np.zeros(6)
+    f[:3] = 0.23 * t.weight * ax
+    p0c = t._throat_true('R').copy()
+    p0j = np.asarray(task._throat_true(st.d))[1]
+    t.env.data.xfrc_applied[t.env.base] = f
+    st = st._replace(d=st.d.replace(xfrc_applied=st.d.xfrc_applied.at[task.base].set(jp.asarray(f))))
+    for _ in range(150):
+        t.step(np.zeros(17))
+        st, *_ = step(task.tables, st, z)
+    mc_ = (t._throat_true('R') - p0c) @ ax * 1e3
+    mj_ = (np.asarray(task._throat_true(st.d))[1] - p0j) @ ax * 1e3
+    print(f"physics: {0.23 * t.weight:.0f} N along the rung for 6 s slides the loaded hook "
+          f"C {mc_:+.1f} mm, MJX {mj_:+.1f} mm")
+    assert abs(mj_) < 60 and abs(mj_ - mc_) < max(10.0, 0.5 * abs(mc_)), \
+        "the hook slides differently in MJX: the pad or the solver is off"
+
+    # one control step from the SAME state: C's state under the policy's gait, handed
+    # to MJX, both stepped 20 substeps, compared. This is what showed MJX's
+    # capsule-box test inventing 50-75 mm contacts (rl.mjx_scene): p90 joint error
+    # 0.16, contact forces 5000 N off. A trajectory comparison cannot see it -- two
+    # simulations of a swinging robot part within a second whatever is wrong.
+    pol = _policy()
+    k, li = 1, LESSON_KEYS.index(1)
+    t = ClimbTask(k, visual=False, xml=c_path(k))
+    m_env = task._env_model(task.tables, li)
+
+    @jax.jit
+    def one(d, ctrl):
+        def sub(d, _):
+            return mjx.step(m_env, d.replace(ctrl=ctrl)), None
+        return jax.lax.scan(sub, d, None, length=20)[0]
+
+    rng = np.random.default_rng(0)
+    o, _ = t.reset()
+    eq, ef = [], []
+    for i in range(300):
+        a = pol[0](o[None])[0] if pol else rng.uniform(-0.5, 0.5, 17)
+        d0 = mjx.put_data(t.env.model, t.env.data)
+        ctrl = np.clip(t.ctrl + ct.ACT_SCALE * np.clip(a, -1, 1), task.lo, task.hi)
+        o, r, te, tr, _ = t.step(a)
+        dj = one(d0, jp.asarray(ctrl, jp.float32))
+        eq.append(np.abs(np.asarray(dj.qpos) - t.env.data.qpos).max())
+        ef.append(np.abs(np.asarray(task._contact(dj)[0]) - [t._contact(s)[0] for s in 'LR']).max())
+        if te or tr:
+            o, _ = t.reset()
+    eq, ef = np.array(eq), np.array(ef)
+    print(f"physics: one control step from C's own state, {len(eq)} steps of "
+          f"{'the policy' if pol else 'random actions'}: joints off by p50 {np.median(eq):.1e} "
+          f"p90 {np.percentile(eq, 90):.1e} max {eq.max():.1e}; hook loads p50 "
+          f"{np.median(ef):.2f} p90 {np.percentile(ef, 90):.2f} max {ef.max():.0f} N")
+    assert np.percentile(eq, 90) < 1e-3 and np.percentile(ef, 90) < 5.0, \
+        "MJX and C part in one control step from the same state: a collision or the solver differs"
+
+    # contacts live at once, measured in C where nothing caps them
+    seen = []
+    for k in (lessons if pol is None else pol[1]):
+        t = ClimbTask(k, visual=False, xml=c_path(k))
+        o, _ = t.reset()
+        rng = np.random.default_rng(0)
+        for i in range(400):
+            a = pol[0](o[None])[0] if pol else rng.uniform(-1, 1, 17)
+            o, r, te, tr, _ = t.step(a)
+            seen.append(t.env.data.ncon)
+            if te or tr:
+                o, _ = t.reset()
+    seen = np.array(seen)
+    print(f"physics: live contacts over {len(seen)} steps ({'policy' if pol else 'random'}): "
+          f"p50 {np.percentile(seen, 50):.0f}, p99 {np.percentile(seen, 99):.0f}, max "
+          f"{seen.max()} -- MJX's solver takes the deepest {MAX_CONTACTS}, "
+          f"{ITERATIONS} Newton iterations")
+    assert seen.max() <= MAX_CONTACTS, "more contacts at once than MJX keeps: raise MAX_CONTACTS"
+    print("physics: OK")
+
+
+# --- policy -------------------------------------------------------------------------
+def check_policy(lessons=None, episodes=8, run=None):
+    from .climb_task import ClimbTask
+    from .mjx_scene import c_path
+    from .lessons import LESSONS
+    from .mjx_task import Batch, REASONS
+
+    run = run or RUN
+    pol = _policy(run)
+    if pol is None:
+        print(f"policy: no checkpoint at {run} -- skipped")
+        return
+    predict, pool = pol
+    lessons = lessons or pool
+    batch = Batch(episodes)
+
+    def c_run(k, xml):
+        t = ClimbTask(k, visual=False, xml=xml)
+        ok, lens = 0, []
+        for _ in range(episodes):
+            o, _ = t.reset()
+            while True:
+                o, r, te, tr, info = t.step(predict(o[None])[0])
+                if te or tr:
+                    ok += info.get('reason') == 'success'
+                    lens.append(info['steps'])
+                    break
+        return ok, np.mean(lens)
+
+    def j_run(k):
+        batch.set_probs({k: 1.0})
+        o = np.asarray(batch.reset())
+        ok, lens, done = 0, [], np.zeros(episodes, bool)
+        while not done.all():
+            o, _, _, term, trunc, info = batch.step(predict(o))
+            o = np.asarray(o)
+            end = np.asarray(term | trunc) & ~done
+            for i in np.nonzero(end)[0]:
+                ok += REASONS[int(info['reason'][i])] == 'success'
+                lens.append(int(info['steps'][i]))
+            done |= end
+        return ok, np.mean(lens)
+
+    print(f"policy: {run} (best), {episodes} deterministic episodes a lesson\n"
+          f"  {'lesson':>28} {'full robot, C':>16} {'simplified, C':>16} {'simplified, MJX':>16}")
+    tot = np.zeros(3)
+    for k in lessons:
+        t0 = time.perf_counter()
+        res = [c_run(k, None), c_run(k, c_path(k)), j_run(k)]
+        tot += [r[0] for r in res]
+        print(f"  {k:>6} {LESSONS[k]['name']:>21} "
+              + " ".join(f"{ok:>3}/{episodes} {ln:6.0f} st" for ok, ln in res)
+              + f"   ({time.perf_counter() - t0:.0f} s)", flush=True)
+    n = episodes * len(lessons)
+    print(f"  {'total':>28} " + " ".join(f"{int(x):>4}/{n:<11}" for x in tot))
+    # both ways round: a policy learnt on MJX that only climbs there is the failure a
+    # GPU run could hide, and one learnt on the full robot that fails on MJX is the
+    # simplification changing the task
+    assert tot.max() - tot.min() <= 0.2 * tot.max() + 2, (
+        "the same policy climbs clearly better on one of the three: the simplified "
+        "robot or MJX is not the full robot's task")
+    print("policy: OK -- the full robot, the simplified one in C and MJX climb alike")
+
+
+# --- contacts -----------------------------------------------------------------------
+def check_contacts(lessons=None, episodes=2):
+    import collections, mujoco
+    from .climb_task import ClimbTask
+    from .mjx_scene import c_path
+    pol = _policy()
+    if pol is None:
+        print("contacts: no checkpoint -- skipped")
+        return
+    predict, pool = pol
+    for label, xml in (('full robot', None), ('simplified', c_path)):
+        stats, n, f6 = collections.defaultdict(lambda: [0, 0.0]), 0, np.zeros(6)
+        for k in lessons or pool:
+            t = ClimbTask(k, visual=False, xml=xml(k) if xml else None)
+            m, d = t.env.model, t.env.data
+            name = lambda g: (m.geom(g).name.split('_')[0] if m.geom_bodyid[g] == 0
+                              else m.body(m.geom_bodyid[g]).name)
+            for _ in range(episodes):
+                o, _ = t.reset()
+                while True:
+                    o, r, te, tr, info = t.step(predict(o[None])[0])
+                    seen = {}
+                    for i in range(d.ncon):
+                        c = d.contact[i]
+                        mujoco.mj_contactForce(m, d, i, f6)
+                        key = tuple(sorted((name(c.geom1), name(c.geom2))))
+                        seen[key] = seen.get(key, 0.0) + abs(f6[0])
+                    for key, f in seen.items():
+                        stats[key][0] += 1
+                        stats[key][1] += f
+                    n += 1
+                    if te or tr:
+                        break
+        print(f"contacts, {label} ({n} control steps):")
+        for key, (c, f) in sorted(stats.items(), key=lambda kv: -kv[1][0]):
+            if c / n >= 0.001:
+                print(f"  {key[0]:>16} - {key[1]:<16} {c / n * 100:6.2f} % of steps, mean {f / c:6.1f} N")
+
+
+CHECKS = dict(task=check_task, physics=check_physics, policy=check_policy,
+              contacts=check_contacts)
+
+if __name__ == '__main__':
+    which = sys.argv[1:]
+    if '--run' in which:
+        i = which.index('--run')
+        RUN = which[i + 1]
+        del which[i:i + 2]
+    which = which or ['task', 'physics', 'policy']
+    if len(which) == 1:
+        CHECKS[which[0]]()
+    else:
+        # one process each: the task check runs JAX in float64, the others as training does
+        for w in which:
+            r = subprocess.run([sys.executable, '-m', 'rl.mjx_check', w, '--run', RUN])
+            if r.returncode:
+                raise SystemExit(f"rl.mjx_check {w} FAILED")

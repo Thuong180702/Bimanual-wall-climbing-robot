@@ -278,10 +278,12 @@ GRIP_STOP = np.radians(-37.0)   # finger setpoint limit: 3 deg inside GRIP_BAND'
 
 
 class ClimbTask:
-    def __init__(self, lesson=1, visual=True):
+    def __init__(self, lesson=1, visual=True, xml=None):
+        """`xml`: another scene of the same lesson -- `rl.mjx_scene.c_path`'s simplified
+        robot, for the cross-checks against MJX"""
         self.lesson = lesson
         self.spec = LESSONS[lesson]
-        self.env = ClimbingEnv(xml=xml_path(lesson), success_z=1e9,
+        self.env = ClimbingEnv(xml=xml or xml_path(lesson), success_z=1e9,
                                timeout_s=self.spec['timeout'],
                                held_fn=self._attached, visual=visual)
         self.est = Estimator(self.env.model)
@@ -320,11 +322,12 @@ class ClimbTask:
         self._rung_name = {g: mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
                            for g in self.env.rungs}
         self._hook_geoms = {}
+        paired = set(m.pair_geom1) | set(m.pair_geom2)   # rl.mjx_scene collides by <pair>
         for sd in 'LR':
             ids = {mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, nm % sd)
                    for nm in ('hook_%s', 'finger_%s')}
-            self._hook_geoms[sd] = {g for g in range(m.ngeom)
-                                    if m.geom_bodyid[g] in ids and m.geom_contype[g]}
+            self._hook_geoms[sd] = {g for g in range(m.ngeom) if m.geom_bodyid[g] in ids
+                                    and (m.geom_contype[g] or g in paired)}
         self._flight = 0
         sid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, 'imu_gyro')
         self._gyro_adr = m.sensor_adr[sid]

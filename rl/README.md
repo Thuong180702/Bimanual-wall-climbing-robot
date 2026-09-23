@@ -17,16 +17,24 @@ python -m rl.train_ppo --name climber --resume
 
 # from a second terminal, while it trains:
 python -m rl.status --name climber --watch
+
+python -m rl.hardware       # GPU or CPU: which simulator training will use here
+python -m rl.mjx_check      # the GPU path against this one (see "The GPU path")
 ```
 
 `torch`, `gymnasium` and `stable-baselines3` are installed in this repo's `.venv`
-(torch 2.13 / SB3 2.9 on Python 3.14 — no separate venv needed).
+(torch 2.13 / SB3 2.9 on Python 3.14 — no separate venv needed), and so are `jax`
+and `mujoco-mjx` for the GPU path.
 
 | file | what it is |
 |---|---|
 | `lessons.py` | the 18 lesson specs + scene generator (writes `urdf/lessons/`) |
 | `climb_task.py` | Gymnasium-shaped env: obs / action / reward / termination |
-| `train_ppo.py` | thin SB3 PPO entry point |
+| `train_ppo.py` | thin SB3 PPO entry point, on either simulator |
+| `hardware.py` | is there an NVIDIA GPU JAX can use — picks the simulator |
+| `mjx_scene.py` | the robot MJX can simulate, and the lessons as data (writes `urdf/lessons/mjx_*`) |
+| `mjx_task.py` | `climb_task` ported to JAX, thousands of envs in one GPU batch |
+| `mjx_check.py` | the GPU path cross-checked against this one: task, physics, a trained policy |
 | `bench.py` | simulator throughput vs env count, and cpu vs mps for the policy |
 | `render.py` | PNGs of the lesson scenes → `out/scenes/` (ffmpeg writes them, no image dep) |
 | `status.py` | what a run is doing, read from its checkpoint — safe to run while it trains |
@@ -278,11 +286,10 @@ during each policy update, but 32 buys 21 % over 12 for 2.7× the processes and 
 
 This flips if the policy grows a vision encoder — then measure again.
 
-**A real GPU path exists but is a rewrite**: MJX (`mujoco-mjx` 3.12) runs the
-simulator itself on the GPU with thousands of envs batched, which is where a GPU
-would actually pay off. It needs the env rewritten in JAX — on CUDA that is a well
--trodden path, on Apple silicon it needs `jax-metal` (0.1.1, still experimental).
-Not worth it until a policy trains at all.
+**The real GPU path is the simulator, not the policy**: MJX runs the physics and
+the whole task on the GPU with thousands of envs in one batch. It exists now —
+see "The GPU path" below — and needs an NVIDIA card; on Apple silicon it would
+need `jax-metal` (still experimental), so this Mac trains on the CPU path.
 
 ## Moving to a Linux + CUDA machine
 
@@ -291,10 +298,15 @@ Nothing here is Mac-specific. The RL path imports no OpenGL, so it runs headless
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt        # see the file for CUDA index-url options
+pip install -U "jax[cuda12]"           # the GPU path; skip it for a CPU-only box
+python -m rl.hardware                  # says which path training will take, and why
 python -m rl.lessons                   # regenerate the scenes on this machine
-python -m rl.bench                     # measure BEFORE picking a device
-python -m rl.train_ppo --name climber --device cuda
+python -m rl.mjx_check                 # the GPU path against the CPU one, ~15 min
+python -m rl.mjx_task --envs 4096      # GPU control-steps/s, before a long run
+python -m rl.train_ppo --name climber  # on the GPU by itself if the card is usable
 ```
+
+The rest of this section is the CPU path (`--backend cpu`, or no usable GPU).
 
 - `--envs` defaults to the machine's usable cores via `sched_getaffinity`, which
   respects `taskset` and cgroup limits — so it does not oversubscribe a shared box
@@ -311,6 +323,99 @@ python -m rl.train_ppo --name climber --device cuda
   lower launch overhead than Metal so it may well come out ahead — this has not been
   measured on CUDA hardware. `python -m rl.bench` prints the CUDA device name and
   its updates/s next to the CPU's; decide from that, not from this paragraph.
+
+## The GPU path: MJX
+
+```bash
+python -m rl.hardware                   # what this machine will train on, and why
+python -m rl.train_ppo --name g1        # GPU if JAX can use one, else the CPU path
+python -m rl.train_ppo --name g1 --backend mjx    # force it (runs, slowly, on a CPU)
+python -m rl.mjx_task --envs 4096       # control-steps/s of one GPU batch
+python -m rl.mjx_check                  # task, physics, policy: GPU path vs this one
+python -m rl.mjx_check policy --run out/g1        # a GPU run's policy on all three robots
+```
+
+`rl.hardware` answers one question — is there an NVIDIA GPU that JAX can put an
+array on, with `mujoco-mjx` installed — and `rl.train_ppo` takes the GPU path when
+the answer is yes. On a machine with no NVIDIA card JAX is not even imported and
+nothing about the CPU path changes. On Windows CUDA JAX only exists under WSL2, and
+`rl.hardware` says so by name rather than "no GPU".
+
+**What moves to the GPU is the simulator and the task, not the learner.** Every
+earlier measurement here says the simulator is the bottleneck, so that is what
+runs on the card: `rl.mjx_task`, 4096 envs (`MJX_ENVS`) in one jitted batch. The
+learner stays SB3's PPO with the curriculum, the guard, the adaptive rate, the std
+bounds and the checkpoints of the CPU path — the same code, fed by `MjxVecEnv`
+instead of a `SubprocVecEnv`, with the policy on the card too because 4096-row
+batches are what a GPU is for. Only the update's shape follows the batch
+(`MJX_PPO`: 32 steps a rollout, 4 minibatches, 5 epochs — rsl_rl's). A checkpoint
+records its backend and resumes on the other one.
+
+**The task is a port, checked line for line.** `rl.mjx_task` computes the same
+145 observations (the anchor-rooted estimator with its gyro filter, SLAM-tracked
+anchor and reach odometry; the nearest rungs), the same reward books, the same
+success test and the same terminations as `climb_task`, reading every constant
+from it. What had to change is structural:
+
+- **Lessons are data.** A batch compiles one model, so the eighteen scene files
+  become one robot with six rung slots and one extra wall slot, and each env
+  writes its own lesson's rungs and wall into its copy of those geoms. The
+  curriculum is unchanged in what it decides; it now moves the lesson draw weights
+  of a jitted step, and a finished env resets inside that same step onto a lesson
+  drawn from them — no recompile when a lesson unlocks.
+- **A reset is a copy.** `ClimbTask.reset` hangs the robot from the keyframe and
+  closes the fingers for 0.4 s, deterministically, so that runs once per lesson at
+  start-up and a reset copies it (the SLAM noise is still drawn fresh).
+
+**The robot is simplified, and the simplification was measured before it was
+drawn** (`rl.mjx_scene`'s docstring has the table: which parts touch, how often,
+how hard, under win17's policy). MJX's JAX backend has no box-cylinder collision,
+runs mesh hulls slowly and has no `jointlimitfrc` sensor. So what can touch a wall
+or the other hand is boxes round the CAD parts, walls are planes, rungs are
+capsules — and what can touch a **rung** is capsules and balls only. That last rule
+is a measured bug, not taste: MJX's capsule-box test separates only on the box's
+face normals, so a 2.4 m rung passing a 12 mm hook plate at a slight angle
+"penetrates" it. On win17's lesson-1 gait it invented 50–75 mm contacts where C
+MuJoCo saw none, 5000–12000 N where C had 200, and took the policy's lesson 1 from
+7/8 in C to 0/8 in MJX. Capsule-capsule is exact, so each hook plate became two
+rods square to the rung and the finger motor a capsule along its axis; the step
+also got 40 % cheaper. Collisions are an explicit list of 183 pairs with the
+friction and softness MuJoCo would have mixed, so the grip pad still defines the
+hook's contact. Masses, joints, actuators and the keyframe are untouched.
+
+The solver is ~80 % of an MJX step, so its two caps are measured, not guessed:
+**6 Newton iterations** (C uses 6–7 on every step to its 1e-8 tolerance; at 4 the
+one-step contact error is 4x larger, at 2 it is tens of newtons) and **16
+contacts** handed to the solver (C never had more than 9 at once, on any lesson).
+
+**Cross-checked three ways** (`python -m rl.mjx_check`, ~15 min on this Mac):
+
+| check | what it compares | result |
+|---|---|---|
+| `task` | ClimbTask on C MuJoCo, its state handed to the JAX task every step, float64 | 780 steps on lessons 1, 1.5, 7 incl. win17's gait: observations equal to 2e-15, reward to 4e-10, every book and termination the same |
+| `physics` | the same simplified robot in C and in MJX, float32 | hang loads 138/138 N both; a 49 N pull slides the hook 19.2 mm in both; one control step from C's own state: joints 4e-6 rad off (p50), hook loads 0.08 N |
+| `policy` | win17's best, deterministic, on the full robot, the simplified one in C, and MJX | 70 / 68 / 67 of 88 episodes (below). With box-shaped hooks MJX had scored 46, lesson 1 0/8 |
+
+| lesson (8 episodes each) | full robot, C | simplified, C | simplified, MJX |
+|---|---|---|---|
+| −2 one left-hand step | 5 | 7 | 7 |
+| −1, 0, 1, 1.1 | 31 of 32 | 31 | 32 |
+| 1.2, 1.35 one gap | 14 | 13 | 12 |
+| 1.5 two gaps | 7 | 4 | 6 |
+| 1.7, 1.85 wide gap | 13 | 12 | 10 |
+| 2 two wide gaps | 0 | 1 | 0 |
+
+Eight episodes a lesson is a coarse ruler — the full robot's own column moves by
+±2 between runs, from the SLAM noise alone — so what it shows is the same lessons
+easy and the same ones hard on all three, not a ranking.
+
+**Unmeasured, because there is no NVIDIA card here:** GPU throughput. On this
+Mac's CPU the same batch runs ~870 control-steps/s at 256 envs, against ~6400 for
+C MuJoCo in 12 processes (`rl.bench`) — which is why a machine without a GPU stays
+on the CPU path. Run `python -m rl.mjx_task --envs 4096` on the card before a long
+run, and treat the first GPU run as the canary the CPU path has always had: lesson
+−2 passed by ~1M steps, or start again. `MJX_ENVS`, `MJX_PPO` (`rl.train_ppo`) and
+`ITERATIONS` / `MAX_CONTACTS` (`rl.mjx_scene`) are the knobs, in that order.
 
 ## The reward, and the three exploits it had to be rebuilt around
 

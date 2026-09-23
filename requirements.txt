@@ -8,14 +8,22 @@ numpy>=2.0
 #                     128 MB total and no nvidia-* packages are pulled in.
 #   macOS          -> same; the wheel carries MPS support.
 #   Linux + NVIDIA -> the default wheel pulls the CUDA runtime as separate nvidia-*
-#                     packages (multiple GB). That is only worth it for `--device
-#                     cuda`, which measurably has nothing to do here -- the
-#                     simulator is the bottleneck. For a CPU-sized install:
+#                     packages (multiple GB). Keep it: on the GPU path below the
+#                     policy trains on the card too (4096 envs a batch). Only for a
+#                     box that will train on the CPU path anyway:
 #                       pip install torch --index-url https://download.pytorch.org/whl/cpu
 #                     first, then `pip install -r requirements.txt`.
 torch>=2.6
 gymnasium>=1.0
 stable-baselines3>=2.4
+
+# The GPU path (rl.mjx_task): MJX, MuJoCo's physics in JAX. rl.train_ppo uses it by
+# itself when JAX can see an NVIDIA GPU (python -m rl.hardware says what it sees).
+# The plain `jax` wheel is CPU-only, which is enough for rl.mjx_check on any machine.
+#   Linux + NVIDIA -> pip install -U "jax[cuda12]"   (then torch's default CUDA wheel)
+#   Windows        -> CUDA JAX exists only under WSL2; natively it stays on the CPU path
+mujoco-mjx==3.12.0
+jax>=0.7
 
 # Not required: `ffmpeg` (a program, not a package) is used only by rl.render and
 # controller.record to write PNGs and mp4s. Training and evaluation never call it.
