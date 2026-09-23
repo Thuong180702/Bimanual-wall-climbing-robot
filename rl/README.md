@@ -174,8 +174,10 @@ degraded:
 resuming from best by hand: if the best checkpoint's lessons fall a whole lesson
 below that best for a million steps, the run goes back to `best_*` by itself and
 carries on at half the learning rate (the `win17` section has the rule and why).
-`python -m rl.status` shows the current rate and how many times it has gone back,
-and everything the run prints is appended to `out/<name>/train.log`.
+The update size is kept in range as well: each action dimension's std is held in
+[0.05, 1] and the learning rate moves to keep every update's KL near 0.02
+(`win17 2`). `python -m rl.status` shows the current rate and how many times it
+has gone back, and everything the run prints is appended to `out/<name>/train.log`.
 
 ## The grip pad — why the lesson scenes differ from `scene.xml`
 
@@ -810,6 +812,60 @@ unweight a 160 N anchor. That is an optimization problem, so the next run turns
 The model edits still hold at 15.77M: elbows outward on **100 %** of loaded rising
 steps on both arms, shoulder rotation −43° / +64°, and no wrist within reach of
 either stop under load (0.3–5.6 % of steps past ±25° while loaded).
+
+## `win17 2`: the log names the drift — the action noise collapses and every update grows with it
+
+Resumed from the 9.87M peak with the guard and the 70 % gate, to 20.0M, with the
+console kept for the first time. The rules did their jobs. At 3e-4 the pool
+drifted again inside 1.7M steps (lesson 1.5 62 % → 15–45 %); the guard went back
+to the peak at 12.77M and halved the rate. From there nothing was forgotten:
+1.85 reached 70 %, lesson 2 unlocked at 15.4M, and the best rose to 9.38 over all
+eleven lessons at 19.44M. Deterministic, 20 each:
+
+| lesson | 9.87M | 14.8M (old run) | 20.0M |
+|---|---|---|---|
+| −2 … 1.35 (seven lessons) | 134/140 | 130/140 | 138/140 |
+| 1.5 | 13/20 | 11/20 | 12/20 |
+| 1.7 | 20/20 | 15/20 | 16/20 |
+| 1.85 | 12/20 | 12/20 | **17/20** |
+| 2 | 0/20 | 2/20 | 1/20 (12–25 % sampled) |
+
+The log is what the checkpoints could not show. **Every update was rewriting the
+policy**: approx_kl 0.2–1.1 per update and a clip fraction of 0.5–0.8, against
+the 0.01–0.03 and 0.1–0.2 of a usual PPO run. KL climbed in step with the policy
+entropy, which fell in a straight line and never levelled: +2.5 → −3.5 nats before
+the rollback, +2.4 → −7.7 after it. The halved rate slowed the slide and did not
+stop it. The cause was in the checkpoint: six action dimensions had collapsed to a
+std of 0.02, the right shoulder's three joints, its forearm roll and finger, and
+the left wrist deviation. They were 0.09 at the peak. A Gaussian's KL goes as
+1/std², so a tiny change to those means reads as an enormous update. Most samples
+then hit the clip, and the gradient comes from the few that do not. By 20M the run
+sat at KL ~1, the regime that had come just before the drift at 12M.
+
+The fix is the one robot-learning PPO uses (`train_ppo.py`, both in the
+self-check):
+
+- **a floor on the action std**, 0.05 (`STD_MIN`), on top of the existing 1.0
+  ceiling. That is 0.003 rad of setpoint noise per step. Sampled with the floor,
+  the 19.44M policy did as well as without it: 1.5 14/20 against 13/20, 1.85
+  14/20 against 10/20.
+- **a KL-adaptive learning rate** (`AdaptiveLR`, rsl_rl's rule): ÷1.5 when an
+  update's KL passed 2 × 0.02, ×1.5 under half, never above 3e-4.
+
+Resumed from 19.44M on this Mac, the floor lifted the entropy from −7.5 to −3.3
+and it stayed flat. The rate walked down 1.5e-4 → 2e-5 in six updates, and KL sat
+at 0.03 with a clip fraction of 0.25 and explained variance 0.93. Over the next
+0.5M steps nothing slipped: lesson 1 92 %, 1.5 60 %, 1.85 68 %, lesson 2 25 %,
+with no guard trip. On a fresh run KL is 0.017 at 3e-4, so the rate never moves
+there, and the early curriculum trains exactly as before. The rate it settles at
+is ~7× smaller than 1.5e-4, so lesson 2 will come slowly. If it has not moved in
+~10M steps, `KL_TARGET` is the knob.
+
+**Next:** resume from the best and leave it:
+
+```
+python -m rl.train_ppo --name win17 --resume --from-best --lessons=-2,-1,0,1,1.1,1.2,1.35,1.5,1.7,1.85,2 --envs 12 --steps 30000000
+```
 
 ## `win17`: the pitch-first robot climbs, stalls at lesson 2, and runs now look after themselves
 

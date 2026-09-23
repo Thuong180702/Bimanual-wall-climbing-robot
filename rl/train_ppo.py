@@ -16,6 +16,13 @@ that best for a million steps (`GUARD_DROP`, `GUARD_STEPS`) -- it goes back to t
 best checkpoint by itself and carries on at half the learning rate. Everything it
 prints is also appended to out/<name>/train.log.
 
+The update size looks after itself too. Each action dimension's std is held in
+[STD_MIN, 1], and the learning rate moves to keep every update's KL near KL_TARGET
+(AdaptiveLR). Without them the std of the dimensions a policy uses precisely
+shrank without limit, and since a Gaussian's KL goes as 1/std^2 every update grew
+with it until the policy was being rewritten wholesale each time -- the drift that
+took apart every long run since win11.
+
 ## Why one policy and not nine
 
 Three shapes were on the table. This is the middle one, and the reasons are
@@ -82,6 +89,23 @@ GUARD_STEPS = 1_000_000  # score -- a whole lesson's worth -- for this long send
 LR_DECAY = 0.5       # each rollback halves the learning rate: the untested suspect
 LR_MIN = 1e-5        # for the drift is the update size, 3e-4 for millions of steps
                      # with no KL limit, so the retry takes smaller steps
+STD_MIN = 0.05       # floor on every action dimension's std. win17's logs: with no
+                     # floor, six dims (the right shoulder's three, its forearm roll,
+                     # its finger, the left wrist deviation) shrank from ~0.09 to
+                     # 0.02, entropy fell in a straight line (+2.4 -> -7.7 nats over
+                     # 7M steps) and never levelled, and since a Gaussian's KL goes as
+                     # 1/std^2 every update grew with it: approx_kl 0.12 -> 1.1, clip
+                     # fraction 0.5 -> 0.8. At 0.05 the noise on a setpoint is
+                     # 0.003 rad a step; the best policy passed the same with it
+                     # (lesson 1.5 14/20 floored against 13/20 as trained).
+KL_TARGET = 0.02     # the learning rate is moved to keep each update's approx_kl
+LR_MAX = 3e-4        # within [KL_TARGET/2, 2 KL_TARGET] -- rsl_rl's rule, the PPO
+                     # behind the ETH legged-robot work -- never above 3e-4, the rate
+                     # the early curriculum was validated at. win17 ran at KL 0.2-1.1,
+                     # 10-50x a usual PPO update, and drifted at 3e-4 exactly as every
+                     # long run before it had; the guard's halving slowed that and did
+                     # not stop it. A sharper policy needs smaller steps; this gives
+                     # it them as it sharpens, instead of after it has drifted.
 
 
 class Tee:
@@ -303,8 +327,30 @@ class BoundExploration(BaseCallback):
     """
 
     def _on_rollout_start(self):
-        self.model.policy.log_std.data.clamp_(max=0.0)
+        # ...and never below STD_MIN, the other way the noise ends a run (see there)
+        self.model.policy.log_std.data.clamp_(min=float(np.log(STD_MIN)), max=0.0)
         return True
+
+    def _on_step(self):
+        return True
+
+
+class AdaptiveLR(BaseCallback):
+    """Move the learning rate so each update changes the policy by about KL_TARGET:
+    x1/1.5 when the last update's approx_kl passed twice the target, x1.5 when it was
+    under half, within [LR_MIN, LR_MAX]. The update that just finished has recorded
+    its KL by the time the next rollout starts, and nothing has written it out yet."""
+
+    def _on_rollout_start(self):
+        kl = self.model.logger.name_to_value.get('train/approx_kl')
+        if kl is None:
+            return
+        lr = self.model.lr_schedule(1.0)
+        new = (max(lr / 1.5, LR_MIN) if kl > 2 * KL_TARGET else
+               min(lr * 1.5, LR_MAX) if kl < KL_TARGET / 2 else lr)
+        if new != lr:
+            self.model.learning_rate = new
+            self.model._setup_lr_schedule()
 
     def _on_step(self):
         return True
@@ -625,9 +671,39 @@ def guard_check(FakeModel, FakeEnv, feed):
             sys.stdout.close()
             sys.stdout = out
         assert abs(m.lr_schedule(1.0) - LR_MIN) < 1e-15, "the learning rate went below LR_MIN"
+
+        # the noise floor and ceiling, on the same model
+        be = BoundExploration()
+        be.init_callback(m)
+        with torch.no_grad():
+            m.policy.log_std.copy_(torch.tensor([-6.0, 1.0]))
+        be._on_rollout_start()
+        sd = m.policy.log_std.exp().detach().numpy()
+        assert abs(sd[0] - STD_MIN) < 1e-6 and abs(sd[1] - 1.0) < 1e-6, \
+            f"std not held in [STD_MIN, 1]: {sd}"
+        # the learning rate follows the KL of the update before, within its bounds
+        from stable_baselines3.common.logger import configure
+        m.set_logger(configure(None, []))
+        al = AdaptiveLR()
+        al.init_callback(m)
+
+        def after(kl, lr):
+            m.learning_rate = lr
+            m._setup_lr_schedule()
+            m.logger.name_to_value['train/approx_kl'] = kl
+            al._on_rollout_start()
+            return m.lr_schedule(1.0)
+        assert abs(after(10 * KL_TARGET, 1.5e-4) - 1e-4) < 1e-12, "a big update did not slow it"
+        assert abs(after(0.1 * KL_TARGET, 1e-4) - 1.5e-4) < 1e-12, "a small one did not speed it"
+        assert after(KL_TARGET, 1e-4) == 1e-4, "an update on target moved the rate"
+        assert after(0.1 * KL_TARGET, LR_MAX) == LR_MAX, "the rate went past LR_MAX"
+        assert after(10 * KL_TARGET, LR_MIN) == LR_MIN, "the rate went under LR_MIN"
     print(f"guard test: the best's lessons a whole lesson down for {GUARD_STEPS:,} steps "
           f"sends the run back to its best checkpoint (policy, statistics, curriculum) at "
           f"x{LR_DECAY:g} the learning rate, never below {LR_MIN:g}. OK")
+    print(f"update-size test: action std held in [{STD_MIN:g}, 1]; the learning rate "
+          f"follows each update's KL toward {KL_TARGET:g}, within [{LR_MIN:g}, "
+          f"{LR_MAX:g}]. OK")
 
 
 def main():
@@ -779,7 +855,8 @@ def main():
     try:
         # no progress_bar: it pulls in tqdm + rich, and verbose=1 already prints the
         # rollout table with elapsed time and total_timesteps every update
-        model.learn(total_timesteps=a.steps, callback=[cur, ckpt, BoundExploration()],
+        model.learn(total_timesteps=a.steps,
+                    callback=[cur, ckpt, AdaptiveLR(), BoundExploration()],
                     reset_num_timesteps=not a.resume)
     except KeyboardInterrupt:
         print("\ninterrupted -- saving")
