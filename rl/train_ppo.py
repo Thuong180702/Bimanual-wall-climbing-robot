@@ -17,11 +17,13 @@ best checkpoint by itself and carries on at half the learning rate. Everything i
 prints is also appended to out/<name>/train.log.
 
 The update size looks after itself too. Each action dimension's std is held in
-[STD_MIN, 1], and the learning rate moves to keep every update's KL near KL_TARGET
-(AdaptiveLR). Without them the std of the dimensions a policy uses precisely
-shrank without limit, and since a Gaussian's KL goes as 1/std^2 every update grew
-with it until the policy was being rewritten wholesale each time -- the drift that
-took apart every long run since win11.
+[STD_MIN, 1], and the learning rate moves to keep every update's KL near the run's
+KL target (AdaptiveLR). Without them the std of the dimensions a policy uses
+precisely shrank without limit, and since a Gaussian's KL goes as 1/std^2 every
+update grew with it until the policy was being rewritten wholesale each time --
+the drift that took apart every long run since win11. The target starts at
+KL_START and the guard halves it on each rollback, so a run takes the biggest
+step that has not yet cost it a lesson rather than a small one forever.
 
 ## Why one policy and not nine
 
@@ -98,14 +100,23 @@ STD_MIN = 0.05       # floor on every action dimension's std. win17's logs: with
                      # fraction 0.5 -> 0.8. At 0.05 the noise on a setpoint is
                      # 0.003 rad a step; the best policy passed the same with it
                      # (lesson 1.5 14/20 floored against 13/20 as trained).
-KL_TARGET = 0.02     # the learning rate is moved to keep each update's approx_kl
-LR_MAX = 3e-4        # within [KL_TARGET/2, 2 KL_TARGET] -- rsl_rl's rule, the PPO
-                     # behind the ETH legged-robot work -- never above 3e-4, the rate
-                     # the early curriculum was validated at. win17 ran at KL 0.2-1.1,
-                     # 10-50x a usual PPO update, and drifted at 3e-4 exactly as every
-                     # long run before it had; the guard's halving slowed that and did
-                     # not stop it. A sharper policy needs smaller steps; this gives
-                     # it them as it sharpens, instead of after it has drifted.
+KL_START = 0.1       # the learning rate is moved to keep each update's approx_kl
+KL_MIN = 0.01        # within [target/2, 2 target] -- rsl_rl's rule, the PPO behind
+LR_MAX = 3e-4        # the ETH legged-robot work -- never above 3e-4, the rate the
+                     # early curriculum was validated at. win17 ran at KL 0.2-1.1,
+                     # 10-50x a usual PPO update, and drifted exactly as every long
+                     # run before it had.
+                     #
+                     # The TARGET is the run's own, and the guard owns it: each
+                     # rollback halves it, down to KL_MIN. Small updates are what
+                     # stops the forgetting and they are also what makes a lesson
+                     # take millions of steps, so the run should take the largest
+                     # step that has not cost it anything yet rather than a small one
+                     # forever. It starts at 0.1 because win17 spent 2.5M steps at
+                     # KL 0.12-0.3 improving and forgetting nothing, and drifted at
+                     # 0.6-1.1. Halving it is what the guard's LR_DECAY used to do on
+                     # its own: with an adaptive rate, a halved rate is pulled back up
+                     # within a few updates, and only the target sticks.
 
 
 class Tee:
@@ -336,18 +347,24 @@ class BoundExploration(BaseCallback):
 
 
 class AdaptiveLR(BaseCallback):
-    """Move the learning rate so each update changes the policy by about KL_TARGET:
-    x1/1.5 when the last update's approx_kl passed twice the target, x1.5 when it was
-    under half, within [LR_MIN, LR_MAX]. The update that just finished has recorded
-    its KL by the time the next rollout starts, and nothing has written it out yet."""
+    """Move the learning rate so each update changes the policy by about the run's
+    KL target: x1/1.5 when the last update's approx_kl passed twice it, x1.5 when it
+    was under half, within [LR_MIN, LR_MAX]. The update that just finished has
+    recorded its KL by the time the next rollout starts, and nothing has written it
+    out yet. The target belongs to the checkpoint callback, which lowers it whenever
+    the guard has to undo a drift."""
+
+    def __init__(self, checkpoint):
+        super().__init__()
+        self.ck = checkpoint
 
     def _on_rollout_start(self):
         kl = self.model.logger.name_to_value.get('train/approx_kl')
         if kl is None:
             return
-        lr = self.model.lr_schedule(1.0)
-        new = (max(lr / 1.5, LR_MIN) if kl > 2 * KL_TARGET else
-               min(lr * 1.5, LR_MAX) if kl < KL_TARGET / 2 else lr)
+        lr, target = self.model.lr_schedule(1.0), self.ck.kl_target
+        new = (max(lr / 1.5, LR_MIN) if kl > 2 * target else
+               min(lr * 1.5, LR_MAX) if kl < target / 2 else lr)
         if new != lr:
             self.model.learning_rate = new
             self.model._setup_lr_schedule()
@@ -365,10 +382,11 @@ class Checkpoint(BaseCallback):
     """
 
     def __init__(self, run_dir, curriculum, every=100_000, best=None, best_active=None,
-                 rollbacks=0):
+                 rollbacks=0, kl_target=None):
         super().__init__()
         self.dir, self.cur, self.every = run_dir, curriculum, every
         self.last, self.best = 0, best if best is not None else -1.0
+        self.kl_target = kl_target or KL_START
         # the lessons the best checkpoint was scored over; `held` scores them now
         self.best_active = [lesson_key(k) for k in (best_active or [])]
         self.low_since, self.due, self.rollbacks = None, False, rollbacks
@@ -433,14 +451,17 @@ class Checkpoint(BaseCallback):
         env = m.get_vec_normalize_env()
         env.obs_rms, env.ret_rms = stats.obs_rms, stats.ret_rms
         self.cur.restore(json.load(open(p + 'state.json')))
-        was = m.lr_schedule(1.0)
+        was, was_kl = m.lr_schedule(1.0), self.kl_target
         m.learning_rate = max(was * LR_DECAY, LR_MIN)
         m._setup_lr_schedule()              # lr_schedule is built from learning_rate
+        # ...and the target the rate is adapted to, which is what actually sticks
+        self.kl_target = max(self.kl_target * LR_DECAY, KL_MIN)
         self.rollbacks += 1
         self.low_since, self.due = None, False
         print(f"\n[guard] {h:.2f} against the best {self.best:.2f} for "
               f"{GUARD_STEPS:,}+ steps: back to the best checkpoint (pool "
               f"{self.cur.active}), learning rate {was:g} -> {m.learning_rate:g}, "
+              f"KL target {was_kl:g} -> {self.kl_target:g}, "
               f"rollback {self.rollbacks}\n")
         self.save()
 
@@ -451,7 +472,8 @@ class Checkpoint(BaseCallback):
         self.model.get_vec_normalize_env().save(p + 'vecnorm.pkl')
         state = {'timesteps': int(self.model.num_timesteps), 'robot': robot_stamp(),
                  'best': self.best, 'best_active': self.best_active,
-                 'lr': self.model.lr_schedule(1.0), 'rollbacks': self.rollbacks,
+                 'lr': self.model.lr_schedule(1.0), 'kl_target': self.kl_target,
+                 'rollbacks': self.rollbacks,
                  **self.cur.state()}
         json.dump(state, open(p + 'state.json', 'w'), indent=1)
         return p
@@ -471,7 +493,8 @@ class Checkpoint(BaseCallback):
             self.save()
             rates = " ".join(f"L{k} {self.cur.rate(k)[1]:.0%}" for k in self.cur.active)
             print(f"[checkpoint] {self.model.num_timesteps:,} steps | {rates} | "
-                  f"best {self.best:.2f} | lr {self.model.lr_schedule(1.0):g}"
+                  f"best {self.best:.2f} | lr {self.model.lr_schedule(1.0):g} "
+                  f"kl<={self.kl_target:g}"
                   f"{self.guard()} | out/{os.path.basename(self.dir)}")
         return True
 
@@ -671,6 +694,7 @@ def guard_check(FakeModel, FakeEnv, feed):
             sys.stdout.close()
             sys.stdout = out
         assert abs(m.lr_schedule(1.0) - LR_MIN) < 1e-15, "the learning rate went below LR_MIN"
+        ck.kl_target, ck.rollbacks = KL_START, 0      # the target's own test is below
 
         # the noise floor and ceiling, on the same model
         be = BoundExploration()
@@ -684,7 +708,7 @@ def guard_check(FakeModel, FakeEnv, feed):
         # the learning rate follows the KL of the update before, within its bounds
         from stable_baselines3.common.logger import configure
         m.set_logger(configure(None, []))
-        al = AdaptiveLR()
+        al = AdaptiveLR(ck)
         al.init_callback(m)
 
         def after(kl, lr):
@@ -693,17 +717,32 @@ def guard_check(FakeModel, FakeEnv, feed):
             m.logger.name_to_value['train/approx_kl'] = kl
             al._on_rollout_start()
             return m.lr_schedule(1.0)
-        assert abs(after(10 * KL_TARGET, 1.5e-4) - 1e-4) < 1e-12, "a big update did not slow it"
-        assert abs(after(0.1 * KL_TARGET, 1e-4) - 1.5e-4) < 1e-12, "a small one did not speed it"
-        assert after(KL_TARGET, 1e-4) == 1e-4, "an update on target moved the rate"
-        assert after(0.1 * KL_TARGET, LR_MAX) == LR_MAX, "the rate went past LR_MAX"
-        assert after(10 * KL_TARGET, LR_MIN) == LR_MIN, "the rate went under LR_MIN"
+        kt = ck.kl_target
+        assert abs(after(10 * kt, 1.5e-4) - 1e-4) < 1e-12, "a big update did not slow it"
+        assert abs(after(0.1 * kt, 1e-4) - 1.5e-4) < 1e-12, "a small one did not speed it"
+        assert after(kt, 1e-4) == 1e-4, "an update on target moved the rate"
+        assert after(0.1 * kt, LR_MAX) == LR_MAX, "the rate went past LR_MAX"
+        assert after(10 * kt, LR_MIN) == LR_MIN, "the rate went under LR_MIN"
+        # the guard owns that target: every rollback halves it, down to KL_MIN
+        assert abs(ck.kl_target - KL_START) < 1e-12, ck.kl_target
+        sys.stdout = open(os.devnull, 'w')
+        try:
+            ck.rollback()
+            first = ck.kl_target
+            for _ in range(12):
+                ck.rollback()
+        finally:
+            sys.stdout.close()
+            sys.stdout = out
+        assert abs(first - KL_START * LR_DECAY) < 1e-12, first
+        assert abs(ck.kl_target - KL_MIN) < 1e-12, "the KL target went below KL_MIN"
     print(f"guard test: the best's lessons a whole lesson down for {GUARD_STEPS:,} steps "
           f"sends the run back to its best checkpoint (policy, statistics, curriculum) at "
           f"x{LR_DECAY:g} the learning rate, never below {LR_MIN:g}. OK")
     print(f"update-size test: action std held in [{STD_MIN:g}, 1]; the learning rate "
-          f"follows each update's KL toward {KL_TARGET:g}, within [{LR_MIN:g}, "
-          f"{LR_MAX:g}]. OK")
+          f"follows each update's KL toward the run's target, within [{LR_MIN:g}, "
+          f"{LR_MAX:g}]; the target starts at {KL_START:g} and each rollback halves "
+          f"it to {KL_MIN:g}. OK")
 
 
 def main():
@@ -759,6 +798,18 @@ def main():
                     help='learning rate; on a resume, overrides the checkpoint')
     ap.add_argument('--target-kl', dest='target_kl', type=float, default=None,
                     help='stop an update early once approx_kl passes 1.5x this')
+    # The one knob for how much the policy can HOLD. SB3's default is 64x64 for both
+    # nets, which is what every run here has used; twelve lessons through it is a
+    # standing suspect for the interference the guard keeps catching, and rsl_rl's
+    # locomotion policies are 512-256-128. It cannot be changed on a resume (the
+    # checkpoint has the old shape) and it is nearly free in wall clock -- the
+    # simulator is the bottleneck, and cutting 90 % of the gradient work moved
+    # throughput by 0 %. mac22 tried 256x256 early in the curriculum and lesson -2
+    # stalled for 1.5M steps, before the adaptive rate existed to size the steps for
+    # it; it is worth re-running as an arm against a 64x64 one, not as a default.
+    ap.add_argument('--net', default=None,
+                    help='hidden sizes for both nets, e.g. 256,256 (default 64,64); '
+                         'fresh runs only')
     ap.add_argument('--ckpt-every', type=int, default=100_000)
     ap.add_argument('--self-check', action='store_true',
                     help='test the curriculum logic, train nothing')
@@ -767,6 +818,9 @@ def main():
         return self_check()
 
     pool = [lesson_key(x) for x in a.lessons.split(',')]
+    if a.net and a.resume:
+        raise SystemExit("--net cannot change on a resume: the checkpoint holds the "
+                         "old shape. Start a new run with a new --name.")
     run = os.path.join('out', a.name)
     # the console, kept: approx_kl, clip_fraction and explained_variance per update
     # are the evidence a checkpoint cannot reconstruct, and every rollback and unlock
@@ -813,11 +867,15 @@ def main():
         # left -1 at 0 % for 1.1M (mac24) -- against 0.14M here. The swings are
         # real and unsolved; `best_` keeps the peak. Do not change these three
         # without a 1M run that reaches lesson 1: that is the cheap canary.
+        net = [int(x) for x in a.net.split(',')] if a.net else None
         model = PPO('MlpPolicy', venv, device=a.device, verbose=1,
                     n_steps=256, batch_size=512, gamma=0.995, gae_lambda=0.95,
                     learning_rate=3e-4 if a.lr is None else a.lr,
                     target_kl=a.target_kl,
+                    policy_kwargs=None if net is None else dict(net_arch=net),
                     ent_coef=1e-3 if a.ent_coef is None else a.ent_coef)
+        if net:
+            print(f"policy and value nets {net} (SB3's default is [64, 64])")
 
     # A resume may narrow the pool -- dropping a mastered lesson is the point of
     # `--lessons` on a resume -- so the restored active set has to be filtered to it
@@ -843,7 +901,7 @@ def main():
         best_active = json.load(open(bf))['active']
     ckpt = Checkpoint(run, cur, a.ckpt_every, best,
                       best_active if best is not None else None,
-                      state.get('rollbacks', 0))
+                      state.get('rollbacks', 0), state.get('kl_target'))
 
     # Ctrl-C during a rollout would otherwise lose everything since the last
     # checkpoint; SIGTERM likewise, so a killed run is resumable too.
@@ -856,7 +914,7 @@ def main():
         # no progress_bar: it pulls in tqdm + rich, and verbose=1 already prints the
         # rollout table with elapsed time and total_timesteps every update
         model.learn(total_timesteps=a.steps,
-                    callback=[cur, ckpt, AdaptiveLR(), BoundExploration()],
+                    callback=[cur, ckpt, AdaptiveLR(ckpt), BoundExploration()],
                     reset_num_timesteps=not a.resume)
     except KeyboardInterrupt:
         print("\ninterrupted -- saving")

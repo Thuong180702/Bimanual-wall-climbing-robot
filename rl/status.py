@@ -41,8 +41,10 @@ def show(name, names):
           + ("  (best_model.zip saved)" if st['_best_exists'] else ""))
     if 'lr' in st:
         n = st.get('rollbacks', 0)
-        print(f"{'lr':>12}: {st['lr']:g}" + (f"   (went back to the best {n} time(s))"
-                                            if n else ""))
+        kl = st.get('kl_target')
+        print(f"{'lr':>12}: {st['lr']:g}"
+              + (f", KL target {kl:g}" if kl else "")
+              + (f"   (went back to the best {n} time(s))" if n else ""))
     print(f"{'updated':>12}: {st['_age']:.0f} s ago"
           + ("   <-- STALE, is the run still alive?" if st['_age'] > 600 else ""))
     print(f"\n  {'lesson':>22} {'success':>9} {'episodes':>9}")

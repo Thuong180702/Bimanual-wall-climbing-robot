@@ -850,22 +850,54 @@ self-check):
   the 19.44M policy did as well as without it: 1.5 14/20 against 13/20, 1.85
   14/20 against 10/20.
 - **a KL-adaptive learning rate** (`AdaptiveLR`, rsl_rl's rule): ÷1.5 when an
-  update's KL passed 2 × 0.02, ×1.5 under half, never above 3e-4.
+  update's KL passes twice the run's KL target, ×1.5 under half, never above 3e-4.
+  The target starts at `KL_START` 0.1 — where `win17` spent 2.5M steps improving
+  and forgetting nothing — and **the guard halves it on every rollback**, down to
+  `KL_MIN` 0.01. Small updates are what stops the forgetting and they are also
+  what makes a lesson cost millions of steps, so a run takes the biggest step
+  that has not yet cost it a lesson instead of a small one forever. (The guard's
+  `LR_DECAY` alone no longer sticks: with an adaptive rate, a halved rate is
+  pulled back up within a few updates. The target is the knob that lasts.)
 
 Resumed from 19.44M on this Mac, the floor lifted the entropy from −7.5 to −3.3
-and it stayed flat. The rate walked down 1.5e-4 → 2e-5 in six updates, and KL sat
-at 0.03 with a clip fraction of 0.25 and explained variance 0.93. Over the next
-0.5M steps nothing slipped: lesson 1 92 %, 1.5 60 %, 1.85 68 %, lesson 2 25 %,
-with no guard trip. On a fresh run KL is 0.017 at 3e-4, so the rate never moves
-there, and the early curriculum trains exactly as before. The rate it settles at
-is ~7× smaller than 1.5e-4, so lesson 2 will come slowly. If it has not moved in
-~10M steps, `KL_TARGET` is the knob.
+and it stayed flat. At the 0.1 target the rate settles at 6.7e-5 with KL 0.09–0.12
+and a clip fraction of 0.49; at 0.02 it would settle at 2e-5, KL 0.03, clip 0.25.
+Over 0.5M steps at the tighter of the two nothing slipped — lesson 1 92 %, 1.5
+60 %, 1.85 68 %, lesson 2 25 %, no guard trip. On a fresh run KL is 0.017 at
+3e-4, so the rate never moves there and the early curriculum trains as before.
 
 **Next:** resume from the best and leave it:
 
 ```
 python -m rl.train_ppo --name win17 --resume --from-best --lessons=-2,-1,0,1,1.1,1.2,1.35,1.5,1.7,1.85,2 --envs 12 --steps 30000000
 ```
+
+### How long the rest of the curriculum takes, and what makes it shorter
+
+Measured on the user's Windows box: **1484 steps/s** with 12 envs, 10.1M steps in
+2.0 h. So 50M steps is 9 h, 100M is 19 h, 200M is 37 h. The worry that this needs
+billions of steps does not survive the arithmetic — the risk is a lesson that
+stalls, not the clock. For scale, `win16` went from scratch to lesson 2 at 57 % in
+5.75M steps on the old robot; `win17` needed 20M to get there because the drift ate
+its progress three times over and the pitch-first arm has 0.56 m of reach instead
+of the 0.68 m that let the old one lunge.
+
+Three levers, in the order they are worth pulling:
+
+1. **The update size, which now tunes itself.** The guard only tightens `KL_TARGET`
+   when the pool has actually lost a lesson, so the run keeps the largest step it
+   can get away with. Nothing to do.
+2. **Network capacity.** Every run here has used SB3's default 64×64 for both nets,
+   and eleven lessons through it is the standing suspect for the interference the
+   guard keeps catching — rsl_rl's locomotion policies are 512-256-128. `--net
+   256,256` is nearly free in wall clock, because the simulator is the bottleneck
+   (cutting 90 % of the gradient work moved throughput by 0 %). It needs a fresh
+   run, so it is an arm to put beside `win17`, not a change to it.
+3. **Throughput.** More envs first (`python -m rl.bench` on that machine — the Mac
+   gained 20 % from 12 → 20 envs). Then the real jump: MJX runs the physics on the
+   GPU with thousands of envs in parallel and is where a 10–100× would come from.
+   This model is two edits away from being MJX-ready (capsule collision geoms, drop
+   the `jointlimitfrc` sensors), and it needs Linux or WSL2 with CUDA.
 
 ## `win17`: the pitch-first robot climbs, stalls at lesson 2, and runs now look after themselves
 
