@@ -47,6 +47,11 @@ def show(name, names):
               + (f"   (went back to the best {n} time(s))" if n else ""))
     print(f"{'updated':>12}: {st['_age']:.0f} s ago"
           + ("   <-- STALE, is the run still alive?" if st['_age'] > 600 else ""))
+    tops = (st.get('walls') or {}).get('tops')
+    if tops:                               # a generated-wall run: ADR's ranges so far
+        print(f"{'walls':>12}: {st.get('walls_mode')}, ranges' tops (rl.walls):")
+        for f, t in sorted(tops.items(), key=lambda kv: int(kv[0])):
+            print(f"{'':>14}family {f}: " + ", ".join(f"{k} {v:g}" for k, v in t.items()))
     print(f"\n  {'lesson':>22} {'success':>9} {'episodes':>9}")
     for k in st['active']:
         h = hist.get(k, [])[-WINDOW:]

@@ -39,6 +39,17 @@ def run(venv, episodes, policy=None):
     return ok, dists, why
 
 
+def wilson(k, n, z=1.96):
+    """95 % Wilson score interval for k successes in n episodes -- what a success
+    rate over a few dozen episodes is honestly worth"""
+    if n == 0:
+        return (0.0, 1.0)
+    p = k / n
+    c = (p + z * z / (2 * n)) / (1 + z * z / n)
+    h = z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--name', default='climber')
@@ -47,10 +58,15 @@ def main():
     ap.add_argument('--device', default='cpu')
     ap.add_argument('--from-best', dest='from_best', action='store_true',
                     help='score best_model.zip instead of the latest checkpoint')
+    ap.add_argument('--ckpt', default=None,
+                    help='score this checkpoint prefix instead, e.g. snaps/000050000000_ '
+                         '(rl.curve does, for every snapshot)')
+    ap.add_argument('--jsonl', default=None,
+                    help='also append one JSON line per lesson here (rl.plot reads it)')
     a = ap.parse_args()
 
     run_dir = os.path.join('out', a.name)
-    ck = 'best_' if a.from_best else ''
+    ck = a.ckpt if a.ckpt is not None else ('best_' if a.from_best else '')
     state = json.load(open(os.path.join(run_dir, f'{ck}state.json')))
     lessons = ([lesson_key(x) for x in a.lessons.split(',')] if a.lessons
                else state['active'])
@@ -66,12 +82,25 @@ def main():
             venv.norm_reward = False       # updating them is scoring a moving target
             model = (PPO.load(os.path.join(run_dir, f'{ck}model'), env=venv,
                               device=a.device) if policy_on else None)
-            ok, dists, why = run(venv, a.episodes, model)
-            row.append(f"{ok}/{a.episodes} ok {np.mean(dists):.2f} m")
+            # doing nothing is one episode: the reset is deterministic, and the SLAM
+            # noise that makes the policy's episodes differ never reaches a zero action
+            ok, dists, why = run(venv, a.episodes if policy_on else 1, model)
+            row.append(f"{ok}/{len(why)} ok {np.mean(dists):.2f} m")
             if policy_on:
                 tally = {r: why.count(r) for r in sorted(set(why))}
+                res = dict(success=ok, episodes=len(why), ci95=wilson(ok, len(why)),
+                           reasons=tally, dist=float(np.mean(dists)))
+            else:
+                res.update(control_success=ok, control_dist=float(np.mean(dists)))
             venv.close()
-        print(f"{k:>2} {LESSONS[k]['name']:>21} {row[0]:>18} {row[1]:>18}   {tally}")
+        lo, hi = res['ci95']
+        print(f"{k:>2} {LESSONS[k]['name']:>21} {row[0]:>18} {row[1]:>18}   {tally}"
+              f"   95% CI {lo:.0%}-{hi:.0%}")
+        if a.jsonl:
+            with open(a.jsonl, 'a') as f:
+                f.write(json.dumps(dict(lesson=k, name=LESSONS[k]['name'], run=a.name,
+                                        checkpoint=ck + 'model', timesteps=state['timesteps'],
+                                        **res)) + '\n')
 
     print("\n'm' is mean distance from both goals at the episode end -- lower is "
           "better.\nThe policy has learned something only where it beats the control.")

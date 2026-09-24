@@ -74,8 +74,8 @@ def backend():
     dev = jax_gpu()
     if dev is None:
         return "cpu", (f"{card} is here but JAX cannot use it "
-                       f"(on Windows CUDA JAX needs WSL2; otherwise "
-                       f'pip install -U "jax[cuda12]"): training on the CPU')
+                       f"(on Windows CUDA JAX needs WSL2; on Linux run "
+                       f"rl/gpu_setup.sh): training on the CPU")
     if not has_mjx():
         return "cpu", (f"JAX sees {dev.device_kind} but mujoco-mjx is missing "
                        f"(pip install mujoco-mjx): training on the CPU")

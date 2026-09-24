@@ -4,54 +4,72 @@
 
 The CPU path simulates `urdf/scene.xml` as it is: every CAD part's convex hull
 collides with everything, and each lesson is its own scene file. MJX can run
-neither. Its JAX backend has no box-cylinder collision (hook against rung), runs
-mesh hulls slowly, has no `jointlimitfrc` sensor, and compiles ONE model for every
-env of a batch -- so a batch cannot mix lesson scenes.
+neither. Its JAX backend has no box-cylinder or mesh-cylinder collision (hook
+against rung), pays for every pair on every env and substep whether they are near
+or not, has no `jointlimitfrc` sensor, and compiles ONE model for every env of a
+batch -- so a batch cannot mix lesson scenes.
 
-So, measured before it was drawn -- win17's best policy on lessons -2..2, 6800
-control steps, which body pairs touched and how often (`python -m rl.mjx_check
-contacts` repeats it):
+So each kind of contact gets the shape MJX computes EXACTLY for it, and where no
+exact pair exists the approximation is chosen by one measurement: copy the full
+robot's state into this one along a trained gait, and compare what touches and
+where one control step takes each (`python -m rl.mjx_check model`).
 
-    hook - rung            48-70 %   ~220 N      the hold itself
-    wrist_dev_R - rung        36 %     58 N      the finger motor resting on it
-    base_link - wall          30 %     32 N      the body leans on the wall
-    wrist_L - wall            16 %     44 N
-    hook_L - hook_R          8.7 %     31 N
-    arm - wall, arm L - arm R   < 2.3 % each
-    arm - torso, arm - base       never
-
-and every contact on an arm was on an actuator housing, not a bracket plate. Hence:
-
-  * what can touch a WALL, or the other hand, is boxes: each actuator's cylinder
-    becomes the box round it (exact on its end faces and its four sides, 0.41 r too
-    big toward the edges), base and torso the box round their plates, the plates
-    beside the hand (wrist, finger motor) their own box, and the hooks keep their
-    two boxes, pad and all. The hook's knuckle, the waist and the other plates never
-    touched anything.
-  * what can touch a RUNG is capsules and balls, never boxes, because MJX's
-    capsule-box test is wrong for a capsule as long as a rung: it separates only on
-    the box's face normals, so a 2.4 m rung passing a 12 mm plate at a slight angle
-    "penetrates" it. Measured on win17's lesson-1 gait: 50-75 mm contacts between a
-    rung and a hook shank where C MuJoCo saw no contact at all, 5000-12000 N where C
-    had 200, and the policy's lesson 1 went from 7/8 in C to 0/8 in MJX. Capsule
-    against capsule is exact (the closest points of two segments). So each hook
-    plate is two rods square to the rung at its edges -- the two ends of the line
-    contact --, the finger motor and the plate beside it one capsule along the
-    motor's axis (the rung is parallel to it when the hook is seated), the wrist and
-    forearm motors a ball each, and base and torso a rod up each vertical edge.
-  * rungs are capsules. MJX has no cylinder-box either. The cap's tip sits on the
-    cylinder's end, so a rung is never longer than the real one, and
-    `lessons.rung_segments` reads a capsule's extent as its half-length plus radius.
-  * walls are planes: the robot only ever touches a wall's inner face, and a plane
-    is the cheapest collision there is. ponytail: a plane does not end -- the front
-    wall does, at y = -1.05 and 1.65; nothing reaches past it in any lesson today.
-  * collisions are an explicit list of PAIRS (the table above, plus the same parts on
-    the other hand), not everything-with-everything. Each pair gets the friction and
-    softness MuJoCo would have mixed for those two geoms, so the pad still defines
-    the hook's contact.
+  * WALLS are planes, and what meets them is the robot's own collision geometry,
+    every body's, as scene.xml draws it: MJX's plane against a mesh (its vertices)
+    or a cylinder is exact and cheap. (The first version used the box round each
+    part, and the body's box stood 9 mm proud of its chamfered hull into the wall
+    whenever the body yawed: at the same states it touched the wall in 63 % of them
+    at 200 N, the full robot in 9 % at 36 N.) ponytail: a plane does not end -- the
+    front wall does, at y = -1.05 and 1.65; nothing reaches past it in any lesson.
+  * RUNGS are capsules, their straight part the real rung's length and the caps
+    past its ends, so every seat on a rung holds exactly as on the cylinder and the
+    error is only under a hook hanging off the end. (Caps inside the length left
+    the last 15 mm of every rung unable to hold a hook edge, and the gap lessons
+    land hooks exactly there.)
+  * what can touch a rung is capsules and balls, never boxes: MJX's capsule-box
+    test separates only on the box's face normals, so a 2.4 m rung passing a 12 mm
+    plate at a slight angle "penetrates" it (50-75 mm contacts where C saw none,
+    5000-12000 N where C had 200). Capsule-capsule is exact. So each hook plate is
+    drawn in rods of 0.25 mm radius lying in its broad faces -- a comb across the
+    hook's width and one along each end (`_round`) -- the box itself to 0.25 mm, and
+    the rung finds it where it finds the box: on the edges of the contact patch.
+    (Two 6 mm rods through each plate rounded the plate edges off by 6 mm, where a
+    rung tilted against the hook actually bears: 35 % of the full robot's hook load
+    at the same states.) The finger motor is a ring of rods tangent to it and flush
+    with its ends (a capsule's cap stood 27.5 mm proud of the end the rung meets), the
+    wrist and forearm motors a ball each, base and torso a rod up each vertical edge.
+  * one HAND against the other: the hooks' own boxes (box-box is a full SAT in MJX)
+    and the three motors above each hook, as the cylinders they are. (Boxes round
+    the motors met 9 mm deep in 11 % of the full robot's states on lesson 2, where
+    the full robot's motors touched lightly in 1-2 %: the trailing hand could not
+    come up beside the lead one, and win17 timed out on the wide gap.) Measured at
+    the same states on lesson 2: the hands touch in 4.6 % of them on the full robot
+    and 4.4 % on this one, 2.4 N mean both. MJX's cylinder-cylinder is an SDF
+    descent, not exact: at those states it misses 27 % of C's contacts, all shallow,
+    and is 1.3 mm off at p90 -- light, rare contacts, so kept. The exact
+    alternatives cost more than they are worth: a convex hull per link (full SAT)
+    needs ~100 GB of scratch for 4096 envs, and a 12-gon prism per motor (5.3 GB)
+    misses 45 % of the full robot's hand contacts on its flat facets.
+  * collisions are an explicit list of PAIRS, not everything-with-everything. Each
+    pair gets the friction and softness MuJoCo would have mixed for those two geoms,
+    so the pad still defines the hook's contact.
   * the lessons become DATA: N_RUNG rung slots and one extra wall slot whose
     geometry is set per env (`layout`). A slot a lesson does not use is parked far
     away. That is what lets one compiled model train every lesson at once.
+
+Measured against the full robot at its own states along win17's gait (lessons 1,
+1.85, 2; `rl.mjx_check model`, seeded): one control step apart by 0.55-2.4e-3 rad
+(p50) where the first version was 1.1e-2, the body by 0.08-0.24 mm where it was 8; a
+hook on its rung in one robot and not the other in at most 2.4 % of the states on
+lessons 1 and 2, and 6.5 % on 1.85 -- a hook off a rung's end, still on its cap; the
+finger motor on a rung in this robot alone 0.0 %, in the full one alone at most
+3.2 %; and win17 on the full robot, this one in C and this one in MJX, 8 episodes on
+each of its eleven lessons: 78, 78 and 72 of 88; 24 each on lessons 1, 1.5, 1.7,
+1.85 and 2: 97, 96 and 92 of 120, lesson 2 alone 12, 9 and 6 of 24 (the gap lesson,
+hooks on rung ends: not significant at 24, but the way to watch). One known difference: a
+49 N pull along the rung slides the full robot's hooks 20-24 mm in 6 s and these
+14-20 -- more contacts in parallel creep less. It errs toward the dragging this
+task charges for, so it is left, not tuned away.
 
 Masses, inertias, joints, actuators and the keyframe are scene.xml's, untouched:
 the geoms carried no mass (every body has an explicit <inertial>).
@@ -76,10 +94,13 @@ PARK = 50.0              # m: where an unused slot waits, out of everyone's reac
 ITERATIONS, LS_ITERATIONS = 6, 10
 # MJX computes every pair's contacts every substep (its arrays are static), but it
 # hands the solver only the deepest MAX_CONTACTS of them. C, which keeps them all,
-# never had more than 9 at once: 600 steps of random actions on every lesson, and
-# win17's policy on its eleven (`rl.mjx_check physics` asserts it). Each one kept is
-# four rows of the solver's system: 32 cost 22 % more per step than 16.
-MAX_CONTACTS = 16
+# never had more than 17 at once on this robot: 600 steps of random actions on every
+# lesson and of win17's policy on its eleven, 17 400 control steps, p99.9 13-14
+# (`rl.mjx_check physics` asserts it). 24 keeps 40 % above that, and a batch counts
+# every substep where all 24 are in use (`capped` in the training log), which is
+# the sign the cap is dropping real contacts. Each one kept is four rows of the
+# solver's system.
+MAX_CONTACTS = 24
 
 SIDES = 'LR'
 # what each body keeps as boxes (walls, the other hand). 'hull': round all its
@@ -90,27 +111,24 @@ KEEP = {'base_link': ('hull',), 'torso_upper': ('hull',),
         'humerus_rot_%s': ('motor',), 'fore_arm_%s': ('motor',),
         'forearm_rot_%s': ('motor',), 'wrist_%s': ('motor', 'web'),
         'wrist_dev_%s': ('motor', 'web'), 'hook_%s': ('shank', 'lip')}
-# what can meet a wall: the body and every housing out to the hook
-WALL = ['base_link:hull', 'torso_upper:hull'] + [
-    n % sd for sd in SIDES for n in (
-        'shoulder_%s:motor', 'upper_arm_%s:motor', 'humerus_rot_%s:motor',
-        'fore_arm_%s:motor', 'forearm_rot_%s:motor', 'wrist_%s:motor',
-        'wrist_dev_%s:motor', 'hook_%s:shank', 'hook_%s:lip')]
 # what can meet a rung, all of it round (`_round`): the body climbing past a row,
-# and the hand
+# and the hand. (What can meet a WALL is every collision geom of scene.xml's robot,
+# as it is: see `build`.)
 BODY_ROD = 0.02          # m, the radius of the rods up the body's edges
+HOOK_EDGE = 0.00025      # m, the radius of the rods a hook plate is drawn in
+HOOK_COMB = 5            # rods across the hook's 65 mm width, per broad face (16 mm apart)
+MOTOR_RODS = 24          # rods round the finger motor, 15 deg apart: 0.24 mm deep between two
 RUNG = [f'{b}:rod{i}' for b in ('base_link', 'torso_upper') for i in range(4)] + [
     n % sd for sd in SIDES for n in (
-        'hook_%s:shank0', 'hook_%s:shank1', 'hook_%s:lip0', 'hook_%s:lip1',
-        'wrist_dev_%s:finger', 'wrist_%s:ball', 'forearm_rot_%s:ball')]
-# one hand against the other: every pair measured touching, and the hooks
-SELF = [('hook_L:shank', 'hook_R:shank'), ('hook_L:shank', 'hook_R:lip'),
-        ('hook_L:lip', 'hook_R:shank'), ('hook_L:lip', 'hook_R:lip'),
-        ('forearm_rot_L:motor', 'forearm_rot_R:motor'),
-        ('wrist_L:motor', 'wrist_R:motor'), ('wrist_L:motor', 'wrist_R:web'),
-        ('wrist_L:web', 'wrist_R:motor'), ('wrist_L:motor', 'wrist_dev_R:motor'),
-        ('wrist_dev_L:motor', 'wrist_R:motor'),
-        ('wrist_dev_L:motor', 'wrist_dev_R:motor')]
+        [f'hook_%s:{t}_e{k}' for t in ('shank', 'lip') for k in range(2 * HOOK_COMB + 4)]
+        + [f'wrist_dev_%s:rod{i}' for i in range(MOTOR_RODS)]
+        + ['wrist_%s:ball', 'forearm_rot_%s:ball'])]
+# one hand against the other: the hooks' own boxes (box-box is exact in MJX), and the
+# motor cylinder of each of the three links above a hook against each of the other
+# hand's -- what the full robot's hands meet with (measured: motor on motor, and
+# rarely a motor on the other's bracket).
+DISTAL = ('forearm_rot', 'wrist', 'wrist_dev')
+SELF = [(f'hook_L:{a}', f'hook_R:{b}') for a in ('shank', 'lip') for b in ('shank', 'lip')]
 # sensors the RL task never reads, and jointlimitfrc, which MJX does not have
 DROP_SENSORS = ('lim_', 'imu_quat', 'imu_vel', 'imu_angvel', 'imu_angacc',
                 'imu_linacc', 'torso_pos', 'com_')
@@ -155,17 +173,22 @@ def _boxes(m):
                     for g in gs:
                         if m.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH:
                             continue
-                        mid = m.geom_dataid[g]
-                        if tag == 'web' and 'web' not in m.mesh(mid).name:
+                        if tag == 'web' and 'web' not in m.mesh(m.geom_dataid[g]).name:
                             continue
-                        R = np.zeros(9)
-                        mujoco.mju_quat2Mat(R, m.geom_quat[g])
-                        v = m.mesh_vert[m.mesh_vertadr[mid]:m.mesh_vertadr[mid] + m.mesh_vertnum[mid]]
-                        vs.append(v @ R.reshape(3, 3).T + m.geom_pos[g])
+                        vs.append(_verts(m, g))
                     v = np.concatenate(vs)
                     lo, hi = v.min(0), v.max(0)
                     out[f'{name}:{tag}'] = ((lo + hi) / 2, np.array([1.0, 0, 0, 0]), (hi - lo) / 2)
     return out
+
+
+def _verts(m, g):
+    """a mesh geom's vertices in its body's frame"""
+    R = np.zeros(9)
+    mujoco.mju_quat2Mat(R, m.geom_quat[g])
+    mid = m.geom_dataid[g]
+    v = m.mesh_vert[m.mesh_vertadr[mid]:m.mesh_vertadr[mid] + m.mesh_vertnum[mid]]
+    return v @ R.reshape(3, 3).T + m.geom_pos[g]
 
 
 def _cylinder(m, body):
@@ -189,23 +212,62 @@ def _round(m, boxes):
             out[f'{body}:rod{i}'] = (cap, c + [sx * (h[0] - r), sy * (h[1] - r), 0.0],
                                      np.array([1.0, 0, 0, 0]), [r, h[2] - r, 0.0])
     for sd in SIDES:
-        # each hook plate: two rods at its edges, along its long side square to the
-        # rung (the rung lies along the hook's y), as thick as the plate
-        for tag, axis in (('shank', 2), ('lip', 0)):
+        # Each hook plate is the box itself, drawn in rods of radius HOOK_EDGE lying
+        # in its two broad faces: a comb of HOOK_COMB rods square to the rung across
+        # the hook's width (y, the rung's direction when seated), the outer two on its
+        # edges, and one along each end. Every rod is tangent to the faces it lies on,
+        # so nothing is outside the box and its edges are rounded by HOOK_EDGE only.
+        # A rung touches a plate along the boundary of its contact patch: its edges
+        # when the rung crosses the whole hook, the rung's END when the hook hangs
+        # over it -- which the comb samples every 16 mm. (C MuJoCo puts its
+        # box-cylinder contacts on the same boundary.) The 12 mm thickness is closed
+        # by the rods themselves: no rung fits between the two faces.
+        for tag in ('shank', 'lip'):
             c, _, h = boxes[f'hook_{sd}:{tag}']
-            r = h.min()
-            for i, sy in enumerate((-1, 1)):
-                out[f'hook_{sd}:{tag}{i}'] = (cap, c + [0.0, sy * (h[1] - r), 0.0],
-                                              _quat_z_to(np.eye(3)[axis]),
-                                              [r, h[axis] - r, 0.0])
-        # the finger motor and the plate beside it, along the motor's axis
+            r, k = HOOK_EDGE, 0
+            thin = int(np.argmin(h))
+            along = 3 - thin - 1                   # the plate's long axis that is not y
+            for st in (-1, 1):
+                for y in np.linspace(-(h[1] - r), h[1] - r, HOOK_COMB):
+                    off = np.zeros(3)
+                    off[thin], off[1] = st * (h[thin] - r), y
+                    out[f'hook_{sd}:{tag}_e{k}'] = (cap, c + off, _quat_z_to(np.eye(3)[along]),
+                                                     [r, h[along] - r, 0.0])
+                    k += 1
+                for sa in (-1, 1):
+                    off = np.zeros(3)
+                    off[thin], off[along] = st * (h[thin] - r), sa * (h[along] - r)
+                    out[f'hook_{sd}:{tag}_e{k}'] = (cap, c + off, _quat_z_to(np.eye(3)[1]),
+                                                     [r, h[1] - r, 0.0])
+                    k += 1
+        # The finger motor and the plates on its end: a ring of MOTOR_RODS rods tangent
+        # to the motor from inside, each running where the hand's surface is at the
+        # motor's radius at its own angle -- the motor, the disc on its end, and on one
+        # side the web's half cylinder beyond it -- and flush with where that ends. The
+        # rung meets this motor on its free end's rim (168 of the full robot's 205
+        # touches along win17's gait). One capsule round the motor and the web's box,
+        # as it was, stood a radius (27.5 mm) proud of that rim and 10-22 mm past where
+        # the web is round: it touched the rung in 0.4-4.5 % of lesson 1's states where
+        # the full robot was 1-9 mm clear.
         p, a, r, h = _cylinder(m, f'wrist_dev_{sd}')
-        wc, _, wh = boxes[f'wrist_dev_{sd}:web']
-        reach = wh @ np.abs(a)
-        lo = min(p @ a - h, wc @ a - reach)
-        hi = max(p @ a + h, wc @ a + reach)
-        out[f'wrist_dev_{sd}:finger'] = (cap, p + ((lo + hi) / 2 - p @ a) * a,
-                                         _quat_z_to(a), [r, (hi - lo) / 2, 0.0])
+        b = m.body(f'wrist_dev_{sd}').id
+        v = np.concatenate([_verts(m, g) for g in range(m.ngeom) if m.geom_bodyid[g] == b
+                            and m.geom_contype[g] and m.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH])
+        u = (v - p) @ a
+        w = (v - p) - np.outer(u, a)
+        e1 = np.cross(a, np.eye(3)[np.argmin(np.abs(a))])
+        e1 /= np.linalg.norm(e1)
+        e2 = np.cross(a, e1)
+        on = np.abs(np.linalg.norm(w, axis=1) - r) < 0.002          # at the motor's radius
+        ang = np.arctan2(w @ e2, w @ e1)
+        rr = HOOK_EDGE
+        for i in range(MOTOR_RODS):
+            t = 2 * np.pi * i / MOTOR_RODS
+            mine = on & (np.abs(np.angle(np.exp(1j * (ang - t)))) <= np.pi / MOTOR_RODS)
+            lo, hi = min(-h, u[mine].min(initial=-h)), max(h, u[mine].max(initial=h))
+            out[f'wrist_dev_{sd}:rod{i}'] = (
+                cap, p + (lo + hi) / 2 * a + (r - rr) * (np.cos(t) * e1 + np.sin(t) * e2),
+                _quat_z_to(a), [rr, (hi - lo) / 2 - rr, 0.0])
         for body in (f'wrist_{sd}', f'forearm_rot_{sd}'):   # never seen on a rung
             p, a, r, h = _cylinder(m, body)
             out[f'{body}:ball'] = (ball, p, np.array([1.0, 0, 0, 0]), [r, 0.0, 0.0])
@@ -270,7 +332,7 @@ def slots(layout):
     quat = np.tile([1.0, 0, 0, 0], (N_RUNG, 1))
     size = np.tile([0.015, 0.1, 0.0], (N_RUNG, 1))
     for i, (_, c, a, h, r) in enumerate(layout['rungs']):
-        pos[i], quat[i], size[i] = c, _quat_z_to(a), [r, h - r, 0.0]
+        pos[i], quat[i], size[i] = c, _quat_z_to(a), [r, h, 0.0]
     walls = layout['walls']
     wpos, wquat = np.array([0.0, 0.0, -PARK]), np.array([1.0, 0, 0, 0])   # faces up, far below
     if len(walls) > 1:
@@ -280,8 +342,13 @@ def slots(layout):
                 front_pos=walls[0][1], front_quat=_quat_z_to(walls[0][2]))
 
 
+def _pad(g):
+    g.priority, g.friction = PAD_PARAMS['priority'], PAD_PARAMS['friction']
+    g.solref, g.solimp = PAD_PARAMS['solref'], PAD_PARAMS['solimp']
+
+
 def build(layout=None):
-    """the MjSpec: the simplified robot, N_RUNG rung slots and two wall planes.
+    """the MjSpec: the robot as MJX can collide it, N_RUNG rung slots, two wall planes.
 
     layout=None parks every slot (the MJX model; each env places its own). A lesson's
     layout fills them and names them after that lesson's rungs and walls (the C
@@ -290,27 +357,52 @@ def build(layout=None):
     boxes = _boxes(full)
     spec = mujoco.MjSpec.from_file(SCENE)
     spec.modelname = 'mjx_' + (lesson_tag(layout['lesson']) if layout else 'robot')
-    # every geom goes, visuals too, and with them every mesh: the file this writes is
-    # physics only and stands on its own
-    for g in spec.worldbody.find_all(mujoco.mjtObj.mjOBJ_GEOM):
+    # absolute, so the XML can be read from anywhere, from a string included
+    spec.meshdir = os.path.join(os.path.dirname(SCENE), spec.meshdir)
+    # What meets a WALL is the robot's own collision geometry, every body's, exactly as
+    # scene.xml draws it: a plane against a convex mesh (its vertices) or a cylinder is
+    # exact in MJX, and cheap. Named '<body>:col<i>'; a hook's two boxes, which carry
+    # the grip pad, 'hook_<s>:shank' and ':lip'. The visuals go, and their meshes.
+    wall, meshes, motor = [], set(), {}
+    for body in spec.worldbody.find_all(mujoco.mjtObj.mjOBJ_BODY):
+        n = nbox = 0
+        for g in list(body.geoms):
+            if not (g.contype or g.conaffinity):
+                spec.delete(g)
+                continue
+            if body.name.startswith('hook_') and g.type == mujoco.mjtGeom.mjGEOM_BOX:
+                g.name = f"{body.name}:{('shank', 'lip')[nbox]}"
+                nbox += 1
+                _pad(g)
+            else:
+                g.name = f'{body.name}:col{n}'
+                n += 1
+                if g.type == mujoco.mjtGeom.mjGEOM_CYLINDER:
+                    motor.setdefault(body.name, g.name)
+            g.contype = g.conaffinity = 0
+            wall.append(g.name)
+            if g.type == mujoco.mjtGeom.mjGEOM_MESH:
+                meshes.add(g.meshname)
+    for g in list(spec.worldbody.geoms):
         spec.delete(g)
     for me in list(spec.meshes):
-        spec.delete(me)
+        if me.name not in meshes:
+            spec.delete(me)
+    # what meets a RUNG or the other hand is added: round shapes and a few boxes. Only
+    # what some pair uses -- C's discardvisual drops an unpaired geom and would
+    # renumber the rest against MJX's copy
     shapes = {k: (mujoco.mjtGeom.mjGEOM_BOX,) + v for k, v in boxes.items()}
     shapes.update(_round(full, boxes))
-    # only what some pair uses: C's discardvisual drops an unpaired geom and would
-    # renumber the rest against MJX's copy
-    used = set(WALL) | set(RUNG) | {g for p in SELF for g in p}
+    used = set(RUNG) | {g for p in SELF for g in p}
     for key, (typ, pos, quat, size) in shapes.items():
-        if key not in used:
+        if key not in used or key in wall:
             continue
         body, tag = key.split(':')
         g = spec.body(body).add_geom(name=key, type=typ, pos=pos, quat=quat, size=size,
                                      contype=0, conaffinity=0,
                                      friction=[1.0, 0.02, 0.001], rgba=[0.5, 0.6, 0.9, 0.6])
         if tag.startswith(('shank', 'lip')):
-            g.priority, g.friction = PAD_PARAMS['priority'], PAD_PARAMS['friction']
-            g.solref, g.solimp = PAD_PARAMS['solref'], PAD_PARAMS['solimp']
+            _pad(g)
     sl = slots(layout) if layout else slots(dict(rungs=[], walls=[
         ('wall_front', np.array([0.5, 0.3, 1.0]), np.array([-1.0, 0, 0]))]))
     rung_names = ([r[0] for r in layout['rungs']] if layout else [])
@@ -343,9 +435,9 @@ def build(layout=None):
         for r in RUNG:
             pair(r, w)
     for w in walls:
-        for r in WALL:
+        for r in wall:
             pair(r, w)
-    for a, b in SELF:
+    for a, b in SELF + [(motor[f'{a}_L'], motor[f'{b}_R']) for a in DISTAL for b in DISTAL]:
         pair(a, b)
     for s in list(spec.sensors):
         if s.name.startswith(DROP_SENSORS):
@@ -360,6 +452,7 @@ def _stamp():
     h = hashlib.sha256()
     for f in (SCENE, __file__, os.path.join(os.path.dirname(__file__), 'lessons.py')):
         h.update(open(f, 'rb').read())
+    h.update(os.path.abspath(SCENE).encode())     # the meshes are read by absolute path
     return h.hexdigest()[:16]
 
 

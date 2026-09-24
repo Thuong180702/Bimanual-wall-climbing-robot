@@ -28,7 +28,8 @@ and `mujoco-mjx` for the GPU path.
 
 | file | what it is |
 |---|---|
-| `lessons.py` | the 18 lesson specs + scene generator (writes `urdf/lessons/`) |
+| `lessons.py` | the 18 lesson specs + scene generator (writes `urdf/lessons/`); 1..9 are the benchmark |
+| `walls.py` | the generated walls the GPU path trains on: nine families, ADR's ranges, the wall check |
 | `climb_task.py` | Gymnasium-shaped env: obs / action / reward / termination |
 | `train_ppo.py` | thin SB3 PPO entry point, on either simulator |
 | `hardware.py` | is there an NVIDIA GPU JAX can use — picks the simulator |
@@ -38,7 +39,9 @@ and `mujoco-mjx` for the GPU path.
 | `bench.py` | simulator throughput vs env count, and cpu vs mps for the policy |
 | `render.py` | PNGs of the lesson scenes → `out/scenes/` (ffmpeg writes them, no image dep) |
 | `status.py` | what a run is doing, read from its checkpoint — safe to run while it trains |
-| `eval.py` | score a checkpoint per lesson against a do-nothing control |
+| `eval.py` | score a checkpoint per lesson against a do-nothing control, with 95 % intervals |
+| `plot.py` | a run's figures from the logs it keeps (`out/<name>/plots/`) |
+| `gpu_setup.sh`, `gpu_run.sh` | a rented Linux GPU box: install, then train unattended and score |
 
 ## The real-actuator robot (Sept 21 2026)
 
@@ -114,6 +117,74 @@ on the abduction-first shoulder rested their arms at the −170° flexion stop,
 leaning on a real 1.4 mm contact with the torso; pitch-first there is nothing
 there to lean on.
 
+## What the GPU path trains on: generated walls and ADR (the method)
+
+**The benchmark is lessons 1..9, and training never sees them as such.** They are the
+fixed test set, scored on the full robot in C MuJoCo (`rl.eval`, `gpu_run.sh` step 3).
+Training draws its walls from nine *families* (`rl/walls.py`), one per benchmark lesson
+and written down before any training: each is its lesson's structure with a few
+physical parameters left free, and each parameter has a range.
+
+| family (benchmark lesson) | parameters ADR grows (first top -> last top) | the lesson's own value |
+|---|---|---|
+| 1 traverse | each hand's shift along the row (0.30 -> 1.40 m) | 1.10 |
+| 2 gaps | gap count (1 -> 2), gap width (0.04 -> 0.30 m) | 2 x 0.25 |
+| 3 climb up | rows (1 -> 2), row spacing (0.30 -> 0.50 m) | 2 x 0.45 |
+| 4 climb over | break in the start row, a row above to go round it (0.35 -> 0.75 m) | 0.65 |
+| 5 climb down | one row down (0.30 -> 0.55 m; lower is inside the torso) | 0.45 |
+| 6 staggered | tiers (1 -> 2), tier rise (0.30 -> 0.50 m), height scatter (0.02 -> 0.08 m) | 2, ~0.46, 0.06 |
+| 7 corner | side wall distance (0.60 -> 1.10 m) | 1.00 |
+| 8 behind | back rung distance (0.35 -> 0.70 m) | 0.63 |
+| 9 far reach | one row up (0.55 -> 0.85 m, past the 0.56 m static reach) | 0.75 |
+
+Everything else about a wall -- segment lengths, where a rung ends, goal offsets,
+which way it runs (half are mirrored: the robot is symmetric, the benchmark is not) --
+is drawn uniformly from fixed ranges. Every wall is checked before use
+(`walls.Checker`): its goals on seats of their rungs, and nothing but the start rung
+within 2 cm of the robot in its start hang. `python -m rl.walls` asserts every family
+gives usable walls at its first and last ranges, and that each benchmark lesson is a
+wall its family can draw at its last range.
+
+**The curriculum is two fixed rules and nothing chosen by hand while training:**
+
+- *Families enter in the benchmark's order*, by the unlock rule the CPU path already
+  had: the next family joins when every family in the pool is passed 70 % of the time
+  over its last 40 walls. Nothing ever leaves the pool, and the steps go where the
+  failures are.
+- *Inside a family, automatic domain randomization* (OpenAI et al. 2019, "Solving
+  Rubik's Cube with a Robot Hand"; the terrain curriculum of Rudin et al. 2022): each
+  parameter is drawn uniformly below its current top, except that half of the walls
+  put one parameter exactly at its top. When 40 of those in a row are passed 70 % of
+  the time, that top moves up one step; at 20 % or less, down one. A wall counts only
+  at the top it was drawn at.
+- *Both rules count whole cohorts*: episodes in the order they **started**, each once
+  every episode begun before it has ended (at most 60 s, 1516 control steps; 1 % over
+  because MJX keeps time in float32 and it runs slow). Counted as they end, the first
+  in are the short ones, and thousands of envs make that the whole sample: with 256
+  envs the first 20 family-1 walls to end were re-grips in place, 20/20 at 5k steps,
+  and family 2 unlocked on them, while over whole cohorts family 1 was at 20 % at
+  131k. Which of the episodes begun together end first says nothing about any of
+  them, so a rate over all of them is the policy's however long each ran. It costs
+  each decision one episode's delay; a rollback also drops what the old policy began.
+
+So the question a reviewer asks of a hand-made lesson ladder -- how many lessons are
+enough, and how many more for lessons 3..9 -- has no answer to give: the difficulty is
+continuous, the rule moves it, and the benchmark is fixed in advance. The ablation is
+one flag, `--walls random` (`WALLS=random` for `gpu_run.sh`): the same walls at their
+last ranges from the first step, every family at once. The best checkpoint and the
+guard use how far the tops have come (0..1 a family, 9 in all) instead of a sum of
+success rates, which ADR keeps near its thresholds by design; among checkpoints ADR has
+taken equally far, the best is the one passing its training walls most often (worth at
+most 0.01, under the smallest step of any top, 0.038) -- otherwise it would freeze the
+moment every top reached its last, where a run spends most of its steps. The
+benchmark never chooses a checkpoint. A generated episode lasts
+at most 60 s -- lesson 1's timeout, at which hanging still costs less than falling.
+
+On the GPU a bank of 1024 walls is drawn at the start of every rollout and each env
+takes one at every reset; an env copies its wall into its own state, so a new bank never
+moves a rung under a robot mid-episode. `--walls lessons` keeps the fixed lesson ladder
+below (the CPU path's, and the only one it can run).
+
 ## Lessons
 
 −2. left hand, one step (0.30 m) → −1. right hand, one step (0.30 m, the other way)
@@ -187,11 +258,13 @@ loop the resume: `for /L %i in (1,1,50) do python -m rl.train_ppo --name win17
 
 **A run looks after itself.** It does not need someone watching for a drift and
 resuming from best by hand: if the best checkpoint's lessons fall a whole lesson
-below that best for a million steps, the run goes back to `best_*` by itself and
-carries on at half the learning rate (the `win17` section has the rule and why).
-The update size is kept in range as well: each action dimension's std is held in
-[0.05, 1] and the learning rate moves to keep every update's KL near 0.02
-(`win17 2`). `python -m rl.status` shows the current rate and how many times it
+below that best for 325 policy updates (a million steps at the CPU path's 12 envs
+x 256; an MJX update is 131k steps, so the patience is counted in updates, the
+clock a policy changes on), the run goes back to `best_*` by itself and carries on
+at half the learning rate and half the KL target (the `win17` section has the rule
+and why). The update size is kept in range as well: each action dimension's std is
+held in [0.05, 1] and the learning rate moves to keep every update's KL near the
+run's target, 0.1 to start (`win17 2`). `python -m rl.status` shows the current rate and how many times it
 has gone back, and everything the run prints is appended to `out/<name>/train.log`.
 
 ## The grip pad — why the lesson scenes differ from `scene.xml`
@@ -302,15 +375,91 @@ need `jax-metal` (still experimental), so this Mac trains on the CPU path.
 
 Nothing here is Mac-specific. The RL path imports no OpenGL, so it runs headless.
 
+**A rented GPU box, the whole run unattended** (tested target: Ubuntu 22.04, a
+Tesla V100 16 GB, NVIDIA driver >= 525):
+
 ```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt        # see the file for CUDA index-url options
-pip install -U "jax[cuda12]"           # the GPU path; skip it for a CPU-only box
+git clone <this repo> && cd <it> && git checkout <branch>
+bash rl/gpu_setup.sh                   # .venv with Python 3.12 + requirements-gpu.txt
+mkdir -p out && nohup bash rl/gpu_run.sh gpu1 > out/gpu1.console 2>&1 &
+tail -f out/gpu1.console               # or: .venv/bin/python -m rl.status --name gpu1
+```
+
+`gpu_setup.sh` needs no root: Python 3.12 comes from `uv` (jax 0.11 needs >= 3.12,
+Ubuntu 22.04 ships 3.10), and `requirements-gpu.txt` pins every version, including
+the two a V100 decides: JAX's **CUDA 12** wheels (its CUDA 13 ones need compute
+capability 7.5; a V100 is 7.0) and torch's **cu126** build (PyTorch dropped Volta
+from its CUDA 12.8 builds in 2.11). `gpu_run.sh <name>` then does three things and
+needs nobody:
+
+1. **preflight**, once per commit, `ENVS` and `WALLS`: JAX and torch on the card in one process, the JAX
+   task still ClimbTask's on this card (`rl.mjx_check task physics`), a batch of
+   `ENVS` fits and how fast it runs (halved, down to 1024, until one does -- and the
+   run keeps that size), and a tiny run that saves and resumes; each step at most an
+   hour. It stops here on any failure -- and it never falls back to training on the CPU.
+2. **trains** on generated walls with ADR (the method above; `WALLS=random` is the
+   no-curriculum ablation), resuming by itself: a crash restarts from the last
+   checkpoint, and so does a trainer that has written no PPO update for `STALL`=30 min
+   (hung on the card: told to stop, killed if it does not) -- at most `MAX_FAILS`=3
+   times in a row within an hour each. It stops at `HOURS`=24 (whole hours) or `TOTAL`
+   steps, saving on the way out. Tested on this Mac with a `kill -9` and a `SIGSTOP`
+   injected into one run: both resumed from the last checkpoint, and the run finished,
+   scored, replayed and packed by itself.
+3. **scores** the best checkpoint on the FULL robot in C MuJoCo, on the benchmark --
+   lessons 1..9, `EPISODES`=50 each, against doing nothing (`eval.txt`) -- and replays
+   it on the full robot, the simplified one and MJX (`sim2sim.txt`). `provenance.txt`
+   has the commit, the GPU and every package version.
+
+After a reboot, the same command picks the run up (preflight skipped), and so does a
+second call on purpose: `HOURS=2 SCORE=0 bash rl/gpu_run.sh gpu1` first, to read the
+card's control-steps/s off `preflight.txt` and the first checkpoints off the log,
+then `HOURS=22 bash rl/gpu_run.sh gpu1` carries the same run on (`SCORE=0` skips the
+~30 min of CPU scoring the GPU would sit idle through). `SEED=1 bash rl/gpu_run.sh
+gpu1s1` is a second seed -- a paper reports several.
+
+**What a run leaves in `out/<name>/`, for an audit and for the paper** -- every file
+appended across resumes, none of them needing the trainer to read:
+
+| file | what it holds |
+|---|---|
+| `train.log` | everything the trainer printed, a crash's stack included (faulthandler, so a crash inside XLA or CUDA too) |
+| `progress.jsonl` | PPO's table, one line an update: return, episode length, approx_kl, clip fraction, rate, std, losses, fps |
+| `metrics.jsonl` | one line a checkpoint -- per lesson: success over the last 40, how the episodes ended, mean length; the pool, best, rate, KL target, contact cap -- and one per event: start (every hyperparameter), unlock, an ADR top moving, best, rollback, exit (and the error, if it crashed) |
+| `gpu.csv` | the card every minute: load, memory, temperature, power, clock |
+| `gpu_run.log` | the runner's own lines: restarts and why, budgets reached, scoring |
+| `eval.txt`, `eval.jsonl` | the full robot's score per lesson with its 95 % Wilson interval, and the do-nothing control |
+| `sim2sim.txt` | the same policy on the full robot, the simplified one and MJX |
+| `provenance.txt` | the commit, any uncommitted change, nvidia-smi, every package version |
+| `snaps/` | the policy every 50M steps (`--snap-every`), kept: the learning curve is the benchmark scored on each of them, on the full robot, after the run (`rl.curve`) |
+
+`python -m rl.plot --name gpu1` draws them into `out/gpu1/plots/`: each family's
+success over the run with unlocks and rollbacks marked, ADR's progress through each
+family's ranges, return / KL against its target / rate / std, the ways episodes
+ended, the full-robot score with its intervals, and -- after `python -m rl.curve
+--name gpu1` has scored every snapshot (hours of CPU, so at home, not on the rented
+box) -- the learning curve on the benchmark. It needs matplotlib, which the GPU box
+does not install -- plot at home.
+
+**Getting it home:** `gpu_run.sh` ends by packing the run into `out/<name>.tgz` and
+printing the line to send it: `croc send out/gpu1.tgz` on the box (`gpu_setup.sh`
+installs croc 11.5.3, checked against its release checksum), then on the Mac
+(`brew install croc`) `CROC_SECRET=<the code it printed> croc --yes`. croc is
+end-to-end encrypted (a key agreed from the code phrase), direct when it can be and
+through its public relay when not. At home:
+
+```bash
+tar xzf gpu1.tgz -C out
+.venv/bin/python -m rl.curve --name gpu1      # every snapshot on the benchmark, full robot
+.venv/bin/python -m rl.plot --name gpu1       # -> out/gpu1/plots/
+```
+
+By hand, the same pieces:
+
+```bash
 python -m rl.hardware                  # says which path training will take, and why
-python -m rl.lessons                   # regenerate the scenes on this machine
-python -m rl.mjx_check                 # the GPU path against the CPU one, ~15 min
+python -m rl.mjx_check                 # the GPU path against the CPU one, ~40 min here
 python -m rl.mjx_task --envs 4096      # GPU control-steps/s, before a long run
-python -m rl.train_ppo --name climber  # on the GPU by itself if the card is usable
+python -m rl.train_ppo --name climber --backend mjx
 ```
 
 The rest of this section is the CPU path (`--backend cpu`, or no usable GPU).
@@ -355,7 +504,9 @@ learner stays SB3's PPO with the curriculum, the guard, the adaptive rate, the s
 bounds and the checkpoints of the CPU path — the same code, fed by `MjxVecEnv`
 instead of a `SubprocVecEnv`, with the policy on the card too because 4096-row
 batches are what a GPU is for. Only the update's shape follows the batch
-(`MJX_PPO`: 32 steps a rollout, 4 minibatches, 5 epochs — rsl_rl's). A checkpoint
+(`MJX_PPO`: 32 steps a rollout like rsl_rl's, then the CPU path's 10 epochs in 8
+minibatches -- 80 Adam steps an update against its 60, at its learning rate and KL
+target). A checkpoint
 records its backend and resumes on the other one.
 
 **The task is a port, checked line for line.** `rl.mjx_task` computes the same
@@ -374,55 +525,136 @@ from it. What had to change is structural:
   closes the fingers for 0.4 s, deterministically, so that runs once per lesson at
   start-up and a reset copies it (the SLAM noise is still drawn fresh).
 
-**The robot is simplified, and the simplification was measured before it was
-drawn** (`rl.mjx_scene`'s docstring has the table: which parts touch, how often,
-how hard, under win17's policy). MJX's JAX backend has no box-cylinder collision,
-runs mesh hulls slowly and has no `jointlimitfrc` sensor. So what can touch a wall
-or the other hand is boxes round the CAD parts, walls are planes, rungs are
-capsules — and what can touch a **rung** is capsules and balls only. That last rule
-is a measured bug, not taste: MJX's capsule-box test separates only on the box's
-face normals, so a 2.4 m rung passing a 12 mm hook plate at a slight angle
-"penetrates" it. On win17's lesson-1 gait it invented 50–75 mm contacts where C
-MuJoCo saw none, 5000–12000 N where C had 200, and took the policy's lesson 1 from
-7/8 in C to 0/8 in MJX. Capsule-capsule is exact, so each hook plate became two
-rods square to the rung and the finger motor a capsule along its axis; the step
-also got 40 % cheaper. Collisions are an explicit list of 183 pairs with the
-friction and softness MuJoCo would have mixed, so the grip pad still defines the
-hook's contact. Masses, joints, actuators and the keyframe are untouched.
+**The robot is simplified, and the simplification is held to the full robot at the
+same states** (`python -m rl.mjx_check model`; `rl.mjx_scene`'s docstring has the
+reasoning shape by shape). MJX's JAX backend has no box-cylinder or mesh-cylinder
+collision and pays for every pair on every substep, so each kind of contact gets the
+shape MJX computes exactly for it:
 
-The solver is ~80 % of an MJX step, so its two caps are measured, not guessed:
-**6 Newton iterations** (C uses 6–7 on every step to its 1e-8 tolerance; at 4 the
-one-step contact error is 4x larger, at 2 it is tens of newtons) and **16
-contacts** handed to the solver (C never had more than 9 at once, on any lesson).
+- **walls** are planes, and what meets them is the robot's own collision meshes and
+  cylinders, as scene.xml draws them -- plane-mesh and plane-cylinder are exact;
+- **rungs** are capsules whose straight part is the real rung, the caps past its ends,
+  so every seat holds exactly as on the cylinder. The cost is at a rung's end: a hook
+  hanging off it still finds the 15 mm cap, so a gap trains 30 mm narrower than it is
+  (a hook on its rung in the simplified robot only: up to 6.5 % of lesson 1.85's
+  states). The family ranges run past the benchmark's (gaps to 0.30 m against 0.25),
+  and the score is taken on the full robot. Caps inside the length were worse: the
+  last 15 mm of every rung could not hold a hook edge, and gap lessons land there;
+- what meets a rung is **capsules and balls, never a box**: MJX's capsule-box test
+  separates only on the box's face normals, so a 2.4 m rung passing a 12 mm plate at
+  a slight angle "penetrates" it (on win17's gait: 50-75 mm contacts where C MuJoCo
+  saw none, 5000-12000 N where C had 200, lesson 1 7/8 in C and 0/8 in MJX). Each
+  hook plate is drawn in 0.25 mm rods lying in its broad faces -- a comb across the
+  hook's width and one along each end: the box itself, to 0.25 mm, found by the rung
+  where C finds the box, on the edges of the contact patch. The finger motor above
+  the hook is a ring of 24 such rods tangent to it, each running where the hand is at
+  the motor's radius and flush with the ends. The rung meets this motor on its free
+  end's rim; one capsule round it, as it was, stood a whole radius (27.5 mm) past that
+  rim and touched the rung in 0.4-4.5 % of lesson 1's states where the full robot was
+  1-9 mm clear. The ring: 0.0 %;
+- **one hand meets the other** with the hooks' own boxes and the three motors above
+  each hook as the cylinders they are. MJX's cylinder-cylinder is an SDF descent, not
+  exact (at win17's states it misses 27 % of C's hand-on-hand contacts, all shallow,
+  1.3 mm off at p90); the exact alternatives cost more than they give -- a convex hull
+  per link (full SAT) needs ~100 GB of scratch for 4096 envs, a 12-gon prism per motor
+  5.3 GB and misses 45 % of the contacts on its flat facets.
 
-**Cross-checked three ways** (`python -m rl.mjx_check`, ~15 min on this Mac):
+Collisions are an explicit list of pairs with the friction and softness MuJoCo would
+have mixed, so the grip pad still defines the hook's contact. Masses, joints,
+actuators and the keyframe are untouched.
+
+**The first version was a different robot, and every check the GPU path had then
+passed it.** It drew walls and hands as boxes round the parts and each hook plate as
+two 6 mm rods. `physics` compares MJX with C on the same simplified robot, so it
+cannot see a simplification; 8 episodes a lesson could not either. Copying the full
+robot's state into it along win17's gait could: its body box stood 9 mm proud of the
+chamfered hull into the wall (touching in 63 % of the states at 200 N, the full robot
+in 9 % at 36 N), its motor boxes met 9 mm deep when the hands came together, and its
+hooks carried a third of the load, lost at the rounded plate edges and the rung ends.
+From the same state, one control step took it 1.1e-2 rad and 8 mm from the full
+robot, and win17 timed out on the wide gap the full robot crossed. Now:
+
+| from the full robot's own states (win17's gait, seeded) | first version | now |
+|---|---|---|
+| one control step: joints p50, lessons 1 / 1.85 / 2 | 1.1e-2 / -- / ~1.2e-2 rad | 5.5e-4 / 8.9e-4 / 2.4e-3 rad |
+| one control step: body p50 | 8.0 / -- / ~11 mm | 0.08 / 0.11 / 0.24 mm |
+| a hook on its rung in one robot only | 34-41 % of states (lesson 1) | 0-1.5 % (lesson 1), 0.5-2.4 % (2), 6.5 % (1.85: a hook off a rung's end, on its cap) |
+| body on the wall in one robot only (lesson 1) | 53 % | 0 % |
+| finger motor on a rung in one robot only | 0.4-4.5 % simplified only (lesson 1, 5 seeds; the capsule) | 0.0 % simplified only; full only <= 3.2 % (shallow, its rim between two rods) |
+| win17 on full robot, this one in C, this one in MJX: 8 episodes x 11 lessons | -- | 78, 78, 72 of 88 |
+| the same, 24 episodes on lessons 1, 1.5, 1.7, 1.85, 2 | -- | 97, 96, 92 of 120; lesson 2 alone 12, 9, 6 of 24 (gaps: hooks land on rung ends, where the caps differ -- not significant at 24, p = 0.14, and the reason step 3 of `gpu_run.sh` scores on the full robot) |
+
+MJX against C on this same robot (`physics`), one control step from C's state along
+the gait: joints p50 5.5e-6, p90 4.9e-4 rad. Where it parts most, both engines hold
+the same contacts to 0.1 mm; the difference grows over the 20 substeps in
+contact-rich states (float32 against C's float64 -- not the 6-iteration cap, which C
+itself never exceeds on this gait: 2-3 iterations p50, 6 at most).
+
+One difference is known and left as it is: a 49 N pull along the rung for 6 s
+slides the full robot's hooks 20-24 mm and this one's 14-20 (more contacts in
+parallel creep less). It errs toward the dragging the reward charges for, so a
+policy learnt here does not lean on a slip the full robot would not give it.
+
+The hook's rod radius was swept, 2 -> 1 -> 0.5 -> 0.25 mm with the rest fixed, and
+every step moved it closer to the full robot (one step p50 2.5e-3 -> 6e-4 rad on
+lesson 1).
+
+The solver is most of an MJX step, so its two caps are measured, not guessed: **6
+Newton iterations** (C uses 6-7 to its 1e-8 tolerance; capping the full robot itself
+at 6 moves one control step by 3e-8 rad p50) and **24 contacts** handed to the solver
+(C never had more than 17 live at once, over 17 400 control steps of every lesson;
+the training log's checkpoint line prints how often all 24 are in use, which is
+the sign the cap would be dropping real contacts).
+
+**Cross-checked four ways** (`python -m rl.mjx_check`, ~40 min on this Mac; the
+policy they replay is win17's best, frozen in `rl/fixtures/win17` so every machine
+replays the same one):
 
 | check | what it compares | result |
 |---|---|---|
 | `task` | ClimbTask on C MuJoCo, its state handed to the JAX task every step, float64 | 780 steps on lessons 1, 1.5, 7 incl. win17's gait: observations equal to 2e-15, reward to 4e-10, every book and termination the same |
-| `physics` | the same simplified robot in C and in MJX, float32 | hang loads 138/138 N both; a 49 N pull slides the hook 19.2 mm in both; one control step from C's own state: joints 4e-6 rad off (p50), hook loads 0.08 N |
-| `policy` | win17's best, deterministic, on the full robot, the simplified one in C, and MJX | 70 / 68 / 67 of 88 episodes (below). With box-shaped hooks MJX had scored 46, lesson 1 0/8 |
+| `physics` | the same simplified robot in C and in MJX, float32 | hang loads 136/136 N both; a 49 N pull slides the hook 13.9 / 14.0 mm; one control step from C's own state: joints 5e-6 rad off (p50), hook loads 0.07 N; at most 14 contacts live at once against the 24 kept; a NaN state or estimate ends as `blowup` at FAIL_R and resets |
+| `model` | the simplified robot against the full one, at the full robot's own states | the table above |
+| `policy` | win17's best, deterministic, on the full robot, the simplified one in C, and MJX | 75 / 76 / 77 of 88 episodes (below) |
 
 | lesson (8 episodes each) | full robot, C | simplified, C | simplified, MJX |
 |---|---|---|---|
-| −2 one left-hand step | 5 | 7 | 7 |
-| −1, 0, 1, 1.1 | 31 of 32 | 31 | 32 |
-| 1.2, 1.35 one gap | 14 | 13 | 12 |
-| 1.5 two gaps | 7 | 4 | 6 |
-| 1.7, 1.85 wide gap | 13 | 12 | 10 |
-| 2 two wide gaps | 0 | 1 | 0 |
+| -2 one left-hand step | 7 | 7 | 8 |
+| -1, 0, 1, 1.1 | 30 of 32 | 32 | 31 |
+| 1.2, 1.35 one gap | 14 | 14 | 15 |
+| 1.5 two gaps | 7 | 6 | 6 |
+| 1.7, 1.85 wide gap | 16 | 15 | 15 |
+| 2 two wide gaps | 1 | 2 | 2 |
 
-Eight episodes a lesson is a coarse ruler — the full robot's own column moves by
-±2 between runs, from the SLAM noise alone — so what it shows is the same lessons
-easy and the same ones hard on all three, not a ranking.
+Eight episodes a lesson is a coarse ruler -- the full robot's own column moves by
++-2 between runs, from the SLAM noise alone -- so it shows the same lessons easy
+and the same ones hard on all three, not a ranking; the `model` check is the fine
+one. After a GPU run, `rl.mjx_check policy --run out/<name>` asks the question the
+other way round (`gpu_run.sh` does, into `sim2sim.txt`).
 
-**Unmeasured, because there is no NVIDIA card here:** GPU throughput. On this
-Mac's CPU the same batch runs ~870 control-steps/s at 256 envs, against ~6400 for
-C MuJoCo in 12 processes (`rl.bench`) — which is why a machine without a GPU stays
-on the CPU path. Run `python -m rl.mjx_task --envs 4096` on the card before a long
-run, and treat the first GPU run as the canary the CPU path has always had: lesson
-−2 passed by ~1M steps, or start again. `MJX_ENVS`, `MJX_PPO` (`rl.train_ppo`) and
-`ITERATIONS` / `MAX_CONTACTS` (`rl.mjx_scene`) are the knobs, in that order.
+**Unmeasured, because there is no NVIDIA card here: GPU throughput.** On this Mac's
+CPU the batch runs ~400 control-steps/s at 256 envs (the first, wrong robot ran
+~870), against ~6400 for C MuJoCo in 12 processes -- which is why a machine without
+a GPU stays on the CPU path. XLA plans 1.0 GB of scratch for a 4096-env step, so a
+16 GB card holds it with room for the policy. `gpu_run.sh`'s preflight measures the
+card before the hours start.
+
+**It learns, from scratch, on the MJX path** -- measured on this Mac's CPU with 256
+envs (8192 steps an update), seed 1, 1.5M steps, 184 updates, 85 min: lessons -2, -1
+and 0 passed (92 / 90 / 90 % at the end) and lesson 1 unlocked; approx_kl 0.008-0.014
+an update from the start, as every CPU run from scratch had (0.012-0.017); the dip
+when a lesson unlocked recovered without a rollback; no blowup, and the contact cap
+never full. The first update shape tried here, rsl_rl's 4 minibatches x 5 epochs,
+moved the policy 20x less an update (approx_kl 0.0007-0.005 with the rate already at
+its cap) -- which is why an update now takes the CPU path's Adam steps.
+
+**Judge a GPU run in updates, not steps.** An update here is 4096 x 32 = 131k steps
+against the CPU path's 3072, and a policy changes once per update, so every rule
+of thumb in steps from the CPU runs is 43x too short here: lesson -2 passed in
+~50-100 updates on the CPU path (0.14-0.3M steps), which is 6-13M steps here. The
+guard counts its patience in updates for the same reason. `MJX_ENVS`, `MJX_PPO`
+(`rl.train_ppo`) and `ITERATIONS` / `MAX_CONTACTS` (`rl.mjx_scene`) are the knobs,
+in that order.
 
 ## The reward, and the three exploits it had to be rebuilt around
 
@@ -1047,7 +1279,9 @@ self-check):
   (`UNLOCK_AT`), not the newest at 60 %. `win17` unlocked lesson 2 with 1.5 and
   1.85 at ~60 %.
 - **The guard.** If the best checkpoint's own lessons score a whole lesson below
-  that best (`GUARD_DROP`) for a million steps (`GUARD_STEPS`), the run goes back to
+  that best (`GUARD_DROP`) for a million steps (now `GUARD_UPDATES`, 325 updates:
+  the same million on 12 envs, and the same number of policy changes on any
+  other rollout size), the run goes back to
   the best checkpoint — policy and optimizer, statistics, curriculum — and carries
   on at half the learning rate (`LR_DECAY`, never below `LR_MIN`, 1e-5). A lesson
   unlocked since the best does not count, so a new lesson's first failures cannot

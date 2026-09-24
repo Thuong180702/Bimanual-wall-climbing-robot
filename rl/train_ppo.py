@@ -12,9 +12,9 @@ A run looks after itself; nobody has to watch it for the two things that used to
 need a person. The next lesson unlocks only once EVERY lesson in the pool is being
 passed (`UNLOCK_AT`), so a new one is not added on top of half-learnt ones. And if
 the pool forgets -- the best checkpoint's lessons, scored now, a whole lesson below
-that best for a million steps (`GUARD_DROP`, `GUARD_STEPS`) -- it goes back to the
-best checkpoint by itself and carries on at half the learning rate. Everything it
-prints is also appended to out/<name>/train.log.
+that best for 325 policy updates (`GUARD_DROP`, `GUARD_UPDATES`) -- it goes back to
+the best checkpoint by itself and carries on at half the learning rate. Everything
+it prints is also appended to out/<name>/train.log.
 
 The update size looks after itself too. Each action dimension's std is held in
 [STD_MIN, 1], and the learning rate moves to keep every update's KL near the run's
@@ -64,20 +64,21 @@ lesson 9 and lesson 1 is gone. So lessons are MIXED, not sequential -- each env
 picks from the active pool on every reset -- and the curriculum only controls which
 lessons are IN the pool. Nothing ever leaves it.
 """
-import argparse, hashlib, json, os, pickle, signal, sys, time
+import argparse, collections, faulthandler, hashlib, heapq, json, os, pickle, signal, sys, time
 import numpy as np
 
 try:
     import gymnasium as gym
     from stable_baselines3 import PPO
     from stable_baselines3.common.callbacks import BaseCallback
+    from stable_baselines3.common.logger import HumanOutputFormat, KVWriter, Logger
     from stable_baselines3.common.vec_env import SubprocVecEnv, VecEnv, VecMonitor, VecNormalize
 except ImportError as e:
     raise SystemExit(f"missing training deps ({e}); pip install gymnasium stable-baselines3")
 
 from controller import SCENE
 from . import default_envs, hardware
-from .climb_task import ClimbTask
+from .climb_task import CONTROL_DT, ClimbTask
 from .lessons import LESSONS, lesson_key
 
 WINDOW = 40          # episodes per lesson the success rate is measured over
@@ -95,13 +96,18 @@ WARM_RATE = 0.20     # the rate at which a new lesson counts as started, for the
                      # on a lesson at 0 % and took the one before it from 95 % down
                      # to 32 %, and its action std from 0.67 to a floor of 0.04.
 GUARD_DROP = 1.0     # the best checkpoint's own lessons falling this far below its
-GUARD_STEPS = 1_000_000  # score -- a whole lesson's worth -- for this long sends the
-                     # run back to that checkpoint. Every long run from a peak has
-                     # drifted off it over millions of steps (win11, win15 2, win16,
-                     # win16 2, win16 3, win17) and each one needed a person to
-                     # notice and resume from best. A million steps, because the
-                     # first exposure to a new lesson dips and recovers inside 600k
-                     # on its own (the win16 A/B), and that should not trip it.
+GUARD_UPDATES = 325  # score -- a whole lesson's worth -- for this many policy updates
+                     # sends the run back to that checkpoint. Every long run from a
+                     # peak has drifted off it over millions of steps (win11, win15 2,
+                     # win16, win16 2, win16 3, win17) and each one needed a person to
+                     # notice and resume from best. It was a million steps, because
+                     # the first exposure to a new lesson dips and recovers inside
+                     # 600k on its own (the win16 A/B), and that should not trip it.
+                     # Counted in UPDATES now, because the policy only changes at an
+                     # update, so that is the clock a dip and its recovery run on: 325
+                     # is that million on the CPU path's 12 envs x 256 steps. An MJX
+                     # update is 4096 x 32 = 131k steps, and a million steps there is
+                     # eight updates -- every new lesson's first dip would roll back.
 LR_DECAY = 0.5       # each rollback halves the learning rate: the untested suspect
 LR_MIN = 1e-5        # for the drift is the update size, 3e-4 for millions of steps
                      # with no KL limit, so the retry takes smaller steps
@@ -131,15 +137,51 @@ LR_MAX = 3e-4        # the ETH legged-robot work -- never above 3e-4, the rate t
                      # 0.6-1.1. Halving it is what the guard's LR_DECAY used to do on
                      # its own: with an adaptive rate, a halved rate is pulled back up
                      # within a few updates, and only the target sticks.
+BANK = 1024          # generated walls drawn at the start of every rollout (rl.walls); each
+                     # env takes one at every reset, so a 4096-env batch meets ~1000 new
+                     # walls an update and never the same bank twice
 MJX_ENVS = 4096      # envs in one GPU batch, 33 KB of state each (130 MB). ponytail:
                      # the usual MJX size, unmeasured on a GPU here -- `python -m
                      # rl.mjx_task --envs N` on the card decides
 # PPO on the GPU batch. The CPU numbers below (256 steps x 12 envs, 512 per
-# minibatch, 10 epochs) would make one update a million samples; this is the
-# massively-parallel shape instead (rsl_rl's: short rollouts, 4 minibatches, 5
-# epochs), with every other setting -- gamma, lambda, entropy, the adaptive rate and
-# its KL target -- the CPU path's.
-MJX_PPO = dict(n_steps=32, minibatches=4, n_epochs=5)
+# minibatch, 10 epochs) would make one update a million samples, so the rollout is
+# the massively-parallel one instead (rsl_rl's 24-32 steps an env). What an update
+# does with it is the CPU path's: 10 epochs, and minibatches (8, a power of two so
+# 4096 x 32 splits evenly) that make its Adam steps 80 against the CPU path's 60, at
+# the same learning rate, its same cap and the same KL target. rsl_rl's own 4 x 5 =
+# 20 steps were tried first and moved the policy 20x less an update than every CPU
+# run from scratch had (approx_kl 0.0007-0.005 against 0.012-0.017), with the rate
+# already at its 3e-4 cap -- lesson -2 would have cost hundreds of millions of steps.
+MJX_PPO = dict(n_steps=32, minibatches=8, n_epochs=10)
+
+
+# out/<name>/metrics.jsonl: what a run did, one JSON object a line, for audits and
+# plots (`python -m rl.plot`). Appended across resumes; None outside a run.
+METRICS = None
+
+
+def record(kind, **fields):
+    """one line of metrics.jsonl: a checkpoint, an unlock, a best, a rollback, a
+    session's start or end"""
+    if METRICS is not None:
+        METRICS.write(json.dumps(dict(kind=kind, t=round(time.time(), 1), **fields)) + '\n')
+
+
+class JsonLines(KVWriter):
+    """SB3's per-update table as out/<name>/progress.jsonl, one line an update,
+    appended across resumes (SB3's own csv and json writers start the file afresh
+    on every start, and a resumed run would lose its history)"""
+
+    def __init__(self, path):
+        self.f = open(path, 'a', encoding='utf-8', buffering=1)
+
+    def write(self, key_values, key_excluded, step=0):
+        row = {k: (v.item() if hasattr(v, 'item') else v) for k, v in key_values.items()
+               if isinstance(v, (int, float, np.integer, np.floating))}
+        self.f.write(json.dumps(dict(row, t=round(time.time(), 1))) + '\n')
+
+    def close(self):
+        self.f.close()
 
 
 class Tee:
@@ -165,6 +207,28 @@ def robot_stamp():
     """which robot a checkpoint learned: a hash of urdf/scene.xml, line endings
     normalised so a Windows checkout of the same file stamps the same"""
     return hashlib.sha256(open(SCENE, 'rb').read().replace(b'\r\n', b'\n')).hexdigest()[:16]
+
+
+def _replace(src, dst):
+    """os.replace, retried for a moment: on Windows it fails while another process
+    (rl.status, reading state.json) has the target open"""
+    for _ in range(50):
+        try:
+            return os.replace(src, dst)
+        except PermissionError:
+            time.sleep(0.1)
+    return os.replace(src, dst)
+
+
+def save_vecnorm(v, path):
+    """VecNormalize.save without its per-env buffers (old_obs, returns: 4.7 MB at 4096
+    envs, and VecNormalize.load rebuilds them for whatever env it is given)"""
+    kept = {k: v.__dict__[k] for k in ('old_obs', 'old_reward', 'returns') if k in v.__dict__}
+    v.__dict__.update({k: np.zeros(0) for k in kept})
+    try:
+        v.save(path)
+    finally:
+        v.__dict__.update(kept)
 
 
 def check_robot(state, allow):
@@ -224,36 +288,55 @@ class MjxVecEnv(VecEnv):
     (reason, lesson, steps, dist, the terminal observation, TimeLimit.truncated) and
     the same `set_active`, so everything downstream is unchanged."""
 
-    def __init__(self, lessons, n, seed=0):
+    def __init__(self, lessons, n, seed=0, bank=0):
         from . import mjx_task          # JAX only on this path
         self.mt = mjx_task
-        self.batch = mjx_task.Batch(n, seed)
+        self.bank = bank                # > 0: procedural walls (Walls), drawn from set_bank
+        self.batch = mjx_task.Batch(n, seed, bank=bank)
+        # substeps where the solver's contact cap was full, of all simulated; the
+        # checkpoint line prints the share and zeroes it (rl.mjx_scene.MAX_CONTACTS)
+        self.capped = self.substeps = 0
         dim = np.asarray(self.batch.reset()).shape[1]
         super().__init__(n, gym.spaces.Box(-np.inf, np.inf, (dim,), np.float32),
                          gym.spaces.Box(-1.0, 1.0, (17,), np.float32))
         self.set_active(lessons)
 
     def set_active(self, active, weights=None):
-        self.batch.set_probs(dict(zip(active, weights if weights is not None
-                                      else [1.0] * len(active))))
+        if not self.bank:               # on walls the pool's weights are in the bank itself
+            self.batch.set_probs(dict(zip(active, weights if weights is not None
+                                          else [1.0] * len(active))))
         return list(active)
+
+    def set_bank(self, layouts):
+        self.batch.set_bank(layouts)
 
     def reset(self):
         return np.asarray(self.batch.reset())
 
     def step_async(self, actions):
+        if not np.isfinite(actions).all():
+            # the policy has already gone; stop before MJX is fed NaN and before a
+            # checkpoint can save it -- a restart resumes from the last whole one
+            raise FloatingPointError("the policy's actions are not finite")
         self._actions = actions
 
     def step_wait(self):
         obs, end, r, term, trunc, info = self.batch.step(self._actions)
         obs, term, trunc = np.asarray(obs), np.asarray(term), np.asarray(trunc)
         done = term | trunc
+        self.capped += int(info['capped'].sum())
+        self.substeps += self.num_envs * self.mt.ct.FRAME_SKIP
         infos = [{} for _ in range(self.num_envs)]
         if done.any():
             end = np.asarray(end)
-            why, lesson, steps, dist = (np.asarray(info[k]) for k in ('reason', 'lesson', 'steps', 'dist'))
+            why, lesson, steps, dist, fam, probe, pval = (
+                np.asarray(info[k]) for k in ('reason', 'lesson', 'steps', 'dist', 'family',
+                                              'probe', 'probe_val'))
             for i in np.nonzero(done)[0]:
-                infos[i] = {'reason': self.mt.REASONS[why[i]], 'lesson': self.mt.LESSON_KEYS[lesson[i]],
+                # a generated wall reports its family (= its benchmark lesson's key)
+                infos[i] = {'reason': self.mt.REASONS[why[i]],
+                            'lesson': int(fam[i]) if fam[i] >= 0 else self.mt.LESSON_KEYS[lesson[i]],
+                            'probe': int(probe[i]), 'probe_val': float(pval[i]),
                             'steps': int(steps[i]), 'dist': float(dist[i]),
                             'terminal_observation': end[i],
                             'TimeLimit.truncated': bool(trunc[i] and not term[i])}
@@ -282,17 +365,39 @@ class MjxVecEnv(VecEnv):
         pass
 
 
+def episode_steps(timeout):
+    """the most control steps an episode can last: it ends at the first past `timeout` s.
+    1 % over, because MJX keeps time in float32 and it runs slow: 120 s ends at step
+    3002, not 3001 (order_check replays it)"""
+    return int(np.ceil(1.01 * timeout / CONTROL_DT)) + 1
+
+
 class Curriculum(BaseCallback):
     """Unlock the next lesson once every lesson in the pool is being passed, and keep
-    the old ones in the pool so the policy does not forget them."""
+    the old ones in the pool so the policy does not forget them.
 
-    def __init__(self, pool, active=None, history=None, enabled=True):
+    The books count episodes in the order they STARTED, each once every episode begun
+    before it has ended (`lag`: the longest one can last). Counted as they end, the
+    first in are the short ones, and a batch of envs makes that the whole sample: with
+    256 envs the first 20 family-1 walls to end were ones a re-grip in place solves,
+    20/20 at 5k steps, and family 2 unlocked on it -- over whole cohorts family 1 was
+    at 20 % at 131k. Which of the episodes begun in one span end first says nothing
+    about any of them, so a rate over all of them is the policy's however long each
+    ran. The unlock, the draw weights, the score, the guard and ADR all read it.
+    """
+
+    def __init__(self, pool, active=None, history=None, enabled=True, lag=None):
         super().__init__()
         self.pool = list(pool)
         self.active = list(active or ([self.pool[0]] if enabled else self.pool))
         self.hist = {lesson_key(k): list(v) for k, v in (history or {}).items()}
         self.lens = {}                   # episode lengths per lesson, for the draw weights
+        self.ends = collections.Counter()   # (lesson, end reason) since the last checkpoint
         self.enabled = enabled
+        # ended episodes waiting for every one begun before them: (start, env, n, episode)
+        self.pending, self.n, self.clock, self.since = [], 0, 0, -np.inf   # since: a rollback
+        self.lag = (episode_steps(max(LESSONS[k]['timeout'] for k in self.pool))
+                    if lag is None else lag)
 
     def rate(self, lesson):
         h = self.hist.get(lesson, [])[-WINDOW:]
@@ -352,6 +457,20 @@ class Curriculum(BaseCallback):
         w = [nd / (ln if ln is not None else fill) for nd, ln in zip(need, lens)]
         return [x / sum(w) for x in w]
 
+    def score(self):
+        """SUM of the success rates over the active lessons (Checkpoint.score says why)"""
+        rates = [self.rate(k) for k in self.active]
+        if any(n < UNLOCK_MIN for n, _ in rates):
+            return None
+        return sum(r for _, r in rates)
+
+    def held(self, lessons):
+        """the same sum over `lessons` -- the best checkpoint's -- scored now"""
+        rates = [self.rate(k) for k in lessons]
+        if not rates or any(n < UNLOCK_MIN for n, _ in rates):
+            return None
+        return sum(r for _, r in rates)
+
     def state(self):
         return {'active': self.active,
                 'history': {str(k): v[-WINDOW:] for k, v in self.hist.items()}}
@@ -361,16 +480,38 @@ class Curriculum(BaseCallback):
         self.active = [k for k in map(lesson_key, state['active']) if k in self.pool] \
             or self.active
         self.hist = {lesson_key(k): list(v) for k, v in state['history'].items()}
+        self.pending.clear()
+        self.since = self.clock          # episodes the dropped policy began do not count
         self._warm = self.warming()
         self.training_env.env_method('set_active', self.active, self.weights())
 
+    @staticmethod
+    def _push(books, lesson, x):
+        """append, keeping only the tail `rate` and `weights` read: a GPU batch ends
+        millions of episodes a day, and these lists used to keep every one"""
+        h = books.setdefault(lesson, [])
+        h.append(x)
+        if len(h) > 2 * WINDOW:
+            del h[:-WINDOW]
+
+    def _count(self, ep):
+        """one episode into the books `rate` and `weights` read, in start order"""
+        self._push(self.hist, ep['lesson'], ep['reason'] == 'success')
+        if ep['steps']:
+            self._push(self.lens, ep['lesson'], ep['steps'])
+
     def _on_step(self):
-        for info, done in zip(self.locals['infos'], self.locals['dones']):
+        self.clock += 1
+        for i, (info, done) in enumerate(zip(self.locals['infos'], self.locals['dones'])):
             if done and 'reason' in info:
-                self.hist.setdefault(info['lesson'], []).append(
-                    info['reason'] == 'success')
-                if info.get('steps'):
-                    self.lens.setdefault(info['lesson'], []).append(info['steps'])
+                self.ends[info['lesson'], info['reason']] += 1
+                steps = info.get('steps') or 0
+                if self.clock - steps >= self.since:
+                    self.n += 1
+                    heapq.heappush(self.pending, (self.clock - steps, i, self.n, {
+                        k: info.get(k) for k in ('lesson', 'reason', 'steps', 'probe', 'probe_val')}))
+        while self.pending and self.pending[0][0] <= self.clock - self.lag:
+            self._count(heapq.heappop(self.pending)[3])
         if not self.enabled:
             return True
         warm = self.warming()
@@ -399,12 +540,110 @@ class Curriculum(BaseCallback):
             self.hist.setdefault(self.active[-1], [])
             self._warm = self.warming()
             self.training_env.env_method('set_active', self.active, self.weights())
+            record('unlock', timesteps=int(self.num_timesteps), lesson=self.active[-1],
+                   pool=self.active, rates={str(k): self.rate(k) for k in self.active[:-1]})
             print(f"\n[curriculum] every lesson at {UNLOCK_AT:.0%}+, the newest "
                   f"({self.active[-2]}) at {r:.0%} over {n} "
                   f"episodes -> unlocking lesson {self.active[-1]} "
                   f"({LESSONS[self.active[-1]]['name']}); pool now {self.active}, "
                   f"the pool's steps go where the failures are\n")
         return True
+
+
+class Walls(Curriculum):
+    """The procedural-wall curriculum (rl.walls): what the GPU path trains on.
+
+    Nine families of walls, one per benchmark lesson 1..9 and fixed before any training,
+    enter in the benchmark's order by the parent class's own rule -- every family in
+    the pool passed at UNLOCK_AT over its last WINDOW walls, at least UNLOCK_MIN of them
+    -- and share the steps by it (`weights`: where the failures are). Inside a family
+    every parameter's top moves by automatic domain randomization: half of the walls
+    put one parameter exactly at its top (rl.walls.draw), and each WINDOW of those
+    passed at UNLOCK_AT or better moves that top a step toward its last value, at
+    WARM_RATE or worse a step back. A probe counts only at the top it was drawn at, so
+    walls still out when a top moves do not vote on the new one. The score -- the best
+    checkpoint, the guard -- is how far the tops have come, 0..1 a family.
+
+    enabled=False is the no-curriculum ablation: every family, every top at its last
+    value from the first step -- plain domain randomization over the same walls.
+    """
+
+    def __init__(self, active=None, history=None, walls=None, enabled=True, seed=0, lag=None):
+        from . import walls as W
+        self.W = W
+        super().__init__(list(W.FAMILIES), active, history, enabled,
+                         episode_steps(W.TIMEOUT) if lag is None else lag)
+        self.tops = W.first_tops() if enabled else W.last_tops()
+        for f, t in ((walls or {}).get('tops') or {}).items():
+            self.tops[int(f)].update(t)
+        self.probes = {k: list(v) for k, v in ((walls or {}).get('probes') or {}).items()}
+        self.rng = np.random.default_rng(seed)
+        self.checker = None
+
+    def progress(self):
+        """how far every top has come, first -> last, 0..1 a family, summed"""
+        return float(sum(np.mean([(self.tops[f][n] - a) / (b - a) for n, _, a, b, _ in ps])
+                         for f, ps in self.W.FAMILIES.items()))
+
+    def score(self):
+        """how far the tops have come, then -- among equals -- the pool's success on its
+        walls: 0.01 for a whole pool passed, under the smallest step any top takes
+        (0.038), so it only orders checkpoints ADR has taken equally far. Without it the
+        best froze the moment every top reached its last, where a run spends most of
+        its steps, and step 3 of gpu_run.sh scored that first policy to get there"""
+        s = super().score()
+        return self.progress() + 0.01 * (s or 0.0) / len(self.W.FAMILIES)
+
+    def held(self, lessons):
+        return self.progress()
+
+    def draw_bank(self, env):
+        """a fresh bank of BANK walls into `env`: families by the pool's weights, their
+        parameters under the tops"""
+        if self.checker is None:
+            self.checker = self.W.Checker()
+        env.env_method('set_bank', self.W.draw(self.checker, dict(zip(self.active, self.weights())),
+                                               self.tops, self.rng, BANK))
+
+    def _on_rollout_start(self):
+        self.draw_bank(self.training_env)
+
+    def _count(self, ep):
+        f, p = ep['lesson'], ep.get('probe')
+        if p is not None and p >= 0 and self.enabled:     # the ablation's tops never move
+            name = self.W.FAMILIES[f][p][0]
+            if abs(ep['probe_val'] - self.tops[f][name]) <= 1e-6:   # not a top moved since
+                h = self.probes.setdefault(f'{f}:{name}', [])
+                h.append(ep['reason'] == 'success')
+                if len(h) >= WINDOW:
+                    rate = sum(h) / len(h)
+                    h.clear()
+                    self._move(f, name, rate)
+        super()._count(ep)
+
+    def _move(self, f, name, rate):
+        _, _, first, last, step = next(s for s in self.W.FAMILIES[f] if s[0] == name)
+        t = self.tops[f][name]
+        new = (min(t + step, last) if rate >= UNLOCK_AT else
+               max(t - step, first) if rate <= WARM_RATE else t)
+        new = int(new) if isinstance(first, int) else round(float(new), 6)
+        if new != t:
+            self.tops[f][name] = new
+            record('adr', timesteps=int(self.num_timesteps), family=f, param=name,
+                   top=[t, new], rate=rate, progress=self.progress())
+            print(f"[adr] family {f} {name}: top {t:g} -> {new:g} "
+                  f"(walls at the top passed {rate:.0%}); progress {self.progress():.2f} of 9")
+
+    def state(self):
+        return dict(super().state(), walls=dict(
+            tops={str(f): t for f, t in self.tops.items()}, probes=self.probes))
+
+    def restore(self, state):
+        w = state.get('walls') or {}
+        for f, t in (w.get('tops') or {}).items():
+            self.tops[int(f)].update(t)
+        self.probes = {k: list(v) for k, v in (w.get('probes') or {}).items()}
+        super().restore(state)
 
 
 class BoundExploration(BaseCallback):
@@ -469,9 +708,10 @@ class Checkpoint(BaseCallback):
     """
 
     def __init__(self, run_dir, curriculum, every=100_000, best=None, best_active=None,
-                 rollbacks=0, kl_target=None, backend='cpu'):
+                 rollbacks=0, kl_target=None, backend='cpu', walls='lessons', snap_every=0):
         super().__init__()
         self.dir, self.cur, self.every, self.backend = run_dir, curriculum, every, backend
+        self.walls, self.snap_every, self.snapped = walls, snap_every, None
         self.last, self.best = 0, best if best is not None else -1.0
         self.kl_target = kl_target or KL_START
         # the lessons the best checkpoint was scored over; `held` scores them now
@@ -492,19 +732,13 @@ class Checkpoint(BaseCallback):
         forgetting an old one lowers it, which a "score the newest lesson" rule would
         have missed.
         """
-        rates = [self.cur.rate(k) for k in self.cur.active]
-        if any(n < UNLOCK_MIN for n, _ in rates):
-            return None
-        return sum(r for _, r in rates)
+        return self.cur.score()
 
     def held(self):
         """The best checkpoint's own lessons, scored now. Forgetting lowers it; a
         lesson unlocked since the best cannot, so a new lesson's first failures are
         never read as the pool coming apart."""
-        rates = [self.cur.rate(k) for k in self.best_active]
-        if not rates or any(n < UNLOCK_MIN for n, _ in rates):
-            return None
-        return sum(r for _, r in rates)
+        return self.cur.held(self.best_active)
 
     def guard(self):
         """at each checkpoint: has the pool been a lesson below its best for long
@@ -517,9 +751,13 @@ class Checkpoint(BaseCallback):
         if self.low_since is None:
             self.low_since = self.model.num_timesteps
         low = self.model.num_timesteps - self.low_since
-        if low >= GUARD_STEPS:
+        if low >= self.patience():
             self.due = True
         return f" | forgetting: {h:.2f} vs best {self.best:.2f} for {low:,} steps"
+
+    def patience(self):
+        """GUARD_UPDATES in steps, at this run's rollout size"""
+        return GUARD_UPDATES * self.model.n_steps * self.model.n_envs
 
     def _on_rollout_start(self):
         if self.due:
@@ -545,44 +783,95 @@ class Checkpoint(BaseCallback):
         self.kl_target = max(self.kl_target * LR_DECAY, KL_MIN)
         self.rollbacks += 1
         self.low_since, self.due = None, False
+        record('rollback', timesteps=int(m.num_timesteps), held=h, best=self.best,
+               pool=self.cur.active, lr=[was, m.learning_rate], kl_target=[was_kl, self.kl_target],
+               rollbacks=self.rollbacks)
         print(f"\n[guard] {h:.2f} against the best {self.best:.2f} for "
-              f"{GUARD_STEPS:,}+ steps: back to the best checkpoint (pool "
+              f"{GUARD_UPDATES}+ updates: back to the best checkpoint (pool "
               f"{self.cur.active}), learning rate {was:g} -> {m.learning_rate:g}, "
               f"KL target {was_kl:g} -> {self.kl_target:g}, "
               f"rollback {self.rollbacks}\n")
         self.save()
 
     def save(self, tag=''):
-        os.makedirs(self.dir, exist_ok=True)
         p = os.path.join(self.dir, tag or '')
-        self.model.save(p + 'model')
-        self.model.get_vec_normalize_env().save(p + 'vecnorm.pkl')
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        # each file is written aside and renamed over the old one: a run killed in
+        # the middle of a save (out of memory, a rented box stopped) must still have
+        # a whole checkpoint to resume from, not a torn zip
+        self.model.save(p + 'model.tmp.zip')
+        save_vecnorm(self.model.get_vec_normalize_env(), p + 'vecnorm.tmp.pkl')
         state = {'timesteps': int(self.model.num_timesteps), 'robot': robot_stamp(),
-                 'backend': self.backend, 'best': self.best, 'best_active': self.best_active,
+                 'backend': self.backend, 'walls_mode': self.walls,
+                 'best': self.best, 'best_active': self.best_active,
                  'lr': self.model.lr_schedule(1.0), 'kl_target': self.kl_target,
                  'rollbacks': self.rollbacks,
                  **self.cur.state()}
-        json.dump(state, open(p + 'state.json', 'w'), indent=1)
+        with open(p + 'state.tmp.json', 'w') as f:
+            json.dump(state, f, indent=1)
+        for f in ('model.zip', 'vecnorm.pkl', 'state.json'):
+            _replace(p + f.replace('.', '.tmp.'), p + f)
         return p
 
-    def _on_step(self):
+    def _on_rollout_end(self):
         # Keep the best policy, not just the newest. The 2.6M checkpoint that scored
         # 12/12 was overwritten by a later, worse one and had to be re-run from a
         # backup copy; a run that peaks and then drifts should not lose its peak.
+        # Judged once a rollout, on the policy that collected it: it only changes at
+        # an update, and 4096 envs move the score on almost every step.
         s = self.score()
         if s is not None and s > self.best:
             self.best, self.best_active, self.low_since = s, list(self.cur.active), None
             self.save('best_')
-            print(f"[best] score {s:.2f} over {len(self.cur.active)} lesson(s) "
+            record('best', timesteps=int(self.model.num_timesteps), score=s,
+                   pool=self.cur.active)
+            print(f"[best] score {s:.4g} over {len(self.cur.active)} lesson(s) "
                   f"at {self.model.num_timesteps:,} steps")
+
+    def _on_step(self):
+        # A snapshot every snap_every steps, kept: the benchmark scored on each after the
+        # run (python -m rl.curve) is the learning curve, and it is scored on the full
+        # robot, which training never sees -- nothing is chosen by it
+        n = self.model.num_timesteps
+        if self.snap_every and n // self.snap_every != self.snapped:
+            if self.snapped is not None:
+                self.save(os.path.join('snaps', f'{n:012d}_'))
+            self.snapped = n // self.snap_every
         if self.model.num_timesteps - self.last >= self.every:
             self.last = self.model.num_timesteps
             self.save()
-            rates = " ".join(f"L{k} {self.cur.rate(k)[1]:.0%}" for k in self.cur.active)
+            # '-': nothing counted yet (a cohort is counted once all of it has ended)
+            rates = " ".join(f"L{k} " + (f"{r:.0%}" if n else "-")
+                             for k, (n, r) in ((k, self.cur.rate(k)) for k in self.cur.active))
+            # how the episodes since the last line ended: a 'blowup' count that is
+            # not ~0 is the simulator, not the policy, and says so here first
+            why, by_lesson = collections.Counter(), collections.defaultdict(dict)
+            for (k, w), n in self.cur.ends.items():
+                why[w] += n
+                by_lesson[str(k)][w] = n
+            self.cur.ends.clear()
+            ends = ", ".join(f"{k} {n}" for k, n in sorted(why.items())) or "none"
+            base, cap = self.training_env.unwrapped, None
+            if isinstance(base, MjxVecEnv) and base.substeps:
+                # not ~0 is MJX dropping live contacts: raise rl.mjx_scene.MAX_CONTACTS
+                cap = base.capped / base.substeps
+                ends += f" | contact cap full {cap:.3%} of substeps"
+                base.capped = base.substeps = 0
+            guard = self.guard()
+            record('checkpoint', timesteps=int(self.model.num_timesteps),
+                   updates=int(self.model.num_timesteps // (self.model.n_steps * self.model.n_envs)),
+                   pool=self.cur.active,
+                   rate={str(k): self.cur.rate(k) for k in self.cur.active},
+                   length={str(k): float(np.mean(v[-WINDOW:])) for k, v in self.cur.lens.items() if v},
+                   ends=by_lesson, best=self.best, held=self.held(),
+                   lr=self.model.lr_schedule(1.0), kl_target=self.kl_target,
+                   rollbacks=self.rollbacks, contact_cap=cap,
+                   std=float(self.model.policy.log_std.detach().exp().mean()),
+                   tops=getattr(self.cur, 'tops', None))
             print(f"[checkpoint] {self.model.num_timesteps:,} steps | {rates} | "
                   f"best {self.best:.2f} | lr {self.model.lr_schedule(1.0):g} "
                   f"kl<={self.kl_target:g}"
-                  f"{self.guard()} | out/{os.path.basename(self.dir)}")
+                  f"{guard} | ends: {ends} | out/{os.path.basename(self.dir)}")
         return True
 
 
@@ -612,7 +901,7 @@ def self_check():
             c._on_step()
 
     env = FakeEnv()
-    c = Curriculum([1, 2, 3])
+    c = Curriculum([1, 2, 3], lag=0)     # the rules; order_check tests the order
     c.model = FakeModel(env)
     assert c.active == [1], "curriculum must start with one lesson"
 
@@ -664,6 +953,11 @@ def self_check():
     restored = Curriculum([1, 2, 3], **json.loads(json.dumps(c.state())))
     assert restored.active == c.active, (restored.active, c.active)
     assert restored.rate(2) == c.rate(2), "history did not survive state.json"
+    # the books keep only their tail, and the rate is the same for it
+    feed(c, 2, 'success', 5 * WINDOW, steps=100)
+    assert len(c.hist[2]) <= 2 * WINDOW and len(c.lens[2]) <= 2 * WINDOW, \
+        (len(c.hist[2]), len(c.lens[2]))
+    assert c.rate(2) == (WINDOW, 1.0) and c.ends[2, 'success'] > 0, (c.rate(2), c.ends)
 
     # a resume onto another robot is refused unless asked for
     check_robot({'robot': robot_stamp()}, False)
@@ -679,7 +973,7 @@ def self_check():
     assert off.active == [1, 2, 3], "--no-curriculum must start with the whole pool"
 
     # the gate: a lesson slipping behind the frontier holds the next one back
-    g = Curriculum([1, 2, 3])
+    g = Curriculum([1, 2, 3], lag=0)
     g.model = FakeModel(FakeEnv())
     feed(g, 1, 'success', WINDOW)
     feed(g, 1, 'fell', WINDOW // 2)                 # lesson 1 slips to 50 %
@@ -688,7 +982,9 @@ def self_check():
     feed(g, 1, 'success', WINDOW)
     assert g.active == [1, 2, 3], f"never unlocked once lesson 1 recovered: {g.active}"
 
+    order_check(FakeModel, FakeEnv)
     guard_check(FakeModel, FakeEnv, feed)
+    walls_check(FakeModel, FakeEnv)
 
     # The best-checkpoint score must never fall just because a lesson unlocked. Under
     # the old mean it did: 85% on lesson 1 alone scored 0.85, and unlocking lesson 2
@@ -697,11 +993,11 @@ def self_check():
         active = None
         def rate(self, k):
             return (WINDOW, {1: 0.85, 2: 0.0, 3: 0.0}[k])
-    cp, sc = Cp(), Checkpoint.score
+    cp, sc = Cp(), Curriculum.score
     cp.active = [1]
-    before = sc(type('X', (), {'cur': cp})())
+    before = sc(cp)
     cp.active = [1, 2]
-    after = sc(type('X', (), {'cur': cp})())
+    after = sc(cp)
     print(f"score test: lesson 1 at 85% scores {before:.2f}; unlocking lesson 2 at 0% "
           f"scores {after:.2f}")
     assert after >= before, (f"unlocking a lesson dropped the score {before:.2f} -> "
@@ -709,6 +1005,96 @@ def self_check():
     print(f"curriculum: unlocks at {UNLOCK_AT:.0%} over {UNLOCK_MIN}+ episodes on EVERY "
           f"lesson in the pool, keeps them all, and spends its STEPS where the failures "
           f"are -- frontier or regressed alike, {MIN_SHARE:.0%} floor for a mastered one. OK")
+
+
+def order_check(FakeModel, FakeEnv):
+    """A batch starts together; half its walls pass at step 10, half fall at 900. The
+    fast half alone is 100 %, and counted as they ended it unlocked the next lesson;
+    counted by start, nothing is in until the whole cohort is, and then it is 50 %."""
+    c = Curriculum([1, 2], lag=1000)
+    c.model = FakeModel(FakeEnv())
+    n = 2 * UNLOCK_MIN
+    for t in range(1, 1001):
+        ends = ({i: 'success' for i in range(0, n, 2)} if t == 10 else
+                {i: 'fell' for i in range(1, n, 2)} if t == 900 else {})
+        c.locals = {'infos': [{'reason': ends[i], 'lesson': 1, 'steps': t} if i in ends else {}
+                              for i in range(n)], 'dones': [i in ends for i in range(n)]}
+        c._on_step()
+        if t == 10:
+            assert c.rate(1) == (0, 0.0) and c.active == [1], "counted a cohort's fast ends first"
+    assert c.rate(1) == (n, 0.5) and c.active == [1], (c.rate(1), c.active)
+    c.restore(c.state())                              # a rollback: what was begun before
+    c.locals = {'infos': [{'reason': 'success', 'lesson': 1, 'steps': 5}], 'dones': [True]}
+    c._on_step()                                      # it, by the dropped policy, is out
+    assert not c.pending, "counted an episode begun before a rollback"
+    from .climb_task import FRAME_SKIP
+    from .walls import TIMEOUT
+    for T in (TIMEOUT, max(v['timeout'] for v in LESSONS.values())):
+        t, n = np.float32(0.0), 0                     # MJX's float32 clock, a substep at a time
+        while t <= T:
+            for _ in range(FRAME_SKIP):
+                t = np.float32(t + np.float32(CONTROL_DT / FRAME_SKIP))
+            n += 1
+        assert episode_steps(T) >= n, f"a {T} s episode can last {n} steps, lag {episode_steps(T)}"
+    assert Walls().lag == episode_steps(TIMEOUT) and Curriculum([9]).lag == episode_steps(120.0)
+    print(f"order test: a cohort's fast ends wait for its slow ones ({UNLOCK_MIN} passes "
+          f"at step 10 did not unlock; the cohort is 50 %); a rollback drops what the old "
+          f"policy began. OK")
+
+
+def walls_check(FakeModel, FakeEnv):
+    """ADR on the generated walls: a top moves only on a full WINDOW of probes drawn at
+    it, up on a pass, down on a fail, never past its ends; the families enter in order;
+    and the tops survive state.json"""
+    from .walls import FAMILIES
+    w = Walls(lag=0)
+    w.model = FakeModel(FakeEnv())
+    assert w.active == [1] and w.tops[1]['shift'] == FAMILIES[1][0][2], (w.active, w.tops[1])
+
+    def probe(f, name, ok, n, val=None):
+        i = [s[0] for s in FAMILIES[f]].index(name)
+        v = w.tops[f][name] if val is None else val
+        for _ in range(n):
+            w.locals = {'infos': [dict(reason='success' if ok else 'fell', lesson=f, probe=i,
+                                       probe_val=v, steps=100)], 'dones': [True]}
+            w._on_step()
+    top0, p0 = w.tops[1]['shift'], w.progress()
+    probe(1, 'shift', True, WINDOW - 1)
+    assert w.tops[1]['shift'] == top0, "moved before a full window of probes"
+    probe(1, 'shift', True, 1)
+    assert abs(w.tops[1]['shift'] - (top0 + 0.1)) < 1e-9 and w.progress() > p0, w.tops[1]
+    probe(1, 'shift', False, WINDOW, val=0.123)          # drawn at a top long gone: no vote
+    assert abs(w.tops[1]['shift'] - (top0 + 0.1)) < 1e-9, "counted probes of an old top"
+    probe(1, 'shift', False, WINDOW)
+    assert abs(w.tops[1]['shift'] - top0) < 1e-9, "a failed window did not move the top back"
+    probe(1, 'shift', False, WINDOW)
+    assert abs(w.tops[1]['shift'] - top0) < 1e-9, "went below the first top"
+    for _ in range(40):
+        probe(1, 'shift', True, WINDOW)
+    assert w.tops[1]['shift'] == FAMILIES[1][0][3], "went past the last top"
+    assert w.active[:2] == [1, 2], f"family 2 never entered after family 1 was passed: {w.active}"
+    st = json.loads(json.dumps(w.state()))
+    r = Walls(st['active'], st['history'], st['walls'])
+    assert r.tops == w.tops and r.active == w.active, "tops did not survive state.json"
+    step = min(st / (b - a) / len(ps) for ps in FAMILIES.values() for _, _, a, b, st in ps)
+    assert 0.01 < step, f"a pool's success (0.01) can outrank a step of a top ({step:.3f})"
+    off = Walls(enabled=False, lag=0)
+    off.model = FakeModel(FakeEnv())
+    assert off.active == list(FAMILIES) and off.tops[9]['reach'] == FAMILIES[9][0][3]
+    assert off.score() == off.progress() == len(FAMILIES), "a tie-break with nothing counted"
+    for f in FAMILIES:                                   # every family passed: + 0.01
+        off.locals = {'infos': [dict(reason='success', lesson=f, probe=-1, probe_val=0.0,
+                                     steps=100)] * WINDOW, 'dones': [True] * WINDOW}
+        off._on_step()
+    assert abs(off.score() - (len(FAMILIES) + 0.01)) < 1e-9, off.score()
+    tops = json.dumps(off.tops, sort_keys=True)
+    off.locals = {'infos': [dict(reason='fell', lesson=1, probe=0, probe_val=off.tops[1]['shift'],
+                                 steps=100)] * WINDOW, 'dones': [True] * WINDOW}
+    off._on_step()
+    assert json.dumps(off.tops, sort_keys=True) == tops, "the no-curriculum ablation moved a top"
+    print(f"walls test: ADR moves a top by its step on a full window of {WINDOW} probes at it "
+          f"({UNLOCK_AT:.0%} up, {WARM_RATE:.0%} down), within its ends; families enter in "
+          f"order; tops survive state.json; the ablation starts every family at its last tops. OK")
 
 
 def guard_check(FakeModel, FakeEnv, feed):
@@ -732,7 +1118,7 @@ def guard_check(FakeModel, FakeEnv, feed):
     with tempfile.TemporaryDirectory() as d:
         venv = VecNormalize(DummyVecEnv([Toy]), norm_reward=False)
         m = PPO('MlpPolicy', venv, n_steps=16, batch_size=16, verbose=0)
-        cur = Curriculum([1, 2])
+        cur = Curriculum([1, 2], lag=0)
         cur.model = FakeModel(FakeEnv())
         feed(cur, 1, 'success', WINDOW)               # pool [1, 2]
         feed(cur, 2, 'success', UNLOCK_MIN)
@@ -740,7 +1126,7 @@ def guard_check(FakeModel, FakeEnv, feed):
         ck.init_callback(m)
         sys.stdout = open(os.devnull, 'w')            # its [best]/[checkpoint] lines
         try:
-            ck._on_step()                             # a best, over [1, 2]
+            ck._on_rollout_end()                      # a best, over [1, 2]
             assert ck.best == 2.0 and ck.best_active == [1, 2], (ck.best, ck.best_active)
             best_w = {k: v.clone() for k, v in m.policy.state_dict().items()}
             best_mean = venv.obs_rms.mean.copy()
@@ -753,12 +1139,16 @@ def guard_check(FakeModel, FakeEnv, feed):
             m.num_timesteps = 10
             ck._on_step()
             assert not ck.due and ck.low_since == 10, "tripped on the first low checkpoint"
-            m.num_timesteps = 10 + GUARD_STEPS - 1
+            # the patience is in updates: GUARD_UPDATES of this toy's 16-step rollout,
+            # and the same count of an MJX batch's 131k-step one
+            P = ck.patience()
+            assert P == GUARD_UPDATES * 16, P
+            m.num_timesteps = 10 + P - 1
             ck._on_step()
-            assert not ck.due, "tripped before GUARD_STEPS"
-            m.num_timesteps = 10 + GUARD_STEPS
+            assert not ck.due, "tripped before GUARD_UPDATES"
+            m.num_timesteps = 10 + P
             ck._on_step()
-            assert ck.due, f"a lesson forgotten for {GUARD_STEPS:,} steps did not trip it"
+            assert ck.due, f"a lesson forgotten for {GUARD_UPDATES} updates did not trip it"
             ck._on_rollout_start()
         finally:
             sys.stdout.close()
@@ -823,7 +1213,7 @@ def guard_check(FakeModel, FakeEnv, feed):
             sys.stdout = out
         assert abs(first - KL_START * LR_DECAY) < 1e-12, first
         assert abs(ck.kl_target - KL_MIN) < 1e-12, "the KL target went below KL_MIN"
-    print(f"guard test: the best's lessons a whole lesson down for {GUARD_STEPS:,} steps "
+    print(f"guard test: the best's lessons a whole lesson down for {GUARD_UPDATES} updates "
           f"sends the run back to its best checkpoint (policy, statistics, curriculum) at "
           f"x{LR_DECAY:g} the learning rate, never below {LR_MIN:g}. OK")
     print(f"update-size test: action std held in [{STD_MIN:g}, 1]; the learning rate "
@@ -870,6 +1260,14 @@ def main():
                          'robot model (fine-tuning across a model change)')
     ap.add_argument('--no-curriculum', dest='curriculum', action='store_false',
                     help='put every lesson in the pool from step 0')
+    # What an episode's wall is. `adr`, the GPU path's default: generated walls
+    # (rl.walls), nine families entering in the benchmark's order, each parameter's
+    # range grown by ADR; the benchmark lessons 1..9 are for scoring only. `random`: the
+    # same walls at their last ranges from step 0, all families -- the no-curriculum
+    # ablation. `lessons`: the fixed lesson scenes and their unlock ladder (--lessons,
+    # --no-curriculum), the only one the CPU path can run.
+    ap.add_argument('--walls', default=None, choices=['adr', 'random', 'lessons'],
+                    help='default: adr on mjx, lessons on cpu')
     # 3e-3 was too high: after 4M steps the action std had grown to 1.52, above the
     # 1.0 it starts at, so the entropy bonus was beating the policy gradient and the
     # mean action stayed useless -- deterministic eval fell 12/12 while sampling from
@@ -901,8 +1299,14 @@ def main():
     ap.add_argument('--net', default=None,
                     help='hidden sizes for both nets, e.g. 256,256 (default 64,64); '
                          'fresh runs only')
+    ap.add_argument('--snap-every', type=int, default=None,
+                    help='steps between kept snapshots for the learning curve (rl.curve); '
+                         'default 50M on mjx, 2M on cpu; 0 = none')
     ap.add_argument('--ckpt-every', type=int, default=None,
                     help='steps between checkpoints; default 100k on cpu, 1M on mjx')
+    ap.add_argument('--seed', type=int, default=None,
+                    help="a fresh run's policy init and its envs' draws; a paper reports "
+                         "several (default: an unseeded init, env seeds 0..n-1)")
     ap.add_argument('--self-check', action='store_true',
                     help='test the curriculum logic, train nothing')
     a = ap.parse_args()
@@ -920,10 +1324,21 @@ def main():
     os.makedirs(run, exist_ok=True)
     log = open(os.path.join(run, 'train.log'), 'a', encoding='utf-8', buffering=1)
     sys.stdout, sys.stderr = Tee(sys.stdout, log), Tee(sys.stderr, log)
+    # a crash below Python (XLA, CUDA, MuJoCo) still leaves its stack in the log
+    faulthandler.enable(file=log, all_threads=True)
+    global METRICS
+    METRICS = open(os.path.join(run, 'metrics.jsonl'), 'a', encoding='utf-8', buffering=1)
     print(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')}  {' '.join(sys.argv)}")
     print(hardware.report())
     backend = hardware.backend()[0] if a.backend == 'auto' else a.backend
     mjx = backend == 'mjx'
+    a.walls = a.walls or ('adr' if mjx else 'lessons')
+    gen = a.walls != 'lessons'
+    if gen and not mjx:
+        raise SystemExit("generated walls (--walls adr/random) run on the MJX backend only")
+    if gen:
+        from .walls import FAMILIES
+        pool = list(FAMILIES)
     envs = a.envs or (MJX_ENVS if mjx else default_envs())
     if a.device is None:
         import torch
@@ -942,14 +1357,21 @@ def main():
             raise SystemExit(f"nothing to resume: {f} does not exist")
         state = json.load(open(f))
         check_robot(state, a.new_robot)
+        if state.get('walls_mode', 'lessons') != a.walls:
+            raise SystemExit(f"this run trained on --walls {state.get('walls_mode', 'lessons')}; "
+                             f"it cannot carry on on --walls {a.walls}")
         was = state.get('backend', 'cpu')
         if was != backend:
             print(f"[backend] this run trained on {was} until now and carries on on "
                   f"{backend}: the same task, and mjx's simplified robot is checked "
                   f"against the full one by rl.mjx_check")
 
-    base = VecMonitor(MjxVecEnv(pool, envs) if mjx else SubprocVecEnv(
-        [(lambda i=i: MultiLesson(pool, seed=i)) for i in range(envs)]))
+    # a resumed MJX batch draws from a key of its own, not the start's sequence again
+    seed = a.seed or 0
+    base = VecMonitor(MjxVecEnv(pool, envs, seed + state.get('timesteps', 0),
+                                bank=BANK if gen else 0) if mjx else
+                      SubprocVecEnv([(lambda i=i: MultiLesson(pool, seed=1000 * seed + i))
+                                     for i in range(envs)]))
     if a.resume:
         venv = VecNormalize.load(os.path.join(run, ck + 'vecnorm.pkl'), base)
         venv.training = True
@@ -987,7 +1409,7 @@ def main():
                     learning_rate=3e-4 if a.lr is None else a.lr,
                     target_kl=a.target_kl,
                     policy_kwargs=None if net is None else dict(net_arch=net),
-                    ent_coef=1e-3 if a.ent_coef is None else a.ent_coef)
+                    ent_coef=1e-3 if a.ent_coef is None else a.ent_coef, seed=a.seed)
         if net:
             print(f"policy and value nets {net} (SB3's default is [64, 64])")
 
@@ -1005,8 +1427,11 @@ def main():
     if active is not None and active != (state.get('active') or []):
         print(f"[curriculum] pool narrowed to {active}; the best score starts over")
         best = None
-    cur = Curriculum(pool, active, state.get('history'), a.curriculum)
+    cur = (Walls(active, state.get('history'), state.get('walls'), a.walls == 'adr', seed)
+           if gen else Curriculum(pool, active, state.get('history'), a.curriculum))
     venv.env_method('set_active', cur.active, cur.weights())
+    if gen:
+        cur.draw_bank(venv)              # the first episodes' walls, before learn's reset
     # which lessons the best was scored over: in the state since the guard exists,
     # and before that it is best_state.json's own active set
     best_active = state.get('best_active')
@@ -1015,7 +1440,9 @@ def main():
         best_active = json.load(open(bf))['active']
     ckpt = Checkpoint(run, cur, a.ckpt_every or (1_000_000 if mjx else 100_000), best,
                       best_active if best is not None else None,
-                      state.get('rollbacks', 0), state.get('kl_target'), backend)
+                      state.get('rollbacks', 0), state.get('kl_target'), backend, a.walls,
+                      a.snap_every if a.snap_every is not None else
+                      (50_000_000 if mjx else 2_000_000))
 
     # Ctrl-C during a rollout would otherwise lose everything since the last
     # checkpoint; SIGTERM likewise, so a killed run is resumable too.
@@ -1024,6 +1451,19 @@ def main():
                       lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
     except (ValueError, AttributeError, OSError):
         pass          # Windows accepts only a short list of signals; Ctrl-C still works
+    # the rollout table every update, on the console and train.log as before, and as
+    # one line of progress.jsonl (rl.plot reads it)
+    model.set_logger(Logger(None, [HumanOutputFormat(sys.stdout),
+                                   JsonLines(os.path.join(run, 'progress.jsonl'))]))
+    record('start', argv=sys.argv[1:], backend=backend, envs=envs, device=str(model.device),
+           seed=a.seed, timesteps=int(model.num_timesteps), pool=cur.active,
+           n_steps=model.n_steps, batch_size=model.batch_size, n_epochs=model.n_epochs,
+           gamma=model.gamma, gae_lambda=model.gae_lambda, ent_coef=model.ent_coef,
+           clip_range=float(model.clip_range(1.0)), lr=model.lr_schedule(1.0),
+           kl_target=ckpt.kl_target, net_arch=str(model.policy.net_arch), robot=robot_stamp(),
+           walls=a.walls, bank=BANK if gen else 0,
+           tops=getattr(cur, 'tops', None))
+    how = 'finished'
     try:
         # no progress_bar: it pulls in tqdm + rich, and verbose=1 already prints the
         # rollout table with elapsed time and total_timesteps every update
@@ -1031,8 +1471,10 @@ def main():
                     callback=[cur, ckpt, AdaptiveLR(ckpt), BoundExploration()],
                     reset_num_timesteps=not a.resume)
     except KeyboardInterrupt:
+        how = 'interrupted'
         print("\ninterrupted -- saving")
     except (BrokenPipeError, EOFError, ConnectionResetError) as e:
+        how = f'worker ended ({type(e).__name__})'
         # A worker process ended. On Windows that is what Ctrl-C usually looks
         # like from here -- the console signal reaches the workers first and the
         # parent reads a closed pipe instead of KeyboardInterrupt -- and it is
@@ -1040,7 +1482,12 @@ def main():
         # and the last checkpoint window must not go with it: win17 lost the
         # 55k steps since its last one this way, at 41.7M.
         print(f"\na worker process ended ({type(e).__name__}) -- saving")
+    except BaseException as e:
+        # not saved: whatever broke may be in the weights (the last checkpoint is whole)
+        record('exit', how='crashed', error=repr(e)[:500], timesteps=int(model.num_timesteps))
+        raise
     ckpt.save()
+    record('exit', how=how, timesteps=int(model.num_timesteps))
     for k in pool:
         n, r = cur.rate(k)
         if n:

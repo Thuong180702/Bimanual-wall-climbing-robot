@@ -1,13 +1,14 @@
 """Cross-checks: is the GPU path the same task, on the same robot, as the CPU path?
 
-    python -m rl.mjx_check              # task, physics, policy -- each in its own process
+    python -m rl.mjx_check              # task, physics, model, policy -- a process each
     python -m rl.mjx_check task         # the JAX task against ClimbTask, state by state
     python -m rl.mjx_check physics      # MJX against C MuJoCo, same simplified robot
+    python -m rl.mjx_check model        # the simplified robot against the full one
     python -m rl.mjx_check policy       # a trained policy: full robot, simplified in C, MJX
     python -m rl.mjx_check contacts     # which parts touch under a trained policy
     python -m rl.mjx_check policy --run out/g1   # another run's best checkpoint
 
-Three things could each make a GPU-trained policy worthless on the CPU path, and
+Four things could each make a GPU-trained policy worthless on the CPU path, and
 each gets its own check, because a failure in one is invisible to the others:
 
   task      the port. ClimbTask runs on C MuJoCo; at every control step its state
@@ -20,6 +21,9 @@ each gets its own check, because a failure in one is invisible to the others:
             gait (what caught MJX's capsule-box test inventing contacts), and how
             many contacts are really live at once against the MAX_CONTACTS the
             solver is given.
+  model     the simplification. The full robot and the simplified one in C, at the
+            same states along the policy's gait: what touches, how hard, and one
+            control step from there. (What the first simplified robot failed.)
   policy    the robot. A trained policy (default: win17's best, learnt on the full
             robot) replayed on the full robot, the simplified one in C, and MJX.
             The model simplification and the engine are only good enough if it
@@ -30,7 +34,21 @@ each gets its own check, because a failure in one is invisible to the others:
 import os, pickle, subprocess, sys, time
 import numpy as np
 
-RUN = os.path.join('out', 'win17')      # the policy the checks replay; --run to change
+# The policy the checks replay (--run to change): win17's best, 38.06M steps on the
+# full robot, lessons -2..2. Frozen in the repo, so every machine -- the GPU box
+# included -- replays the same one; out/win17 moves whenever that run is resumed.
+RUN = os.path.join(os.path.dirname(__file__), 'fixtures', 'win17')
+
+
+def _task(k, xml=None, seed=0):
+    """a C ClimbTask whose SLAM noise comes from `seed`. Every check here is a function
+    of the code: unseeded, a policy's gait -- and what the model check counts along
+    it -- came out different on every run (lesson 1's wrist on the rung: 2 % one run,
+    9 % the next)."""
+    from .climb_task import ClimbTask
+    t = ClimbTask(k, visual=False, xml=xml)
+    t.env._slam_rng = np.random.default_rng(seed)
+    return t
 
 
 def _policy(run=None, best=True):
@@ -76,8 +94,7 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
 
     for k in lessons:
         li = LESSON_KEYS.index(k)
-        t = ClimbTask(k, visual=False, xml=c_path(k))
-        t.env._slam_rng = np.random.default_rng(0)
+        t = _task(k, c_path(k))
         rec = {}
         slam, sense = t.env.slam, t._sense
 
@@ -174,7 +191,7 @@ def check_physics(lessons=(1, 2, 7, 8)):
     z = jp.zeros(17)
     for k in lessons:
         li = LESSON_KEYS.index(k)
-        t = ClimbTask(k, visual=False, xml=c_path(k))
+        t = _task(k, c_path(k))
         t.reset()
         st, _ = reset(task.tables, li, jax.random.PRNGKey(0))
         dq = float(np.abs(np.asarray(st.d.qpos) - t.env.data.qpos).max())
@@ -199,7 +216,7 @@ def check_physics(lessons=(1, 2, 7, 8)):
 
     # the side pull climb_task's slide test uses: 0.23 x body weight along the rung
     k, li = 1, LESSON_KEYS.index(1)
-    t = ClimbTask(k, visual=False, xml=c_path(k))
+    t = _task(k, c_path(k))
     t.reset()
     st, _ = reset(task.tables, li, jax.random.PRNGKey(0))
     ax = np.array([0.0, 1.0, 0.0])
@@ -226,8 +243,8 @@ def check_physics(lessons=(1, 2, 7, 8)):
     # simulations of a swinging robot part within a second whatever is wrong.
     pol = _policy()
     k, li = 1, LESSON_KEYS.index(1)
-    t = ClimbTask(k, visual=False, xml=c_path(k))
-    m_env = task._env_model(task.tables, li)
+    t = _task(k, c_path(k))
+    m_env = task._env_model(task.wall(task.tables, li))
 
     @jax.jit
     def one(d, ctrl):
@@ -259,7 +276,7 @@ def check_physics(lessons=(1, 2, 7, 8)):
     # contacts live at once, measured in C where nothing caps them
     seen = []
     for k in (lessons if pol is None else pol[1]):
-        t = ClimbTask(k, visual=False, xml=c_path(k))
+        t = _task(k, c_path(k))
         o, _ = t.reset()
         rng = np.random.default_rng(0)
         for i in range(400):
@@ -274,7 +291,106 @@ def check_physics(lessons=(1, 2, 7, 8)):
           f"{seen.max()} -- MJX's solver takes the deepest {MAX_CONTACTS}, "
           f"{ITERATIONS} Newton iterations")
     assert seen.max() <= MAX_CONTACTS, "more contacts at once than MJX keeps: raise MAX_CONTACTS"
+
+    # A blown-up env is an episode's failure, never a NaN handed to the learner: one
+    # NaN reward poisons PPO's advantages, one NaN observation VecNormalize's
+    # statistics, and either ends the run. Physics NaN in env 0, a NaN attitude
+    # estimate (a zero accelerometer's triad) in env 1, env 2 healthy.
+    from .mjx_task import Batch, REASONS
+    b = Batch(3)
+    b.reset()
+    d = b.state.d
+    b.state = b.state._replace(d=d.replace(qvel=d.qvel.at[0, 0].set(jp.nan)),
+                               Rf=b.state.Rf.at[1].set(jp.nan))
+    z3 = np.zeros((3, 17), np.float32)
+    obs, end, r, term, trunc, info = b.step(z3)
+    why = [REASONS[int(x)] for x in np.asarray(info['reason'])]
+    assert why == ['blowup', 'blowup', ''] and np.allclose(np.asarray(r)[:2], ct.FAIL_R), (why, r)
+    for _ in range(3):
+        assert all(np.isfinite(np.asarray(x)).all() for x in (obs, end, r)), "a NaN got out"
+        obs, end, r, term, trunc, info = b.step(z3)
+    print("physics: a NaN state or estimate ends as 'blowup' at FAIL_R, finite, and resets")
     print("physics: OK")
+
+
+# --- model --------------------------------------------------------------------------
+def check_model(lessons=(1, 1.85, 2), episodes=3):
+    """The simplified robot against the FULL one, at the same states. The full robot
+    runs the policy; at every control step its state is copied into the simplified
+    robot (both in C MuJoCo) and compared two ways: which body pairs touch there and
+    how hard, and where one control step from that state takes each. `physics` cannot
+    see any of this -- it runs the simplified robot on both engines.
+
+    This is the check the first simplified robot lacked, and it failed it: the box
+    round the body's chamfered hull stood 9 mm proud of it into the wall, the motor
+    boxes 9 mm into each other when the hands met, and hook plates drawn as two 6 mm
+    rods lost the load at the plate edges and the rung ends. One control step then
+    moved the joints 1.1e-2 rad and the body 8 mm from the full robot's (lesson 1), and
+    win17 timed out on the wide gap where the full robot crossed it."""
+    import collections, mujoco
+    from . import climb_task as ct
+    from .climb_task import ClimbTask
+    from .mjx_scene import c_path
+
+    pol = _policy()
+
+    def pairs(t):
+        m, d = t.env.model, t.env.data
+        name = lambda g: ('rung' if (m.geom(g).name or '').startswith('rung_') else
+                          'wall' if m.geom_bodyid[g] == 0 else m.body(m.geom_bodyid[g]).name)
+        out, f6 = collections.defaultdict(float), np.zeros(6)
+        for i in range(d.ncon):
+            c = d.contact[i]
+            mujoco.mj_contactForce(m, d, i, f6)
+            out[tuple(sorted((name(c.geom1), name(c.geom2))))] += abs(f6[0])
+        return out
+
+    for k in lessons:
+        F = _task(k)
+        S = _task(k, c_path(k))
+        rng = np.random.default_rng(0)
+        step, touch, n = [], collections.defaultdict(lambda: np.zeros(5)), 0
+        for _ in range(episodes):
+            o, _ = F.reset()
+            while True:
+                a = pol[0](o[None])[0] if pol else rng.uniform(-0.5, 0.5, 17)
+                for f in ('qpos', 'qvel', 'act', 'qacc_warmstart', 'ctrl'):
+                    getattr(S.env.data, f)[:] = getattr(F.env.data, f)
+                S.env.data.time = F.env.data.time
+                mujoco.mj_forward(S.env.model, S.env.data)
+                mujoco.mj_forward(F.env.model, F.env.data)
+                pf, ps = pairs(F), pairs(S)
+                for key in set(pf) | set(ps):
+                    touch[key] += [key in pf and key in ps, key in pf and key not in ps,
+                                   key in ps and key not in pf, pf.get(key, 0.0), ps.get(key, 0.0)]
+                n += 1
+                ctrl = np.clip(F.ctrl + ct.ACT_SCALE * np.clip(a, -1, 1), F.lo, F.hi)
+                o, r, te, tr, info = F.step(a)
+                for _ in range(ct.FRAME_SKIP):
+                    S.env.step(ctrl)
+                step.append((np.abs(S.env.data.qpos[7:] - F.env.data.qpos[7:]).max(),
+                             np.linalg.norm(S.env.data.qpos[:3] - F.env.data.qpos[:3]) * 1e3,
+                             max(abs(F._contact(s)[0] - S._contact(s)[0]) for s in 'LR')))
+                if te or tr:
+                    break
+        q, x, f = np.array(step).T
+        print(f"model: lesson {k:>4}, {n} states of the full robot's gait: one control step "
+              f"from them, joints p50 {np.median(q):.1e} p90 {np.percentile(q, 90):.1e} rad, "
+              f"body p50 {np.median(x):.2f} p90 {np.percentile(x, 90):.2f} mm, hook loads "
+              f"p50 {np.median(f):.1f} p90 {np.percentile(f, 90):.1f} N")
+        for key, (b, fo, so, ff, fs) in sorted(touch.items(), key=lambda kv: -kv[1][:3].sum()):
+            if b + fo + so >= 0.01 * n:
+                print(f"         {key[0] + ' - ' + key[1]:>31}: both {b / n:5.1%}, only full "
+                      f"{fo / n:5.1%}, only simplified {so / n:5.1%}; mean N {ff / n:6.1f} "
+                      f"full, {fs / n:6.1f} simplified")
+                assert fo <= 0.08 * n and so <= 0.08 * n, (
+                    f"lesson {k}: {key} touches on one robot and not the other in "
+                    f"{max(fo, so) / n:.0%} of the same states")
+        assert np.median(q) < 5e-3 and np.median(x) < 0.5, (
+            f"lesson {k}: one control step from the same state takes the simplified robot "
+            f"{np.median(q):.1e} rad / {np.median(x):.2f} mm from the full one (p50)")
+    print("model: OK -- the simplified robot touches what the full one touches, where it "
+          "does, and moves as it moves")
 
 
 # --- policy -------------------------------------------------------------------------
@@ -294,7 +410,7 @@ def check_policy(lessons=None, episodes=8, run=None):
     batch = Batch(episodes)
 
     def c_run(k, xml):
-        t = ClimbTask(k, visual=False, xml=xml)
+        t = _task(k, xml)
         ok, lens = 0, []
         for _ in range(episodes):
             o, _ = t.reset()
@@ -354,7 +470,7 @@ def check_contacts(lessons=None, episodes=2):
     for label, xml in (('full robot', None), ('simplified', c_path)):
         stats, n, f6 = collections.defaultdict(lambda: [0, 0.0]), 0, np.zeros(6)
         for k in lessons or pool:
-            t = ClimbTask(k, visual=False, xml=xml(k) if xml else None)
+            t = _task(k, xml(k) if xml else None)
             m, d = t.env.model, t.env.data
             name = lambda g: (m.geom(g).name.split('_')[0] if m.geom_bodyid[g] == 0
                               else m.body(m.geom_bodyid[g]).name)
@@ -380,8 +496,8 @@ def check_contacts(lessons=None, episodes=2):
                 print(f"  {key[0]:>16} - {key[1]:<16} {c / n * 100:6.2f} % of steps, mean {f / c:6.1f} N")
 
 
-CHECKS = dict(task=check_task, physics=check_physics, policy=check_policy,
-              contacts=check_contacts)
+CHECKS = dict(task=check_task, physics=check_physics, model=check_model,
+              policy=check_policy, contacts=check_contacts)
 
 if __name__ == '__main__':
     which = sys.argv[1:]
@@ -389,7 +505,7 @@ if __name__ == '__main__':
         i = which.index('--run')
         RUN = which[i + 1]
         del which[i:i + 2]
-    which = which or ['task', 'physics', 'policy']
+    which = which or ['task', 'physics', 'model', 'policy']
     if len(which) == 1:
         CHECKS[which[0]]()
     else:

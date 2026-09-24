@@ -369,8 +369,8 @@ def write(lesson):
 
 def rung_segments(model):
     """rung name -> (centre, unit axis, half length), straight from the model. A
-    capsule rung (`rl.mjx_scene`) ends where its cap does, a radius past its
-    half-length."""
+    capsule rung (`rl.mjx_scene`) is the real cylinder with a cap past each end, so
+    its half length is the cylinder's too."""
     import mujoco
     out = {}
     for g in range(model.ngeom):
@@ -378,9 +378,8 @@ def rung_segments(model):
         if nm.startswith('rung_'):
             R = np.zeros(9)
             mujoco.mju_quat2Mat(R, model.geom_quat[g])
-            cap = model.geom_type[g] == mujoco.mjtGeom.mjGEOM_CAPSULE
             out[nm] = (model.geom_pos[g].copy(), R.reshape(3, 3)[:, 2],
-                       float(model.geom_size[g][1] + cap * model.geom_size[g][0]))
+                       float(model.geom_size[g][1]))
     return out
 
 

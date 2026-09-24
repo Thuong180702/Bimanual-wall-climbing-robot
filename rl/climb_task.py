@@ -22,6 +22,7 @@ from .lessons import LESSONS, xml_path, rung_segments
 from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET, GRIP_CLIFF
 
 FRAME_SKIP = 20          # sim steps per control step: 0.002 s x 20 = 25 Hz
+CONTROL_DT = FRAME_SKIP * 0.002   # s; scene.xml's timestep, asserted in ClimbTask
 ACT_SCALE = 0.06         # rad of setpoint travel per control step (1.5 rad/s max)
 LATCH_TOL = 0.15         # m from the goal point that still counts, given a latch
 RUNG_TOL = 0.06          # m: estimated throat this close to a rung axis = that rung
@@ -318,6 +319,7 @@ class ClimbTask:
         for j in ('finger_L', 'finger_R'):
             self.lo[JOINTS.index(j)] = GRIP_STOP
         self.dt = self.env.model.opt.timestep
+        assert abs(FRAME_SKIP * self.dt - CONTROL_DT) < 1e-12, (self.dt, CONTROL_DT)
         m = self.env.model
         self._rung_name = {g: mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
                            for g in self.env.rungs}
@@ -885,20 +887,30 @@ class ClimbTask:
                 'effort': effort, 'fight': fight,
                 'banked': float(self.credit.sum()), 'd': d.copy(), 'sep_err': sep_err,
                 'grabs': self.grabs.copy()}
+        obs = self._obs()
         terminated, truncated = False, False
         if self._success():
             r += SUCCESS_R
             terminated, info['reason'] = True, 'success'
         else:
             done, why = self.env.terminated()
+            # An observation that is not finite is a blowup as well: the estimator's
+            # attitude is carried from step to step, so one degenerate IMU triad
+            # (a zero accelerometer in free fall) would feed NaN to the learner for
+            # the rest of the episode, and one NaN in VecNormalize's statistics ends
+            # the whole run. The GPU path's thousands of envs make rare events common.
+            if not np.isfinite(obs).all():
+                done, why = True, 'blowup'
             if done:
                 info['reason'] = why
                 if why == 'timeout':
                     truncated = True
                 else:
-                    r += FAIL_R
+                    # a blowup is paid FAIL_R alone: the books of an exploded state
+                    # (a teleport's distance, a 1e10 rad/s joint) are not a reward
+                    r = FAIL_R if why == 'blowup' else r + FAIL_R
                     terminated = True
-        return self._obs(), r, terminated, truncated, info
+        return np.where(np.isfinite(obs), obs, np.float32(0.0)), r, terminated, truncated, info
 
 
 def main():
@@ -924,6 +936,16 @@ def main():
             ends.append(info.get('reason'))
             t.reset()
     print(f"random rollout: 300 steps, episode ends: {ends or 'none'}")
+
+    # A NaN estimate -- what a zero accelerometer's triad leaves in the attitude it
+    # carries -- ends the episode as a blowup at FAIL_R with a finite observation,
+    # never hands NaN to the learner (rl.mjx_check holds the GPU path to the same)
+    t.reset()
+    t._Rf = np.full((3, 3), np.nan)
+    o, r, te, tr, info = t.step(np.zeros(17))
+    assert info.get('reason') == 'blowup' and r == FAIL_R and te and np.isfinite(o).all(), \
+        (info.get('reason'), r, te)
+    print("blowup test: a NaN estimate ends the episode at FAIL_R, observation finite")
 
     # Falling must never be the cheap way out. A full episode of hanging still is the
     # most a policy can pay for doing nothing; if that exceeds FAIL_R, the gradient

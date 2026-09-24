@@ -20,7 +20,9 @@ stable-baselines3>=2.4
 # The GPU path (rl.mjx_task): MJX, MuJoCo's physics in JAX. rl.train_ppo uses it by
 # itself when JAX can see an NVIDIA GPU (python -m rl.hardware says what it sees).
 # The plain `jax` wheel is CPU-only, which is enough for rl.mjx_check on any machine.
-#   Linux + NVIDIA -> pip install -U "jax[cuda12]"   (then torch's default CUDA wheel)
+#   Linux + NVIDIA -> not this file: bash rl/gpu_setup.sh installs requirements-gpu.txt,
+#                     every version pinned for the card (a V100 needs CUDA 12 JAX and
+#                     torch's cu126 build; the file says why)
 #   Windows        -> CUDA JAX exists only under WSL2; natively it stays on the CPU path
 mujoco-mjx==3.12.0
 jax>=0.7
