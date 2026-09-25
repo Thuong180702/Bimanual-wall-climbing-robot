@@ -391,7 +391,7 @@ Nothing here is Mac-specific. The RL path imports no OpenGL, so it runs headless
 Tesla V100 16 GB, NVIDIA driver >= 525):
 
 ```bash
-git clone <this repo> && cd <it> && git checkout <branch>
+git clone https://github.com/Thuong180702/Bimanual-wall-climbing-robot.git && cd Bimanual-wall-climbing-robot
 bash rl/gpu_setup.sh                   # .venv with Python 3.12 + requirements-gpu.txt
 mkdir -p out && nohup bash rl/gpu_run.sh gpu1 > out/gpu1.console 2>&1 &
 tail -f out/gpu1.console               # or: .venv/bin/python -m rl.status --name gpu1
@@ -428,7 +428,10 @@ second call on purpose: `HOURS=2 SCORE=0 bash rl/gpu_run.sh gpu1` first, to read
 card's control-steps/s off `preflight.txt` and the first checkpoints off the log,
 then `HOURS=22 bash rl/gpu_run.sh gpu1` carries the same run on (`SCORE=0` skips the
 30-60 min of CPU scoring the GPU would sit idle through: 18 jobs, both ways round). `SEED=1 bash rl/gpu_run.sh
-gpu1s1` is a second seed -- a paper reports several.
+gpu1s1` is a second seed -- a paper reports several. `HOURS` counts from the call and
+covers the preflight; the scoring comes after it, so rent `HOURS` + ~1.5 h (setup, the
+scoring, croc). A resume draws on from `SEED` + its steps, never the start's sequence
+again (`PPO.load` alone would put every restart back on the bare seed).
 
 **What a run leaves in `out/<name>/`, for an audit and for the paper** -- every file
 appended across resumes, none of them needing the trainer to read:

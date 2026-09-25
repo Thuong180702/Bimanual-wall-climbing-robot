@@ -776,6 +776,8 @@ class Checkpoint(BaseCallback):
         env = m.get_vec_normalize_env()
         env.obs_rms, env.ret_rms = stats.obs_rms, stats.ret_rms
         self.cur.restore(json.load(open(p + 'state.json')))
+        if isinstance(self.cur, Walls):     # this rollout's walls were drawn at the dropped tops
+            self.cur.draw_bank(self.training_env)
         was, was_kl = m.lr_schedule(1.0), self.kl_target
         m.learning_rate = max(was * LR_DECAY, LR_MIN)
         m._setup_lr_schedule()              # lr_schedule is built from learning_rate
@@ -1387,6 +1389,11 @@ def main():
             model._setup_lr_schedule()      # lr_schedule is built from learning_rate
         if a.target_kl is not None:
             model.target_kl = a.target_kl
+        # PPO.load re-seeds torch, numpy and the envs (the MJX batch's key) with the
+        # bare --seed, so every restart -- the pilot's hand-over, a crash -- replayed
+        # the start's draws; it draws on from the seed its batch was built with
+        if a.seed is not None:
+            model.set_random_seed(a.seed + model.num_timesteps)
         print(f"resumed {run} at {model.num_timesteps} steps "
               f"ent_coef {model.ent_coef:g} lr {model.lr_schedule(1.0):g} "
               f"target_kl {model.target_kl} "
@@ -1428,7 +1435,8 @@ def main():
     if active is not None and active != (state.get('active') or []):
         print(f"[curriculum] pool narrowed to {active}; the best score starts over")
         best = None
-    cur = (Walls(active, state.get('history'), state.get('walls'), a.walls == 'adr', seed)
+    cur = (Walls(active, state.get('history'), state.get('walls'), a.walls == 'adr',
+                 seed + state.get('timesteps', 0))
            if gen else Curriculum(pool, active, state.get('history'), a.curriculum))
     venv.env_method('set_active', cur.active, cur.weights())
     if gen:

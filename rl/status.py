@@ -33,9 +33,12 @@ def show(name, names):
     print(f"{'steps':>12}: {st['timesteps']:,}")
     print(f"{'pool':>12}: {st['active']}")
     b = st.get('best')
+    tops = (st.get('walls') or {}).get('tops')
     # a sum of per-lesson success rates, so 1.00 can be one lesson passed or two
-    # half-passed; the per-lesson table below is what to read for detail
-    print(f"{'best':>12}: " + (f"{b:.2f} of {len(st['active'])}"
+    # half-passed; the per-lesson table below is what to read for detail. On generated
+    # walls it is ADR's progress instead, 0..1 a family over all of them
+    print(f"{'best':>12}: " + ((f"{b:.2f} of {len(tops)} (ADR progress)" if tops else
+                                f"{b:.2f} of {len(st['active'])}")
                                if isinstance(b, (int, float)) and b >= 0
                                else "not scored yet")
           + ("  (best_model.zip saved)" if st['_best_exists'] else ""))
@@ -47,16 +50,15 @@ def show(name, names):
               + (f"   (went back to the best {n} time(s))" if n else ""))
     print(f"{'updated':>12}: {st['_age']:.0f} s ago"
           + ("   <-- STALE, is the run still alive?" if st['_age'] > 600 else ""))
-    tops = (st.get('walls') or {}).get('tops')
     if tops:                               # a generated-wall run: ADR's ranges so far
         print(f"{'walls':>12}: {st.get('walls_mode')}, ranges' tops (rl.walls):")
         for f, t in sorted(tops.items(), key=lambda kv: int(kv[0])):
             print(f"{'':>14}family {f}: " + ", ".join(f"{k} {v:g}" for k, v in t.items()))
-    print(f"\n  {'lesson':>22} {'success':>9} {'episodes':>9}")
+    print(f"\n  {'family' if tops else 'lesson':>22} {'success':>9} {'episodes':>9}")
     for k in st['active']:
         h = hist.get(k, [])[-WINDOW:]
         rate = f"{sum(h)/len(h):.0%}" if h else "-"
-        print(f"  {names.get(k, k):>22} {rate:>9} {len(h):>9}")
+        print(f"  {f'{k} {names.get(k, k)}' if tops else names.get(k, k):>22} {rate:>9} {len(h):>9}")
 
 
 def main():

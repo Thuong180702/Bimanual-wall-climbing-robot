@@ -290,6 +290,12 @@ LESSONS = {
                    _rx('side', -0.18, 0.43, 1.00)],
             goal_rungs=['rung_side'],
             goals=[[0.35, -0.94, 1.00], [0.04, -0.94, 1.00]]),
+    # The hands keep their order across (L at +y). Facing the back wall that is the
+    # crossed arrangement -- turning round would put L at -y -- and K_SEP, on the start
+    # rung's axis and sign, agrees with it. A posture the robot has: with
+    # urdf/_reach.py's constraints plus this rung and the wall behind it, a
+    # least-squares search from 100 random starts found legal two-hook hangs 0.314 m
+    # apart crossed 8 times and the normal way round 7.
     8: dict(name='wall_behind', timeout=120.0,
             title='transfer to the parallel wall behind the back',
             walls=[WALL_FRONT, WALL_BACK],

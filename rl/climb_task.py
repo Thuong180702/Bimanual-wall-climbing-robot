@@ -640,6 +640,12 @@ class ClimbTask:
         The rung axis does not spin. `cross_axis` and `cross_sign` are fixed at reset
         from the hand order the robot starts in, which is the order its shoulders put
         them in, so the sign means "the left hand is still on its own side".
+
+        The corner (lesson 7, family 7) is the one wall that ends across this axis:
+        both goals sit on the side rung at one y, so once one hand is round the
+        corner the other one's approach reads up to MIN_SEP short -- at most
+        K_SEP * MIN_SEP = 0.006 a step, a few seconds' worth against SUCCESS_R's 10.
+        Left as it is.
         """
         sep = self._throat_true('L') - self._throat_true('R')
         return max(0.0, MIN_SEP - self.cross_sign * float(sep @ self.cross_axis))
