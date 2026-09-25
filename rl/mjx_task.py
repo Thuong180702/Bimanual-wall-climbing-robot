@@ -663,6 +663,7 @@ class Batch:
 
 
 def bench(n, steps=20):
+    print(f"{n} envs on {jax.devices()[0].device_kind}: building and compiling first")
     b = Batch(n)
     t0 = time.perf_counter()
     b.reset()

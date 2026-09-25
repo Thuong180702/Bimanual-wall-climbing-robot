@@ -79,6 +79,7 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
     from .mjx_scene import c_path
     from .mjx_task import MjxClimb, LESSON_KEYS, REASONS
 
+    print(f"task: the JAX task on {jax.devices()[0].device_kind}, float64 -- compiling first")
     task = MjxClimb()
     start = jax.jit(task.start)
     update = jax.jit(task.update)
@@ -185,6 +186,7 @@ def check_physics(lessons=(1, 2, 7, 8)):
     from .mjx_scene import c_path, MAX_CONTACTS, ITERATIONS
     from .mjx_task import MjxClimb, LESSON_KEYS
 
+    print(f"physics: MJX on {jax.devices()[0].device_kind}, one robot at a time -- compiling first")
     task = MjxClimb()
     step = jax.jit(task.step)
     reset = jax.jit(task.reset)

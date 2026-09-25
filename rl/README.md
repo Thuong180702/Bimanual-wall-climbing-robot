@@ -409,6 +409,13 @@ needs nobody:
    `ENVS` fits and how fast it runs (halved, down to 1024, until one does -- and the
    run keeps that size), and a tiny run that saves and resumes; each step at most an
    hour. It stops here on any failure -- and it never falls back to training on the CPU.
+   Each step is announced in the console with its time, and prints as it goes
+   (`PYTHONUNBUFFERED`: piped, Python used to hold a step's whole output until it
+   ended, and gpu1's first preflight looked hung). Through the task and physics
+   check the GPU sits near idle -- it compiles, then runs one robot at a time -- and
+   the console's `numa_hwloc ... hwloc_set_cpubind() failed` (XLA may not pin its
+   threads inside a container) and `Failed to import warp` (MJX's optional backend)
+   are harmless. A step that does hang prints its stacks when its hour runs out.
 2. **trains** on generated walls with ADR (the method above; `WALLS=random` is the
    no-curriculum ablation), resuming by itself: a crash restarts from the last
    checkpoint, and so does a trainer that has written no PPO update for `STALL`=30 min

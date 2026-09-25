@@ -51,6 +51,15 @@ PY=.venv/bin/python
 [[ "$HOURS" =~ ^[0-9]+$ ]] || { echo "HOURS=$HOURS: whole hours only"; exit 1; }
 # a restart recompiles nothing it has compiled before
 export JAX_COMPILATION_CACHE_DIR=${JAX_COMPILATION_CACHE_DIR:-$HOME/.cache/jax_climb}
+# Every Python line reaches the console as it is printed. Piped, Python held all of a
+# process's output until it ended, so the preflight's MJX check -- minutes of one robot
+# at a time, the GPU near idle -- showed nothing at all and looked hung (gpu1, 2026-09-25).
+export PYTHONUNBUFFERED=1
+# ...and a Python process ended with SIGABRT (a step's timeout, the watchdog) first
+# prints where each of its threads was
+export PYTHONFAULTHANDLER=1
+# a preflight step: an hour at most, and if it hangs, its stacks on the way out
+step() { timeout --signal=ABRT --kill-after=60 3600 "$@"; }
 trap '' HUP                          # a dropped SSH session must not end the run
 mkdir -p "$RUN"
 deadline=$(( $(date +%s) + HOURS * 3600 ))
@@ -68,7 +77,10 @@ say() { echo "[gpu_run $(date '+%F %T')] $*" | tee -a "$RUN/gpu_run.log"; }
 card=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)
 stamp="$(git rev-parse HEAD) $ENVS $WALLS $card"
 if [ "$(cat "$RUN/preflight.ok" 2>/dev/null)" != "$stamp" ]; then
-    say "preflight"
+    say "preflight: 5 steps on this card, each at most an hour. Harmless in the console:" \
+        "'numa_hwloc ... hwloc_set_cpubind() failed' (XLA may not pin its threads in a" \
+        "container) and 'Failed to import warp' (MJX's optional backend, not used here)"
+    say "preflight 1/5: the GPU JAX and torch see"
     $PY -m rl.hardware > "$RUN/preflight.txt" 2>&1
     cat "$RUN/preflight.txt"
     grep -q "via JAX" "$RUN/preflight.txt" \
@@ -82,19 +94,23 @@ y = torch.ones(1024, 1024, device='cuda')
 assert float((y @ y).sum()) == 1024.0 ** 3
 print("JAX on", jax.devices()[0].device_kind, "| torch on", torch.cuda.get_device_name(0))
 EOF
-    # each step at most an hour: a preflight that hangs must not eat the budget
-    timeout 3600 $PY -m rl.lessons >> "$RUN/preflight.txt" 2>&1 || { say "the lesson scenes failed: $RUN/preflight.txt"; exit 1; }
-    timeout 3600 $PY -m rl.mjx_check task physics 2>&1 | tee -a "$RUN/preflight.txt" \
+    say "preflight 2/5: the lesson scenes"
+    step $PY -m rl.lessons >> "$RUN/preflight.txt" 2>&1 || { say "the lesson scenes failed: $RUN/preflight.txt"; exit 1; }
+    say "preflight 3/5: the JAX task and MJX physics against C MuJoCo, one robot at a time" \
+        "(the GPU stays near idle through it)"
+    step $PY -m rl.mjx_check task physics 2>&1 | tee -a "$RUN/preflight.txt" \
         || { say "the GPU path is not the CPU path's task on this card: $RUN/preflight.txt"; exit 1; }
     # the batch the run will train with: halved until it fits the card
-    until timeout 3600 $PY -m rl.mjx_task --envs "$ENVS" --steps 50 2>&1 | tee -a "$RUN/preflight.txt"; do
+    say "preflight 4/5: $ENVS envs in one batch: compile, then control-steps/s"
+    until step $PY -m rl.mjx_task --envs "$ENVS" --steps 50 2>&1 | tee -a "$RUN/preflight.txt"; do
         [ "$ENVS" -gt 1024 ] || { say "not even 1024 envs run on this card: $RUN/preflight.txt"; exit 1; }
         ENVS=$(( ENVS / 2 )); say "that batch does not run here: trying ENVS=$ENVS"
     done
     echo "$ENVS" > "$RUN/envs"
     rm -rf out/_preflight
-    { timeout 3600 $PY -m rl.train_ppo --name _preflight --backend mjx --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 \
-      && timeout 3600 $PY -m rl.train_ppo --name _preflight --backend mjx --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
+    say "preflight 5/5: a short training run that saves and resumes (its log: $RUN/preflight.txt)"
+    { step $PY -m rl.train_ppo --name _preflight --backend mjx --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 \
+      && step $PY -m rl.train_ppo --name _preflight --backend mjx --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
         >> "$RUN/preflight.txt" 2>&1 \
         || { say "a short training run did not save and resume: $RUN/preflight.txt"; exit 1; }
     rm -rf out/_preflight
@@ -134,6 +150,8 @@ while :; do
         say "stopping the trainer: $why"
         kill -TERM $pid 2>/dev/null
         for _ in $(seq $(( grace / 10 ))); do kill -0 $pid 2>/dev/null || break; sleep 10; done
+        # still there: where it hangs, into train.log (faulthandler), then gone
+        kill -0 $pid 2>/dev/null && { kill -ABRT $pid 2>/dev/null; sleep 5; }
         kill -KILL $pid 2>/dev/null
         break                        # a killed child stays a zombie until the wait below
     done
