@@ -412,10 +412,24 @@ def write(lesson, mirror=False):
     return p
 
 
+def canon_axis(a):
+    """A rung is a line, not an arrow: its axis turned so its largest component is
+    positive -- +y along the front and back walls, +x along the side one.
+
+    MuJoCo points a `fromto` geom's z from the second point to the first, so every rung
+    here, written lowest coordinate first, read -y (-x) off its scene, while the
+    generated walls training draws (rl.walls) are +y. The policy sees the nearest
+    rungs' axes and the distances to each one's two ends, so the benchmark's rungs
+    reached it reversed: gpu1's pilot let go of its own training walls on the full
+    robot (3/24 on family 1, 21/24 in MJX) and was 21/24 there with the axes the same."""
+    a = np.asarray(a, float)
+    return -a if a[np.argmax(np.abs(a))] < 0 else a
+
+
 def rung_segments(model):
-    """rung name -> (centre, unit axis, half length), straight from the model. A
-    capsule rung (`rl.mjx_scene`) is the real cylinder with a cap past each end, so
-    its half length is the cylinder's too."""
+    """rung name -> (centre, unit axis (canon_axis), half length), straight from the
+    model. A capsule rung (`rl.mjx_scene`) is the real cylinder with a cap past each
+    end, so its half length is the cylinder's too."""
     import mujoco
     out = {}
     for g in range(model.ngeom):
@@ -423,7 +437,7 @@ def rung_segments(model):
         if nm.startswith('rung_'):
             R = np.zeros(9)
             mujoco.mju_quat2Mat(R, model.geom_quat[g])
-            out[nm] = (model.geom_pos[g].copy(), R.reshape(3, 3)[:, 2],
+            out[nm] = (model.geom_pos[g].copy(), canon_axis(R.reshape(3, 3)[:, 2]),
                        float(model.geom_size[g][1]))
     return out
 

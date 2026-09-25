@@ -46,7 +46,7 @@ from mujoco import mjx
 from controller.kinematics import JOINTS, THROAT_PT, MAG_WORLD
 from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET, SLAM_SIG
 from . import climb_task as ct
-from .lessons import LESSONS
+from .lessons import LESSONS, canon_axis
 from .mjx_scene import N_RUNG, lesson_layout, model as scene_model, slots
 
 LESSON_KEYS = sorted(LESSONS)
@@ -227,7 +227,7 @@ class MjxClimb:
             n = len(lay['rungs'])
             c = np.zeros((N_RUNG, 3)); a = np.zeros((N_RUNG, 3)); h = np.zeros(N_RUNG)
             for i, (_, ci, ai, hi, _) in enumerate(lay['rungs']):
-                c[i], a[i], h[i] = ci, ai, hi
+                c[i], a[i], h[i] = ci, canon_axis(ai), hi     # whatever wrote the layout
             mask = np.zeros(N_RUNG, bool)
             mask[lay['goal_rungs']] = True
             f, pr = lay.get('family', -1), lay.get('probe')

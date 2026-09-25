@@ -1258,6 +1258,27 @@ def main():
           f"{np.linalg.norm(q - T1)*1e3:.4f} mm from a guess 157 mm off; across the "
           f"gap onto seg1 too; a guess on the far side picks the far side")
 
+    # A rung is a line, not an arrow: the observation may not depend on which end a
+    # scene names first. MuJoCo points a fromto geom's axis at its first point, and
+    # before rl.lessons.canon_axis every benchmark rung reached the policy reversed
+    # against the generated walls it trains on (gpu1's pilot, full robot, its own
+    # training walls: 3/24 -> 21/24, as in MJX). Lesson 7: a front and a side rung.
+    import os, re
+    from .lessons import OUT
+    src = open(xml_path(7)).read()
+    rev = re.sub(r'(<geom name="rung_[^"]*"[^>]*fromto=")([^"]*)"',
+                 lambda g: g.group(1) + ' '.join(g.group(2).split()[3:] + g.group(2).split()[:3]) + '"', src)
+    p = os.path.join(OUT, 'check_fromto_reversed.xml')
+    open(p, 'w').write(rev)
+    obs = []
+    for xml in (None, p):
+        t = ClimbTask(7, xml=xml)
+        t.env._slam_rng = np.random.default_rng(0)
+        obs.append(t.reset()[0])
+    dev = float(np.abs(obs[0] - obs[1]).max())
+    assert rev != src and dev < 1e-6, f"the same rungs written end for end change the observation by {dev:.2e}"
+    print(f"axis test: lesson 7 with every rung written end for end observes the same ({dev:.1e})")
+
     # SLAM keeps the anchor honest. The loaded hook creeps along the rung under a
     # side load and the arm cannot see it: hang, then pull the body along the rung
     # for 150 steps (the slide test's scenario and force, the hooks drag 25-50 mm).

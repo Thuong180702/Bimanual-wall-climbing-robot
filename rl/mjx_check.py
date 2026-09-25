@@ -51,6 +51,24 @@ def _task(k, xml=None, seed=0):
     return t
 
 
+# where rl.climb_task._obs puts each hand's _near_rungs block (20 each): after q, dq, tau
+# and ctrl (4 x 17), the IMU (9), each hand's F/T and pad (2 x 7) and the goals (6)
+NEAR = (4 * 17 + 9 + 2 * 7 + 6, 4 * 17 + 9 + 2 * 7 + 6 + 20)
+
+
+def _fromto_axes(o):
+    """the observation as a checkpoint trained on the lesson scenes before
+    rl.lessons.canon_axis saw it: every rung's axis the way `fromto` pointed it, toward
+    the rung's lower end -- the canonical one negated -- and the distances to its two
+    ends the other way round. win17, the fixture, is one."""
+    o = np.array(o, np.float32)
+    for n0 in NEAR:
+        for j in (3, 9, 15):                     # the three nearest rungs' axes
+            o[..., n0 + j:n0 + j + 3] *= -1
+        o[..., [n0 + 18, n0 + 19]] = o[..., [n0 + 19, n0 + 18]]
+    return o
+
+
 def _policy(run=None, best=True):
     """(predict(obs batch) -> actions, pool) for a checkpoint, or None if absent"""
     run = run or RUN
@@ -63,10 +81,14 @@ def _policy(run=None, best=True):
     model = PPO.load(p, device='cpu')
     with open(os.path.join(run, ck + 'vecnorm.pkl'), 'rb') as f:
         vn = pickle.load(f)
-    pool = json.load(open(os.path.join(run, ck + 'state.json')))['active']
+    state = json.load(open(os.path.join(run, ck + 'state.json')))
+    # generated walls (rl.walls) were canonical from the start; lesson scenes were not
+    # until the checkpoint says so
+    old = 'axes' not in state and state.get('walls_mode', 'lessons') == 'lessons'
+    see = _fromto_axes if old else (lambda o: np.asarray(o, np.float32))
     from .lessons import lesson_key
-    return (lambda o: model.predict(vn.normalize_obs(np.asarray(o, np.float32)),
-                                    deterministic=True)[0]), [lesson_key(k) for k in pool]
+    return (lambda o: model.predict(vn.normalize_obs(see(o)), deterministic=True)[0]), \
+        [lesson_key(k) for k in state['active']]
 
 
 # --- task ---------------------------------------------------------------------------

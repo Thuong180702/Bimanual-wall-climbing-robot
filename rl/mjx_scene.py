@@ -85,7 +85,7 @@ also lives. `rl.mjx_check` does that.
 import hashlib, os
 import numpy as np, mujoco
 from controller import SCENE
-from .lessons import LESSONS, OUT, PAD, lesson_tag, xml_path
+from .lessons import LESSONS, OUT, PAD, canon_axis, lesson_tag, xml_path
 
 N_RUNG = max(len(v['rungs']) for v in LESSONS.values())     # 6: lesson 6
 PARK = 50.0              # m: where an unused slot waits, out of everyone's reach
@@ -356,7 +356,7 @@ def lesson_layout(lesson):
         if m.geom(g).name.startswith('rung_'):
             R = np.zeros(9)
             mujoco.mju_quat2Mat(R, m.geom_quat[g])
-            rungs.append((m.geom(g).name, m.geom_pos[g].copy(), R.reshape(3, 3)[:, 2],
+            rungs.append((m.geom(g).name, m.geom_pos[g].copy(), canon_axis(R.reshape(3, 3)[:, 2]),
                           float(m.geom_size[g][1]), float(m.geom_size[g][0])))
     for g in range(m.ngeom):
         if m.geom(g).name.startswith('wall_'):

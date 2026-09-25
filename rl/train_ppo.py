@@ -805,6 +805,7 @@ class Checkpoint(BaseCallback):
         save_vecnorm(self.model.get_vec_normalize_env(), p + 'vecnorm.tmp.pkl')
         state = {'timesteps': int(self.model.num_timesteps), 'robot': robot_stamp(),
                  'backend': self.backend, 'walls_mode': self.walls,
+                 'axes': 'canonical',     # rung axes as rl.lessons.canon_axis turns them
                  'best': self.best, 'best_active': self.best_active,
                  'lr': self.model.lr_schedule(1.0), 'kl_target': self.kl_target,
                  'rollbacks': self.rollbacks,

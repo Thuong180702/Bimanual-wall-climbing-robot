@@ -677,12 +677,26 @@ and the same ones hard on all three, not a ranking; the `model` check is the fin
 one. After a GPU run, `rl.mjx_check policy --run out/<name>` asks the question the
 other way round (`gpu_run.sh` does, into `sim2sim.txt`).
 
-**Unmeasured, because there is no NVIDIA card here: GPU throughput.** On this Mac's
-CPU the batch runs ~400 control-steps/s at 256 envs (the first, wrong robot ran
-~870), against ~6400 for C MuJoCo in 12 processes -- which is why a machine without
-a GPU stays on the CPU path. XLA plans 1.0 GB of scratch for a 4096-env step, so a
-16 GB card holds it with room for the policy. `gpu_run.sh`'s preflight measures the
-card before the hours start.
+**The first GPU pilot (gpu1, 27.6M steps) found what none of these could: rung axes.**
+MuJoCo points a `fromto` geom's axis from its second point to its first, so every
+lesson rung read -y (-x) off its scene, while the generated walls training draws are
++y -- and the policy sees each nearest rung's axis and the distances to its two ends.
+Its best policy, deterministic, on 24 family-1 walls drawn at its own ADR tops: 21 in
+MJX, 21 on the simplified robot in C, 3 on the full robot; on family 2: 16, 16, 0.
+With the axes the same (`rl.lessons.canon_axis`, everywhere a rung is read), the full
+robot scored 21 and 13 -- the engine and the simplification were never the gap. The
+benchmark could not show it: the pilot's ranges end short of every lesson, so all
+three simulators failed them alike, except lesson 1 mirrored (20/20), whose `fromto`
+runs the other way. `rl.climb_task` now checks that a scene written end for end
+observes the same; checkpoints trained on the lesson scenes before this (win17, the
+fixture) are replayed in their own convention (`rl.mjx_check._fromto_axes`), and
+replay as before (76 / 73 / 74 of 88).
+
+**GPU throughput, measured on a Tesla V100-SXM2-32GB** (gpu1): the batch alone 5,620
+control-steps/s at 4096 envs (729 ms a batch step), training 4,490 steps/s (29.2 s a
+131k-step update); the card busy 86-100 % at ~190 W, 1.6 GB of its memory in use.
+22 hours is ~350M steps. On this Mac's CPU the batch runs ~400 control-steps/s at 256
+envs, against ~6400 for C MuJoCo in 12 processes.
 
 **It learns, from scratch, on the MJX path** -- measured on this Mac's CPU with 256
 envs (8192 steps an update), seed 1, 1.5M steps, 184 updates, 85 min: lessons -2, -1
