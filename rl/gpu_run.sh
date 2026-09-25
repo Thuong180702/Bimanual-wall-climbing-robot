@@ -4,7 +4,7 @@
 #     mkdir -p out && nohup bash rl/gpu_run.sh gpu1 > out/gpu1.console 2>&1 &
 #     tail -f out/gpu1.console                      # or: .venv/bin/python -m rl.status --name gpu1
 #
-#   1. preflight, once per commit, ENVS and WALLS: JAX and torch both on the card in one process, the
+#   1. preflight, once per commit, ENVS, WALLS and card: JAX and torch both on the card in one process, the
 #      JAX task still ClimbTask's on THIS card (rl.mjx_check task physics), a batch of
 #      ENVS fits and how fast it runs, and a tiny training run that saves and resumes.
 #      Anything wrong stops here, before the hours are paid for.
@@ -63,7 +63,10 @@ say() { echo "[gpu_run $(date '+%F %T')] $*" | tee -a "$RUN/gpu_run.log"; }
 } >> "$RUN/provenance.txt" 2>&1
 
 # ---- 1. preflight ---------------------------------------------------------------
-stamp="$(git rev-parse HEAD) $ENVS $WALLS"
+# the card is in the stamp: a run carried to another box (its .tgz unpacked there)
+# is checked again on the card it lands on
+card=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)
+stamp="$(git rev-parse HEAD) $ENVS $WALLS $card"
 if [ "$(cat "$RUN/preflight.ok" 2>/dev/null)" != "$stamp" ]; then
     say "preflight"
     $PY -m rl.hardware > "$RUN/preflight.txt" 2>&1
@@ -95,7 +98,7 @@ EOF
         >> "$RUN/preflight.txt" 2>&1 \
         || { say "a short training run did not save and resume: $RUN/preflight.txt"; exit 1; }
     rm -rf out/_preflight
-    stamp="$(git rev-parse HEAD) $ENVS $WALLS"
+    stamp="$(git rev-parse HEAD) $ENVS $WALLS $card"
     echo "$stamp" > "$RUN/preflight.ok"
     say "preflight passed"
 fi

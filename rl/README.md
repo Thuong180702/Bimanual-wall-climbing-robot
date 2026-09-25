@@ -404,7 +404,7 @@ capability 7.5; a V100 is 7.0) and torch's **cu126** build (PyTorch dropped Volt
 from its CUDA 12.8 builds in 2.11). `gpu_run.sh <name>` then does three things and
 needs nobody:
 
-1. **preflight**, once per commit, `ENVS` and `WALLS`: JAX and torch on the card in one process, the JAX
+1. **preflight**, once per commit, `ENVS`, `WALLS` and card: JAX and torch on the card in one process, the JAX
    task still ClimbTask's on this card (`rl.mjx_check task physics`), a batch of
    `ENVS` fits and how fast it runs (halved, down to 1024, until one does -- and the
    run keeps that size), and a tiny run that saves and resumes; each step at most an
@@ -432,6 +432,13 @@ gpu1s1` is a second seed -- a paper reports several. `HOURS` counts from the cal
 covers the preflight; the scoring comes after it, so rent `HOURS` + ~1.5 h (setup, the
 scoring, croc). A resume draws on from `SEED` + its steps, never the start's sequence
 again (`PPO.load` alone would put every restart back on the bare seed).
+
+**Carrying a run to another box** -- the pilot on one rental, the long run on the
+next: `out/<name>.tgz` is the whole run (the last checkpoint with its optimizer,
+observation statistics and ADR state, the best, the snapshots, the logs). On the new
+box, after `gpu_setup.sh`: `tar xzf <name>.tgz -C out`, then the same `gpu_run.sh
+<name>` call. The preflight runs again there (the card is in its stamp) and training
+resumes from the last checkpoint; `provenance.txt` records both machines.
 
 **What a run leaves in `out/<name>/`, for an audit and for the paper** -- every file
 appended across resumes, none of them needing the trainer to read:
