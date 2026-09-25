@@ -130,12 +130,21 @@ physical parameters left free, and each parameter has a range.
 | 1 traverse | each hand's shift along the row (0.30 -> 1.40 m) | 1.10 |
 | 2 gaps | gap count (1 -> 2), gap width (0.04 -> 0.30 m) | 2 x 0.25 |
 | 3 climb up | rows (1 -> 2), row spacing (0.30 -> 0.50 m) | 2 x 0.45 |
-| 4 climb over | break in the start row, a row above to go round it (0.35 -> 0.75 m) | 0.65 |
-| 5 climb down | one row down (0.30 -> 0.55 m; lower is inside the torso) | 0.45 |
+| 4 climb down | a staircase of short rungs, each lower and further along: steps (1 -> 3), drop a step (0.30 -> 0.45 m), gap a step (0.10 -> 0.30 m) | 3 steps, <= 0.40 down, <= 0.20 on |
+| 5 climb over | break in the start row, a row above to go round it (1.80 -> 2.50 m: past the 1.55 m it can bridge) | 2.20 |
 | 6 staggered | tiers (1 -> 2), tier rise (0.30 -> 0.50 m), height scatter (0.02 -> 0.08 m) | 2, ~0.46, 0.06 |
 | 7 corner | side wall distance (0.60 -> 1.10 m) | 1.00 |
 | 8 behind | back rung distance (0.35 -> 0.70 m) | 0.63 |
-| 9 far reach | one row up (0.55 -> 0.85 m, past the 0.56 m static reach) | 0.75 |
+| 9 swing gap | one gap in the row (0.55 -> 1.10 m: past the static reach, inside what a swing can) | 0.90 |
+
+The ranges come from the robot's reach, measured hanging from one hook with
+`urdf/_reach.py`'s constraints (no self-collision, both hooks latchable, a hang): 0.56 m
+up; 0.64-0.68 m along a rung hanging still, 1.50-1.55 m with momentum at most; 0.65 m
+down at 0.15 m aside, 0.8-0.9 m at 0.3-0.45 m aside. So a staircase step is always
+within reach, the climb-over break can only be climbed round, and the swing gap needs
+a swing from 0.58 m of gap on. Climbing down comes before climbing over, which needs
+both. It is a staircase because a row straight under the hang is inside the robot:
+its arms and body fill 0.25-1.10 m below the start rung.
 
 Everything else about a wall -- segment lengths, where a rung ends, goal offsets,
 which way it runs (half are mirrored: the robot is symmetric, the benchmark is not) --
@@ -190,9 +199,12 @@ below (the CPU path's, and the only one it can run).
 −2. left hand, one step (0.30 m) → −1. right hand, one step (0.30 m, the other way)
 → 0. both hands, one step (0.40 m) → 1. traverse, continuous rung → 1.1. stop at the
 end of a rung → 1.2 / 1.35. cross one gap of 0.04 / 0.08 m → 1.5. traverse, two gaps
-of 0.12 m → 1.7. cross one 0.18 m gap → 2. traverse, gaps (0.25 m) → 3. climb up → 4. up-over-down → 5. climb down → 6. staggered heights →
-7. perpendicular wall → 8. wall behind the back → 9. row beyond static reach (needs
-a dynamic move).
+of 0.12 m → 1.7. cross one 0.18 m gap → 2. traverse, gaps (0.25 m) → 3. climb up two
+rows → 4. climb down a staircase (3 steps) → 5. up, over a 2.2 m break and down → 6.
+staggered heights → 7. perpendicular wall → 8. wall behind the back → 9. swing across a
+0.90 m gap (past the static reach). Lessons 1..9 are the benchmark; each goes toward the
+robot's left (+y) and is also scored mirrored, toward its right (`rl.lessons.mirrored`,
+`rl.eval --mirror`) -- the training walls are mirrored half the time.
 
 Lessons −2, −1 and 0 are one lift-and-place cycle. They exist because lesson 1 —
 five such cycles per hand — stopped being findable from scratch once dragging and
@@ -406,7 +418,8 @@ needs nobody:
    injected into one run: both resumed from the last checkpoint, and the run finished,
    scored, replayed and packed by itself.
 3. **scores** the best checkpoint on the FULL robot in C MuJoCo, on the benchmark --
-   lessons 1..9, `EPISODES`=50 each, against doing nothing (`eval.txt`) -- and replays
+   lessons 1..9 both ways round (as drawn, toward the robot's left, and mirrored),
+   `EPISODES`=50 each, against doing nothing (`eval.txt`) -- and replays
    it on the full robot, the simplified one and MJX (`sim2sim.txt`). `provenance.txt`
    has the commit, the GPU and every package version.
 
@@ -414,7 +427,7 @@ After a reboot, the same command picks the run up (preflight skipped), and so do
 second call on purpose: `HOURS=2 SCORE=0 bash rl/gpu_run.sh gpu1` first, to read the
 card's control-steps/s off `preflight.txt` and the first checkpoints off the log,
 then `HOURS=22 bash rl/gpu_run.sh gpu1` carries the same run on (`SCORE=0` skips the
-~30 min of CPU scoring the GPU would sit idle through). `SEED=1 bash rl/gpu_run.sh
+30-60 min of CPU scoring the GPU would sit idle through: 18 jobs, both ways round). `SEED=1 bash rl/gpu_run.sh
 gpu1s1` is a second seed -- a paper reports several.
 
 **What a run leaves in `out/<name>/`, for an audit and for the paper** -- every file
@@ -526,7 +539,8 @@ from it. What had to change is structural:
   start-up and a reset copies it (the SLAM noise is still drawn fresh).
 
 **The robot is simplified, and the simplification is held to the full robot at the
-same states** (`python -m rl.mjx_check model`; `rl.mjx_scene`'s docstring has the
+same states** (`python -m rl.mjx_check model`: win17's gait on lessons 1, 1.85 and 2, and
+the robot hanging over a row under its arms; `rl.mjx_scene`'s docstring has the
 reasoning shape by shape). MJX's JAX backend has no box-cylinder or mesh-cylinder
 collision and pays for every pair on every substep, so each kind of contact gets the
 shape MJX computes exactly for it:
@@ -552,6 +566,14 @@ shape MJX computes exactly for it:
   end's rim; one capsule round it, as it was, stood a whole radius (27.5 mm) past that
   rim and touched the rung in 0.4-4.5 % of lesson 1's states where the full robot was
   1-9 mm clear. The ring: 0.0 %;
+- **the rest of the arm** is a capsule fitted to each link's motor and one to each of its
+  bracket plates (`ARM`). Before them the arms went through rungs, which every climb
+  up, down or over presses against the arms, and a check run on single-row lessons
+  could not see it. Measured as the stand-in's surface against the real link's near a
+  row under the arms (`rl.mjx_check model`, below): median within 4.4 mm for every link,
+  p10..p90 within -8.3..+5.4 mm. A disc motor 98 mm across is what keeps it from 3 mm:
+  a capsule, a ball and rings of rods on it were each measured, and this is the best
+  of them;
 - **one hand meets the other** with the hooks' own boxes and the three motors above
   each hook as the cylinders they are. MJX's cylinder-cylinder is an SDF descent, not
   exact (at win17's states it misses 27 % of C's hand-on-hand contacts, all shallow,
@@ -581,8 +603,14 @@ robot, and win17 timed out on the wide gap the full robot crossed. Now:
 | a hook on its rung in one robot only | 34-41 % of states (lesson 1) | 0-1.5 % (lesson 1), 0.5-2.4 % (2), 6.5 % (1.85: a hook off a rung's end, on its cap) |
 | body on the wall in one robot only (lesson 1) | 53 % | 0 % |
 | finger motor on a rung in one robot only | 0.4-4.5 % simplified only (lesson 1, 5 seeds; the capsule) | 0.0 % simplified only; full only <= 3.2 % (shallow, its rim between two rods) |
-| win17 on full robot, this one in C, this one in MJX: 8 episodes x 11 lessons | -- | 78, 78, 72 of 88 |
-| the same, 24 episodes on lessons 1, 1.5, 1.7, 1.85, 2 | -- | 97, 96, 92 of 120; lesson 2 alone 12, 9, 6 of 24 (gaps: hooks land on rung ends, where the caps differ -- not significant at 24, p = 0.14, and the reason step 3 of `gpu_run.sh` scores on the full robot) |
+| an arm link against a row 0.35 / 0.45 / 0.55 m under the hang (arms moving at random): the stand-in's surface vs the real link's, near the rung | arms went through rungs | median within 4.4 mm for every link, p10..p90 within -8.3..+5.4 mm |
+| one control step from those states | -- | joints p50 0.9-1.4e-3 rad, body 0.10-0.18 mm (the gait's own: 0.7-1.9e-3, 0.08-0.23) |
+| win17 on full robot, this one in C, this one in MJX: 8 episodes x 11 lessons | -- | 76, 73, 76 of 88 |
+| the same, 24 episodes on lessons 1, 1.5, 1.7, 1.85, 2 | -- | 90, 94, 83 of 120; lesson 2 alone 10, 9, 3 of 24 (gaps: hooks land on rung ends, where MJX is weakest -- watch `sim2sim.txt` after a run; it is why step 3 of `gpu_run.sh` scores on the full robot) |
+
+Counts of this size are noisy: the same policy and seeds on the full robot scored 97 and
+then 90 of 120 across a change that touched nothing it met (a longer wall slab) -- the
+contact dynamics are chaotic, so ~±7 in 120 is the floor a difference has to clear.
 
 MJX against C on this same robot (`physics`), one control step from C's state along
 the gait: joints p50 5.5e-6, p90 4.9e-4 rad. Where it parts most, both engines hold

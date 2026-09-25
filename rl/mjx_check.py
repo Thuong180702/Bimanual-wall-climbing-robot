@@ -314,12 +314,18 @@ def check_physics(lessons=(1, 2, 7, 8)):
 
 
 # --- model --------------------------------------------------------------------------
-def check_model(lessons=(1, 1.85, 2), episodes=3):
+def check_model(lessons=(1, 1.85, 2), episodes=3, below=(0.35, 0.45, 0.55)):
     """The simplified robot against the FULL one, at the same states. The full robot
-    runs the policy; at every control step its state is copied into the simplified
-    robot (both in C MuJoCo) and compared two ways: which body pairs touch there and
-    how hard, and where one control step from that state takes each. `physics` cannot
-    see any of this -- it runs the simplified robot on both engines.
+    runs; at every control step its state is copied into the simplified robot (both in
+    C MuJoCo) and compared two ways: which body pairs touch there and how hard, and
+    where one control step from that state takes each. `physics` cannot see any of
+    this -- it runs the simplified robot on both engines.
+
+    Two sources of states. win17's gait on `lessons`, the hooks' work. And the robot
+    hanging over a full row `below` metres under its hooks, moving its arms at random:
+    the posture of every climb up, down or over, which rests a row against the arms,
+    and which no single-row gait reaches -- the first simplified robot's arms went
+    through rungs and this check, on lessons 1..2 alone, could not tell.
 
     This is the check the first simplified robot lacked, and it failed it: the box
     round the body's chamfered hull stood 9 mm proud of it into the wall, the motor
@@ -329,8 +335,8 @@ def check_model(lessons=(1, 1.85, 2), episodes=3):
     win17 timed out on the wide gap where the full robot crossed it."""
     import collections, mujoco
     from . import climb_task as ct
-    from .climb_task import ClimbTask
-    from .mjx_scene import c_path
+    from .lessons import LESSONS, OUT, _ry, scene_xml
+    from .mjx_scene import ARM, build, c_path, lesson_layout
 
     pol = _policy()
 
@@ -345,15 +351,31 @@ def check_model(lessons=(1, 1.85, 2), episodes=3):
             out[tuple(sorted((name(c.geom1), name(c.geom2))))] += abs(f6[0])
         return out
 
-    for k in lessons:
-        F = _task(k)
-        S = _task(k, c_path(k))
+    ft = np.zeros(6)
+
+    def gap(t, geoms, rung):
+        return min(mujoco.mj_geomDistance(t.env.model, t.env.data, g, rung, 0.05, ft) for g in geoms)
+
+    def compare(label, F, S, act, steps=None, arms=None):
+        """`arms`: a rung's name. Its contacts with the arm are judged by surface, not by
+        touch/no-touch: a row grazed by arms moving at random flips on a millimetre, far
+        below the contact's own softness (a loaded hook sinks 1-3 mm), so the stand-ins'
+        surface is measured against the real links' wherever either is within 30 mm"""
         rng = np.random.default_rng(0)
         step, touch, n = [], collections.defaultdict(lambda: np.zeros(5)), 0
+        err = collections.defaultdict(list)
+        if arms:
+            mf, msm = F.env.model, S.env.model
+            links = {f'{b}_{s}': ([g for g in range(mf.ngeom) if mf.geom_bodyid[g] == mf.body(f'{b}_{s}').id
+                                   and mf.geom_contype[g]],
+                                  [g for g in range(msm.ngeom) if (msm.geom(g).name or '').startswith(f'{b}_{s}:arm')])
+                     for b in ARM for s in 'LR'}
+            rf, rs = mf.geom(arms).id, msm.geom(arms).id
         for _ in range(episodes):
             o, _ = F.reset()
-            while True:
-                a = pol[0](o[None])[0] if pol else rng.uniform(-0.5, 0.5, 17)
+            a = np.zeros(17)
+            for i in range(steps or 10 ** 9):
+                a = act(o, a, rng)
                 for f in ('qpos', 'qvel', 'act', 'qacc_warmstart', 'ctrl'):
                     getattr(S.env.data, f)[:] = getattr(F.env.data, f)
                 S.env.data.time = F.env.data.time
@@ -364,6 +386,11 @@ def check_model(lessons=(1, 1.85, 2), episodes=3):
                     touch[key] += [key in pf and key in ps, key in pf and key not in ps,
                                    key in ps and key not in pf, pf.get(key, 0.0), ps.get(key, 0.0)]
                 n += 1
+                if arms:
+                    for link, (gf, gs) in links.items():
+                        df, ds = gap(F, gf, rf), gap(S, gs, rs)
+                        if min(df, ds) < 0.03:
+                            err[link.rsplit('_', 1)[0]].append((ds - df) * 1e3)
                 ctrl = np.clip(F.ctrl + ct.ACT_SCALE * np.clip(a, -1, 1), F.lo, F.hi)
                 o, r, te, tr, info = F.step(a)
                 for _ in range(ct.FRAME_SKIP):
@@ -374,21 +401,56 @@ def check_model(lessons=(1, 1.85, 2), episodes=3):
                 if te or tr:
                     break
         q, x, f = np.array(step).T
-        print(f"model: lesson {k:>4}, {n} states of the full robot's gait: one control step "
-              f"from them, joints p50 {np.median(q):.1e} p90 {np.percentile(q, 90):.1e} rad, "
-              f"body p50 {np.median(x):.2f} p90 {np.percentile(x, 90):.2f} mm, hook loads "
-              f"p50 {np.median(f):.1f} p90 {np.percentile(f, 90):.1f} N")
+        print(f"model: {label}, {n} states: one control step from them, joints p50 "
+              f"{np.median(q):.1e} p90 {np.percentile(q, 90):.1e} rad, body p50 "
+              f"{np.median(x):.2f} p90 {np.percentile(x, 90):.2f} mm, hook loads p50 "
+              f"{np.median(f):.1f} p90 {np.percentile(f, 90):.1f} N")
         for key, (b, fo, so, ff, fs) in sorted(touch.items(), key=lambda kv: -kv[1][:3].sum()):
             if b + fo + so >= 0.01 * n:
+                arm = arms and 'rung' in key and any(k.rsplit('_', 1)[0] in ARM for k in key)
                 print(f"         {key[0] + ' - ' + key[1]:>31}: both {b / n:5.1%}, only full "
                       f"{fo / n:5.1%}, only simplified {so / n:5.1%}; mean N {ff / n:6.1f} "
-                      f"full, {fs / n:6.1f} simplified")
-                assert fo <= 0.08 * n and so <= 0.08 * n, (
-                    f"lesson {k}: {key} touches on one robot and not the other in "
+                      f"full, {fs / n:6.1f} simplified" + ('  (judged by surface, below)' if arm else ''))
+                assert arm or (fo <= 0.08 * n and so <= 0.08 * n), (
+                    f"{label}: {key} touches on one robot and not the other in "
                     f"{max(fo, so) / n:.0%} of the same states")
+        for link, v in sorted(err.items()):
+            v = np.array(v)
+            p10, p50, p90 = np.percentile(v, [10, 50, 90])
+            print(f"         {link:>14} stand-in surface vs the real link near the rung: "
+                  f"p10 {p10:+5.1f} p50 {p50:+5.1f} p90 {p90:+5.1f} mm ({len(v)} states)")
+            # unbiased to 5 mm, and no stand-in off by more than a rung and a half in its
+            # worst tenth -- an arm with no stand-in misses by the whole arm. 5, not the
+            # 3 first guessed: the upper arm's motor is a disc, 98 mm across and 62 thick,
+            # and no shape MJX collides exactly with a rung fits one closer (a capsule,
+            # a ball and rings of rods were each measured: 4.4 mm is the best of them)
+            assert abs(p50) <= 5.0 and -25.0 <= p10 and p90 <= 25.0, (
+                f"{label}: the {link} stand-in is {p50:+.1f} mm (p50), {p10:+.1f}..{p90:+.1f} "
+                f"(p10..p90) off the real link near the rung")
         assert np.median(q) < 5e-3 and np.median(x) < 0.5, (
-            f"lesson {k}: one control step from the same state takes the simplified robot "
+            f"{label}: one control step from the same state takes the simplified robot "
             f"{np.median(q):.1e} rad / {np.median(x):.2f} mm from the full one (p50)")
+
+    gait = lambda o, a, rng: pol[0](o[None])[0] if pol else rng.uniform(-0.5, 0.5, 17)
+    for k in lessons:
+        compare(f"lesson {k:>4}, the full robot's gait", _task(k), _task(k, c_path(k)), gait)
+
+    # a row under the hang: lesson 1 with one more full row dz lower, both robots
+    wander = lambda o, a, rng: np.clip(0.8 * a + 0.6 * rng.normal(0, 1, 17), -1, 1)
+    os.makedirs(OUT, exist_ok=True)
+    for dz in below:
+        spec = dict(LESSONS[1], title=f'lesson 1 with a row {dz} m under the hang',
+                    rungs=LESSONS[1]['rungs'] + [_ry('below', -0.90, 1.50, 1.0 - dz)])
+        fp = os.path.join(OUT, f'check_below{dz:.2f}.xml')
+        open(fp, 'w').write(scene_xml(spec, f'check_below{dz:.2f}'))
+        lay = lesson_layout(1)
+        lay['rungs'] = lay['rungs'] + [('rung_below', np.array([0.44, 0.3, 1.0 - dz]),
+                                        np.array([0.0, 1.0, 0.0]), 1.2, 0.015)]
+        lay['lesson'] = 1
+        sp = os.path.join(OUT, f'check_below{dz:.2f}_mjx.xml')
+        open(sp, 'w').write(build(lay).to_xml())
+        compare(f"a row {dz} m under the hang, the arms moving at random",
+                _task(1, fp), _task(1, sp), wander, steps=250, arms='rung_below')
     print("model: OK -- the simplified robot touches what the full one touches, where it "
           "does, and moves as it moves")
 

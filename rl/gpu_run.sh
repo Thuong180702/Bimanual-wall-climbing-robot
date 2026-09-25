@@ -13,7 +13,7 @@
 #      MAX_FAILS times in a row; it stops at HOURS or TOTAL steps, whichever is first
 #      (SIGTERM, so it saves on the way out).
 #   3. score the best checkpoint on the FULL robot in C MuJoCo -- the benchmark,
-#      lessons 1..9, EPISODES each, against doing nothing (rl.eval) -- and replay it on the full
+#      lessons 1..9 both ways round, EPISODES each, against doing nothing (rl.eval) -- and replay it on the full
 #      robot, the simplified one and MJX (rl.mjx_check policy), then pack out/<name>/
 #      into out/<name>.tgz and print the croc line that sends it home.
 #
@@ -38,7 +38,7 @@
 # run keeps the size it found (out/<name>/envs) unless ENVS is given again.
 # A second call with the same name carries the same run on (its preflight skipped),
 # so a short first call measures the card: HOURS=2 SCORE=0 bash rl/gpu_run.sh gpu1,
-# then HOURS=22 bash rl/gpu_run.sh gpu1. SCORE=0 skips step 3, ~30 min of CPU work
+# then HOURS=22 bash rl/gpu_run.sh gpu1. SCORE=0 skips step 3, 30-60 min of CPU work
 # while the GPU sits idle.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -157,18 +157,24 @@ pack() {
 # ---- 3. score the best checkpoint on the full robot -----------------------------
 [ "${SCORE:-1}" = 1 ] || { say "SCORE=0: not scoring; carry on with the same name"; pack; exit 0; }
 [ -f "$RUN/best_model.zip" ] || { say "no best checkpoint to score"; pack; exit 1; }
-say "scoring best_ on the full robot, the benchmark 1..9: $EPISODES episodes a lesson, one process each"
-lessons="1 2 3 4 5 6 7 8 9"
+say "scoring best_ on the full robot, the benchmark 1..9 both ways round: $EPISODES episodes each, one process each"
+jobs="1 1m 2 2m 3 3m 4 4m 5 5m 6 6m 7 7m 8 8m 9 9m"   # 'm': mirrored, toward the right
+job() {
+    k=${1%m}; m=; [ "$1" != "$k" ] && m=--mirror
+    $PY -m rl.eval --name "$NAME" --from-best --lessons="$k" $m --episodes "$EPISODES" \
+        --jsonl "$RUN/eval.jsonl" > "$RUN/eval_$1.txt" 2>&1
+}
+export -f job; export PY NAME EPISODES RUN
 rm -f "$RUN/eval.jsonl"
-printf '%s\n' $lessons | xargs -P "$(getconf _NPROCESSORS_ONLN)" -I{} sh -c \
-    "$PY -m rl.eval --name '$NAME' --from-best --lessons={} --episodes $EPISODES --jsonl '$RUN/eval.jsonl' > '$RUN/eval_{}.txt' 2>&1"
-{ head -3 "$RUN/eval_${lessons%% *}.txt"
-  for k in $lessons; do grep -E "^ *${k} " "$RUN/eval_$k.txt" || echo "$k: eval failed, see eval_$k.txt"; done
+printf '%s\n' $jobs | xargs -P "$(getconf _NPROCESSORS_ONLN)" -I{} bash -c 'job {}'
+{ head -3 "$RUN/eval_1.txt"
+  for j in $jobs; do grep -E "^ *${j} " "$RUN/eval_$j.txt" || echo "$j: eval failed, see eval_$j.txt"; done
 } > "$RUN/eval.txt"
 cat "$RUN/eval.txt"
 $PY -m rl.mjx_check policy --run "$RUN" > "$RUN/sim2sim.txt" 2>&1 \
     || say "sim2sim FAILED -- the policy climbs differently on the full robot: $RUN/sim2sim.txt"
 cat "$RUN/sim2sim.txt"
-$PY -m rl.plot --name "$NAME" > /dev/null 2>&1 || say "no plots here (matplotlib missing): make them at home, python -m rl.plot --name $NAME"
+$PY -m rl.plot --name "$NAME" > "$RUN/plot.log" 2>&1 \
+    || say "no plots here ($RUN/plot.log says why; this box has no matplotlib): make them at home, python -m rl.plot --name $NAME"
 pack
 say "done: $RUN"

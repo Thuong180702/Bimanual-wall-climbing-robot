@@ -31,7 +31,10 @@ CAPTURE_DZ = (-0.010, 0.070)
 
 
 class ClimbingEnv:
-    def __init__(self, xml='scene.xml', fall_z=-1.2, free_fall_s=0.6,
+    # fall_z: there is no floor, so a base this low has fallen. -2.5, not -1.2: lesson 4
+    # climbs down a staircase to 1.15 m under the start rung, with the base hanging
+    # 1.1 m under the hooks; a real fall is caught first by free_fall_s anyway.
+    def __init__(self, xml='scene.xml', fall_z=-2.5, free_fall_s=0.6,
                  success_z=2.00, timeout_s=60.0, qvel_max=100.0, held_fn=None,
                  visual=True):
         if visual:

@@ -16,7 +16,8 @@ rl.train_ppo / rl.eval / rl/gpu_run.sh, and draws:
 
 Needs matplotlib (not in requirements-gpu.txt: plot at home, after croc).
 """
-import argparse, json, os
+import argparse, collections, json, os
+import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -113,14 +114,23 @@ def main():
         fig.savefig(os.path.join(out, 'training.png'), dpi=150)
 
     if ev:
-        ev = sorted(ev, key=lambda e: float(e['lesson']))
+        # one bar per lesson and direction: as drawn (toward the robot's left) and mirrored
+        lessons = sorted({e['lesson'] for e in ev}, key=float)
         fig, ax = plt.subplots(figsize=(10, 4))
-        xs = range(len(ev))
-        p = [e['success'] / e['episodes'] for e in ev]
-        err = [[pi - e['ci95'][0] for pi, e in zip(p, ev)], [e['ci95'][1] - pi for pi, e in zip(p, ev)]]
-        ax.bar(xs, p, yerr=err, capsize=3, label=f"policy ({ev[0]['episodes']} episodes, 95 % CI)")
-        ax.plot(xs, [e.get('control_success', 0) for e in ev], 'kx', label='do nothing')
-        ax.set_xticks(list(xs), [f"{e['lesson']}\n{e['name']}" for e in ev], fontsize=6, rotation=60)
+        for off, mir, lab in ((-0.2, False, 'toward the left'), (0.2, True, 'mirrored, toward the right')):
+            way = {e['lesson']: e for e in ev if bool(e.get('mirror')) == mir}
+            if not way:
+                continue
+            xs = [i + off for i, k in enumerate(lessons) if k in way]
+            es = [way[k] for k in lessons if k in way]
+            p = [e['success'] / e['episodes'] for e in es]
+            err = [[pi - e['ci95'][0] for pi, e in zip(p, es)], [e['ci95'][1] - pi for pi, e in zip(p, es)]]
+            ax.bar(xs, p, width=0.4, yerr=err, capsize=3,
+                   label=f"{lab} ({es[0]['episodes']} episodes, 95 % CI)")
+            ax.plot(xs, [e.get('control_success', 0) for e in es], 'kx',
+                    label='do nothing' if not mir else None)
+        names = {e['lesson']: e['name'] for e in ev}
+        ax.set_xticks(range(len(lessons)), [f"{k}\n{names[k]}" for k in lessons], fontsize=6, rotation=60)
         ax.set(ylabel='success on the full robot', ylim=(0, 1.05))
         ax.legend(fontsize=7)
         fig.tight_layout()
@@ -128,10 +138,14 @@ def main():
     if cv:
         fig, ax = plt.subplots(figsize=(9, 4.5))
         by = {}
-        for r in cv:
+        for r in cv:                      # both directions of a lesson pooled, if both were scored
             by.setdefault(str(r['lesson']), []).append((r['timesteps'] / 1e6, r['success'] / r['episodes']))
         for k in sorted(by, key=float):
-            ax.plot(*zip(*sorted(by[k])), label=f'lesson {k}', lw=1.0, marker='.')
+            pts = collections.defaultdict(list)
+            for t, v in by[k]:
+                pts[t].append(v)
+            ax.plot(*zip(*sorted((t, np.mean(v)) for t, v in pts.items())), label=f'lesson {k}',
+                    lw=1.0, marker='.')
         steps = sorted({t for v in by.values() for t, _ in v})
         mean = [sum(p for t2, p in sum(by.values(), []) if t2 == t) / sum(1 for t2, _ in sum(by.values(), []) if t2 == t)
                 for t in steps]

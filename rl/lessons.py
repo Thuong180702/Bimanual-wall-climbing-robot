@@ -15,15 +15,17 @@ inward of the hang.
 """
 import hashlib
 import os
+import re
 import numpy as np
 from controller import SCENE, URDF
 
 OUT = os.path.join(URDF, 'lessons')
 
-# the walls of scene.xml, verbatim -- big enough for every rung layout used here
-WALL_FRONT = '    <geom name="wall_front" type="box" material="wall" pos="0.550 0.30 1.00" size="0.05 1.35 2.00"/>'
-WALL_BACK = '    <geom name="wall_back"  type="box" material="wall" pos="-0.300 0.30 1.00" size="0.05 1.35 2.00"/>'
-WALL_SIDE = '    <geom name="wall_side"  type="box" material="wall" pos="0.125 -1.050 1.00" size="0.425 0.05 2.00"/>'
+# scene.xml's walls, 8 m long and 6 m deep: every layout here fits, mirrored too --
+# lesson 5's far side is 3.3 m along, lesson 4's staircase ends 1.15 m down
+WALL_FRONT = '    <geom name="wall_front" type="box" material="wall" pos="0.550 0.00 0.50" size="0.05 4.00 3.00"/>'
+WALL_BACK = '    <geom name="wall_back"  type="box" material="wall" pos="-0.300 0.00 0.50" size="0.05 4.00 3.00"/>'
+WALL_SIDE = '    <geom name="wall_side"  type="box" material="wall" pos="0.125 -1.050 0.50" size="0.425 0.05 3.00"/>'
 
 # --- the grip pad: what makes the hook hold along its rung --------------------
 # The hook is a slot round a smooth cylinder, so along the rung axis nothing holds
@@ -85,8 +87,12 @@ def _rx(name, x0, x1, z, y=-0.94):
 
 # Goals are one world point per hand, [L, R], always ON a goal rung's axis. Success =
 # both hooks latched on a goal rung within tolerance of their point (climb_task.py).
-# Row spacing stays <= 0.50 m (the measured 0.671 m reach x 75 %) except lesson 9,
-# which is deliberately beyond static reach.
+# Reach, measured on the robot hanging still from one hook (urdf/_reach.py's
+# constraints): 0.56 m up, 0.64-0.68 m along a rung, 0.65-0.88 m down at 0.15-0.45 m
+# aside; along a rung with momentum at most 1.50-1.55 m. Rows stay <= 0.50 m apart
+# and steps within the static reach, except lesson 9, which is past it on purpose.
+# Lessons 1..9 are the benchmark; each goes toward the robot's left (+y), and
+# `mirrored` gives the same lesson toward its right.
 LESSONS = {
     # Three rungs below lesson 1, because lesson 1 cannot be found from scratch any
     # more. Once dragging a loaded hook and jumping stopped paying, the only paid
@@ -243,21 +249,29 @@ LESSONS = {
                    _ry('up2', -0.90, 1.50, 1.90)],
             goal_rungs=['rung_up2'],
             goals=[[0.44, 0.157, 1.90], [0.44, -0.157, 1.90]]),
-    4: dict(name='climb_over', timeout=120.0,
-            title='up, across the top, down the far side',
+    # Climbing down comes before climbing over, which needs both directions. A row
+    # straight below the hang is inside the robot (its arms and body fill 0.25-1.10 m
+    # under the start rung), so the way down is a staircase: each step lower and
+    # further along, the way a climber steps down beside the holds, not onto them.
+    4: dict(name='climb_down', timeout=120.0,
+            title='down a staircase of short rungs, each lower and further along',
+            walls=[WALL_FRONT],
+            rungs=[_ry('start', -0.90, 0.40, 1.00),
+                   _ry('step1', 0.60, 1.10, 0.60),
+                   _ry('step2', 1.25, 1.75, 0.25),
+                   _ry('step3', 1.95, 2.45, -0.15)],
+            goal_rungs=['rung_step3'],
+            goals=[[0.44, 2.33, -0.15], [0.44, 2.02, -0.15]]),
+    # The break is past what the robot can bridge even with momentum (1.55 m hook to
+    # hook), so the only way across is up, along the top and down.
+    5: dict(name='climb_over', timeout=120.0,
+            title='up, across the top, down the far side of a 2.2 m break',
             walls=[WALL_FRONT],
             rungs=[_ry('start', -0.90, 0.35, 1.00),
-                   _ry('top', -0.90, 1.50, 1.45),
-                   _ry('far', 1.00, 1.50, 1.00)],
+                   _ry('top', -0.90, 3.30, 1.45),
+                   _ry('far', 2.55, 3.05, 1.00)],
             goal_rungs=['rung_far'],
-            goals=[[0.44, 1.41, 1.00], [0.44, 1.10, 1.00]]),
-    5: dict(name='climb_down', timeout=90.0,
-            title='climb down one row',
-            walls=[WALL_FRONT],
-            rungs=[_ry('start', -0.90, 1.50, 1.00),
-                   _ry('low', -0.90, 1.50, 0.55)],
-            goal_rungs=['rung_low'],
-            goals=[[0.44, 0.157, 0.55], [0.44, -0.157, 0.55]]),
+            goals=[[0.44, 2.93, 1.00], [0.44, 2.62, 1.00]]),
     6: dict(name='staggered', timeout=120.0,
             title='climb staggered short rungs, each at its own height',
             walls=[WALL_FRONT],
@@ -283,14 +297,35 @@ LESSONS = {
                    _ry('back', -0.90, 1.50, 1.00, x=-0.19)],
             goal_rungs=['rung_back'],
             goals=[[-0.19, 0.157, 1.00], [-0.19, -0.157, 1.00]]),
-    9: dict(name='far_reach', timeout=120.0,
-            title='a row 0.75 m up, beyond the 0.56 m static reach',
+    # One gap past the static reach (0.58 m of gap is the most a still hang crosses)
+    # and well inside the 1.47 m momentum could carry a hand: one hook holds while
+    # the robot swings the other across.
+    9: dict(name='swing_gap', timeout=60.0,
+            title='a 0.90 m gap, past the static reach: swing across',
             walls=[WALL_FRONT],
-            rungs=[_ry('start', -0.90, 1.50, 1.00),
-                   _ry('top', -0.90, 1.50, 1.75)],
-            goal_rungs=['rung_top'],
-            goals=[[0.44, 0.157, 1.75], [0.44, -0.157, 1.75]]),
+            rungs=[_ry('start', -0.45, 0.35, 1.00),
+                   _ry('far', 1.25, 1.75, 1.00)],
+            goal_rungs=['rung_far'],
+            goals=[[0.44, 1.63, 1.00], [0.44, 1.32, 1.00]]),
 }
+
+
+def mirrored(spec):
+    """the lesson reflected y -> -y: every wall and rung, and each hand given the
+    other's goal so the left hand stays on the left (rl.walls.mirror's rule)"""
+    def flip(m):
+        v = [float(x) for x in m.group(2).split()]
+        for i in range(1, len(v), 3):
+            v[i] = -v[i]
+        return f'{m.group(1)}="{" ".join(f"{x:.4f}" for x in v)}"'
+    xml = lambda lines: [re.sub(r'(pos|fromto)="([^"]+)"', flip, g) for g in lines]
+    goals = [[x, -y, z] for x, y, z in spec['goals']][::-1]
+    return dict(spec, walls=xml(spec['walls']), rungs=xml(spec['rungs']), goals=goals,
+                title=spec['title'] + ' (mirrored)')
+
+
+def spec_of(lesson, mirror=False):
+    return mirrored(LESSONS[lesson]) if mirror else LESSONS[lesson]
 
 
 def lesson_key(x):
@@ -304,20 +339,21 @@ def lesson_tag(lesson):
     return f"lesson{lesson:02d}" if isinstance(lesson, int) else f"lesson{lesson:g}"
 
 
-def _path(lesson):
-    return os.path.join(OUT, f"{lesson_tag(lesson)}_{LESSONS[lesson]['name']}.xml")
+def _path(lesson, mirror=False):
+    return os.path.join(OUT, f"{lesson_tag(lesson)}_{LESSONS[lesson]['name']}"
+                             f"{'_mirror' if mirror else ''}.xml")
 
 
-def _stamp(lesson):
+def _stamp(lesson, mirror=False):
     """what this lesson's scene is generated FROM, as one short hash"""
     h = hashlib.sha256()
     h.update(open(SCENE, 'rb').read())
-    h.update(repr(sorted(LESSONS[lesson].items(), key=lambda kv: kv[0])).encode())
+    h.update(repr(sorted(spec_of(lesson, mirror).items(), key=lambda kv: kv[0])).encode())
     h.update(repr(PAD).encode())
     return h.hexdigest()[:16]
 
 
-def xml_path(lesson):
+def xml_path(lesson, mirror=False):
     """the lesson's scene file, written on demand -- if it is missing OR stale.
 
     `urdf/lessons/` is generated from `scene.xml` and gitignored, so a fresh clone
@@ -333,34 +369,37 @@ def xml_path(lesson):
     `scene.xml`, this lesson's spec and the patch lists, so any of them moving
     rewrites the file.
     """
-    p = _path(lesson)
-    want = _stamp(lesson)
+    p = _path(lesson, mirror)
+    want = _stamp(lesson, mirror)
     if not os.path.exists(p) or f'<!-- stamp {want} -->' not in open(p).read(2000):
-        write(lesson)
+        write(lesson, mirror)
     return p
 
 
-def write(lesson):
-    spec = LESSONS[lesson]
+def scene_xml(spec, model, stamp=''):
+    """scene.xml with its walls and rungs replaced by `spec`'s, the grip pad on, for a
+    file in OUT"""
     xml = open(SCENE).read()
     xml = xml.replace('<mujoco model="bimanual_wall_climber_scene">',
-                      f'<mujoco model="{lesson_tag(lesson)}_{spec["name"]}">\n'
-                      f'  <!-- stamp {_stamp(lesson)} -->')
+                      f'<mujoco model="{model}">\n  <!-- stamp {stamp} -->')
     xml = xml.replace('meshdir="meshes/"', 'meshdir="../meshes/"')
     for old, new in PAD:
         assert old in xml, f"scene.xml changed; patch target not found: {old}"
         xml = xml.replace(old, new)
     head, rest = xml.split('    <!-- ===== walls ===== -->')
     _, tail = rest.split('    <!-- ===== robot ===== -->')
-    mid = '\n'.join(
-        [f'    <!-- lesson {lesson}: {spec["title"]} -->']
-        + spec['walls'] + spec['rungs'])
-    out = head + mid + '\n\n    <!-- ===== robot ===== -->' + tail
+    mid = '\n'.join([f'    <!-- {spec["title"]} -->'] + spec['walls'] + spec['rungs'])
+    return head + mid + '\n\n    <!-- ===== robot ===== -->' + tail
+
+
+def write(lesson, mirror=False):
+    spec = spec_of(lesson, mirror)
+    out = scene_xml(spec, f'{lesson_tag(lesson)}_{spec["name"]}', _stamp(lesson, mirror))
     # via a temp file and an atomic rename: the 8 SubprocVecEnv workers build their
     # environments at the same moment, and without it one of them parses the file
     # while another is still writing it
     os.makedirs(OUT, exist_ok=True)
-    p = _path(lesson)
+    p = _path(lesson, mirror)
     tmp = f'{p}.{os.getpid()}.tmp'
     open(tmp, 'w').write(out)
     os.replace(tmp, p)
@@ -419,9 +458,9 @@ def slide_test(path, force=40.0):
 def main():
     import mujoco
     from climbing_env import ClimbingEnv
-    for k in sorted(LESSONS):
-        spec = LESSONS[k]
-        path = write(k)
+    for k, mirror in [(k, False) for k in sorted(LESSONS)] + [(k, True) for k in range(1, 10)]:
+        spec = spec_of(k, mirror)
+        path = write(k, mirror)
         e = ClimbingEnv(xml=path, success_z=1e9)
         e.reset()
         p0 = e.data.xpos[e.base].copy()
@@ -446,8 +485,8 @@ def main():
                if e.model.geom_bodyid[g] in (e.hook['L'], e.hook['R'])
                and e.model.geom_priority[g] == 1]
         assert len(pad) == 4, f"lesson {k}: grip pad missing from the hooks"
-        print(f"lesson {k} {spec['name']:>20}: drift {drift:.2f} mm, "
-              f"{len(spec['rungs'])} rungs, OK")
+        print(f"lesson {k}{' mirrored' if mirror else ''} {spec['name']:>20}: drift "
+              f"{drift:.2f} mm, {len(spec['rungs'])} rungs, OK")
 
     # phase 7, on a lesson scene: pull the hanging robot sideways and see how far
     # the loaded hook travels along its rung. The pad is meant to make that small,

@@ -27,24 +27,26 @@ def main():
     if os.path.exists(out):
         for line in open(out):
             r = json.loads(line)
-            done.add((r['checkpoint'], str(r['lesson'])))
+            done.add((r['checkpoint'], str(r['lesson']), bool(r.get('mirror'))))
     snaps = sorted(os.path.basename(p)[:-len('model.zip')]
                    for p in glob.glob(os.path.join(run, 'snaps', '*_model.zip')))
-    todo = [(f'snaps/{s}', k) for s in snaps for k in a.lessons.split(',')
-            if (f'snaps/{s}model', k) not in done]
-    print(f"{len(snaps)} snapshots, {len(todo)} (snapshot, lesson) pairs to score, "
+    # both ways round: each lesson as drawn (toward the robot's left) and mirrored
+    todo = [(f'snaps/{s}', k, mir) for s in snaps for k in a.lessons.split(',')
+            for mir in (False, True) if (f'snaps/{s}model', k, mir) not in done]
+    print(f"{len(snaps)} snapshots, {len(todo)} (snapshot, lesson, direction) jobs to score, "
           f"{a.episodes} episodes each, {a.jobs} at a time")
 
     def one(job):
-        ck, k = job
+        ck, k, mir = job
         r = subprocess.run([sys.executable, '-m', 'rl.eval', '--name', a.name, '--ckpt', ck,
-                            f'--lessons={k}', '--episodes', str(a.episodes), '--jsonl', out],
-                           capture_output=True, text=True)
+                            f'--lessons={k}', '--episodes', str(a.episodes), '--jsonl', out]
+                           + (['--mirror'] if mir else []), capture_output=True, text=True)
         return job, r.returncode, r.stderr[-300:]
 
     with ThreadPoolExecutor(a.jobs) as ex:
-        for (ck, k), rc, err in ex.map(one, todo):
-            print(f"  {ck} lesson {k}: {'ok' if rc == 0 else 'FAILED ' + err}", flush=True)
+        for (ck, k, mir), rc, err in ex.map(one, todo):
+            print(f"  {ck} lesson {k}{' mirrored' if mir else ''}: "
+                  f"{'ok' if rc == 0 else 'FAILED ' + err}", flush=True)
     print(f"-> {out}")
 
 

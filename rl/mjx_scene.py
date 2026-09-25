@@ -20,7 +20,8 @@ where one control step takes each (`python -m rl.mjx_check model`).
     part, and the body's box stood 9 mm proud of its chamfered hull into the wall
     whenever the body yawed: at the same states it touched the wall in 63 % of them
     at 200 N, the full robot in 9 % at 36 N.) ponytail: a plane does not end -- the
-    front wall does, at y = -1.05 and 1.65; nothing reaches past it in any lesson.
+    front wall does, at y = -4 and 4, z = -2.5 and 3.5 (rl.lessons); no lesson or
+    family reaches past it, mirrored or not.
   * RUNGS are capsules, their straight part the real rung's length and the caps
     past its ends, so every seat on a rung holds exactly as on the cylinder and the
     error is only under a hook hanging off the end. (Caps inside the length left
@@ -36,8 +37,10 @@ where one control step takes each (`python -m rl.mjx_check model`).
     (Two 6 mm rods through each plate rounded the plate edges off by 6 mm, where a
     rung tilted against the hook actually bears: 35 % of the full robot's hook load
     at the same states.) The finger motor is a ring of rods tangent to it and flush
-    with its ends (a capsule's cap stood 27.5 mm proud of the end the rung meets), the
-    wrist and forearm motors a ball each, base and torso a rod up each vertical edge.
+    with its ends (a capsule's cap stood 27.5 mm proud of the end the rung meets); the
+    rest of the arm, link by link, a capsule fitted to its motor and one to each of its
+    bracket plates (ARM) -- a row under the arms, the posture of every climb up, down or
+    over, went through them before; base and torso a rod up each vertical edge.
   * one HAND against the other: the hooks' own boxes (box-box is a full SAT in MJX)
     and the three motors above each hook, as the cylinders they are. (Boxes round
     the motors met 9 mm deep in 11 % of the full robot's states on lesson 2, where
@@ -64,9 +67,10 @@ hook on its rung in one robot and not the other in at most 2.4 % of the states o
 lessons 1 and 2, and 6.5 % on 1.85 -- a hook off a rung's end, still on its cap; the
 finger motor on a rung in this robot alone 0.0 %, in the full one alone at most
 3.2 %; and win17 on the full robot, this one in C and this one in MJX, 8 episodes on
-each of its eleven lessons: 78, 78 and 72 of 88; 24 each on lessons 1, 1.5, 1.7,
-1.85 and 2: 97, 96 and 92 of 120, lesson 2 alone 12, 9 and 6 of 24 (the gap lesson,
-hooks on rung ends: not significant at 24, but the way to watch). One known difference: a
+each of its eleven lessons: 76, 73 and 76 of 88; 24 each on lessons 1, 1.5, 1.7,
+1.85 and 2: 90, 94 and 83 of 120, lesson 2 alone 10, 9 and 3 of 24 (the gap lesson,
+hooks on rung ends: the way to watch -- though the full robot alone moved 97 -> 90 of
+120 across an unrelated scene change, so +-7 is noise here). One known difference: a
 49 N pull along the rung slides the full robot's hooks 20-24 mm in 6 s and these
 14-20 -- more contacts in parallel creep less. It errs toward the dragging this
 task charges for, so it is left, not tuned away.
@@ -118,11 +122,25 @@ BODY_ROD = 0.02          # m, the radius of the rods up the body's edges
 HOOK_EDGE = 0.00025      # m, the radius of the rods a hook plate is drawn in
 HOOK_COMB = 5            # rods across the hook's 65 mm width, per broad face (16 mm apart)
 MOTOR_RODS = 24          # rods round the finger motor, 15 deg apart: 0.24 mm deep between two
+# the arm, link by link from the shoulder to the wrist: two capsules each, one fitted
+# to the link's motor and one to its brackets (`_arm`). A robot hanging with a row under
+# its arms -- every climb up, down or over -- rests that row against them, and without
+# these the arms went through it. Measured as the stand-in's surface against the real
+# link's near a rung (rl.mjx_check model, rows below): one capsule a link missed the
+# motors set off its axis (the forearm roll's by 17 mm, median); two, at ARM_Q 75, are
+# unbiased to 3 mm and within -7..+5 mm (p10..p90) for every link but the upper arm,
+# whose thin side plate a round capsule over-covers by up to 20 mm in its worst tenth.
+# Tried and worse: a ball on each motor's axis (misses its rim by 9 mm), and rings of
+# rods on the motors (exact round the side, but a rung lying on a motor's flat face
+# sinks up to 7 mm before it meets a rod end, and these faces turn to the wall).
+ARM = ('shoulder', 'upper_arm', 'humerus_rot', 'fore_arm', 'forearm_rot', 'wrist')
+ARM_Q = 75               # percentile of a part's points' distance from its axis: the radius
+# (and every `<link>:arm<i>` capsule `_round` fits to the arm: how many a link gets is
+# how many parts scene.xml gives it, so `build` takes those names from the fit)
 RUNG = [f'{b}:rod{i}' for b in ('base_link', 'torso_upper') for i in range(4)] + [
     n % sd for sd in SIDES for n in (
         [f'hook_%s:{t}_e{k}' for t in ('shank', 'lip') for k in range(2 * HOOK_COMB + 4)]
-        + [f'wrist_dev_%s:rod{i}' for i in range(MOTOR_RODS)]
-        + ['wrist_%s:ball', 'forearm_rot_%s:ball'])]
+        + [f'wrist_dev_%s:rod{i}' for i in range(MOTOR_RODS)])]
 # one hand against the other: the hooks' own boxes (box-box is exact in MJX), and the
 # motor cylinder of each of the three links above a hook against each of the other
 # hand's -- what the full robot's hands meet with (measured: motor on motor, and
@@ -268,10 +286,49 @@ def _round(m, boxes):
             out[f'wrist_dev_{sd}:rod{i}'] = (
                 cap, p + (lo + hi) / 2 * a + (r - rr) * (np.cos(t) * e1 + np.sin(t) * e2),
                 _quat_z_to(a), [rr, (hi - lo) / 2 - rr, 0.0])
-        for body in (f'wrist_{sd}', f'forearm_rot_{sd}'):   # never seen on a rung
-            p, a, r, h = _cylinder(m, body)
-            out[f'{body}:ball'] = (ball, p, np.array([1.0, 0, 0, 0]), [r, 0.0, 0.0])
+        for body in ARM:
+            for i, (c, a, r, h) in enumerate(_arm(m, f'{body}_{sd}')):
+                out[f'{body}_{sd}:arm{i}'] = (cap, c, _quat_z_to(a), [r, h, 0.0])
     return out
+
+
+def _arm(m, body, q=None):
+    """capsules for an arm link, in its body's frame, as [(centre, axis, radius, half
+    length)]: one fitted to its motor cylinder (points on its rims and waist), and one
+    to each of its bracket meshes (its vertices) -- a link's plates face different ways
+    (the upper arm's: a long side plate, and a square one across its elbow end whose
+    corners reach 68 mm from the arm's axis), and one capsule round all of them was 4 mm
+    short of the upper arm where a row meets it"""
+    b = m.body(body).id
+    motor, brackets = [], []
+    for g in range(m.ngeom):
+        if m.geom_bodyid[g] != b or not m.geom_contype[g]:
+            continue
+        if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH:
+            brackets.append(_verts(m, g))
+        elif m.geom_type[g] == mujoco.mjtGeom.mjGEOM_CYLINDER:
+            R = np.zeros(9)
+            mujoco.mju_quat2Mat(R, m.geom_quat[g])
+            R = R.reshape(3, 3)
+            r, h = m.geom_size[g][:2]
+            t = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+            ring = np.stack([r * np.cos(t), r * np.sin(t), np.zeros_like(t)], 1)
+            for z in (-h, 0.0, h):
+                motor.append((ring + [0, 0, z]) @ R.T + m.geom_pos[g])
+    return [_capsule(p, ARM_Q if q is None else q) for p in [np.concatenate(motor)] + brackets]
+
+
+def _capsule(pts, q):
+    """(centre, axis, radius, half length): along the points' principal axis, its radius
+    the q-th percentile of their distance from it, its caps inside their ends"""
+    c = pts.mean(0)
+    a = np.linalg.svd(pts - c, full_matrices=False)[2][0]
+    t = (pts - c) @ a
+    r = float(np.percentile(np.linalg.norm((pts - c) - np.outer(t, a), axis=1), q))
+    lo, hi = t.min() + r, t.max() - r
+    if hi < lo:                                   # shorter than it is wide: a ball
+        lo = hi = (t.min() + t.max()) / 2
+    return c + (lo + hi) / 2 * a, a, r, max((hi - lo) / 2, 1e-4)   # a ball: MuJoCo wants a length
 
 
 def _mix(a, b):
@@ -393,7 +450,8 @@ def build(layout=None):
     # renumber the rest against MJX's copy
     shapes = {k: (mujoco.mjtGeom.mjGEOM_BOX,) + v for k, v in boxes.items()}
     shapes.update(_round(full, boxes))
-    used = set(RUNG) | {g for p in SELF for g in p}
+    rung = RUNG + sorted(k for k in shapes if ':arm' in k)
+    used = set(rung) | {g for p in SELF for g in p}
     for key, (typ, pos, quat, size) in shapes.items():
         if key not in used or key in wall:
             continue
@@ -432,7 +490,7 @@ def build(layout=None):
         spec.add_pair(geomname1=a, geomname2=b, condim=3, **_mix(par[a], par[b]))
 
     for w in rungs:
-        for r in RUNG:
+        for r in rung:
             pair(r, w)
     for w in walls:
         for r in wall:

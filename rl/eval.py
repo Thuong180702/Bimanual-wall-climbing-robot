@@ -2,6 +2,7 @@
 
     python -m rl.eval --name gpu15                 # every lesson it trained on
     python -m rl.eval --name gpu15 --lessons 1 --episodes 20
+    python -m rl.eval --name gpu15 --lessons 1 --mirror     # the lesson toward the right
 
 The control matters more than the score. "mean final distance 2.1 m" says nothing on
 its own -- the robot starts hanging, and hanging still is already a legal episode. So
@@ -63,6 +64,8 @@ def main():
                          '(rl.curve does, for every snapshot)')
     ap.add_argument('--jsonl', default=None,
                     help='also append one JSON line per lesson here (rl.plot reads it)')
+    ap.add_argument('--mirror', action='store_true',
+                    help='each lesson mirrored, toward the robot\'s right (rl.lessons.mirrored)')
     a = ap.parse_args()
 
     run_dir = os.path.join('out', a.name)
@@ -76,7 +79,7 @@ def main():
     for k in lessons:
         row = []
         for policy_on in (True, False):
-            venv = DummyVecEnv([lambda: MultiLesson([k])])
+            venv = DummyVecEnv([lambda: MultiLesson([k], mirror=a.mirror)])
             venv = VecNormalize.load(os.path.join(run_dir, f'{ck}vecnorm.pkl'), venv)
             venv.training = False          # freeze the statistics; an eval that keeps
             venv.norm_reward = False       # updating them is scoring a moving target
@@ -94,16 +97,17 @@ def main():
                 res.update(control_success=ok, control_dist=float(np.mean(dists)))
             venv.close()
         lo, hi = res['ci95']
-        print(f"{k:>2} {LESSONS[k]['name']:>21} {row[0]:>18} {row[1]:>18}   {tally}"
-              f"   95% CI {lo:.0%}-{hi:.0%}")
+        print(f"{k:>2}{'m' if a.mirror else ' '} {LESSONS[k]['name']:>20} {row[0]:>18} "
+              f"{row[1]:>18}   {tally}   95% CI {lo:.0%}-{hi:.0%}")
         if a.jsonl:
             with open(a.jsonl, 'a') as f:
-                f.write(json.dumps(dict(lesson=k, name=LESSONS[k]['name'], run=a.name,
-                                        checkpoint=ck + 'model', timesteps=state['timesteps'],
-                                        **res)) + '\n')
+                f.write(json.dumps(dict(lesson=k, name=LESSONS[k]['name'], mirror=a.mirror,
+                                        run=a.name, checkpoint=ck + 'model',
+                                        timesteps=state['timesteps'], **res)) + '\n')
 
     print("\n'm' is mean distance from both goals at the episode end -- lower is "
-          "better.\nThe policy has learned something only where it beats the control.")
+          "better; a lesson marked 'm' ran mirrored, toward the robot's right.\nThe "
+          "policy has learned something only where it beats the control.")
 
 
 if __name__ == '__main__':

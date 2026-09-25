@@ -34,28 +34,33 @@ TIMEOUT = 60.0
 CLEAR = 0.02                     # m every rung but the start one keeps from the robot at the start
 
 # family -> ((parameter, sampled from, first top, last top, step), ...). Integers are
-# counts. The last tops are the benchmark's value or a margin past it, except where
-# the robot bounds them (climb_down: a row lower than 1.0 - 0.55 is inside the torso).
+# counts. The last tops are the benchmark's value or a margin past it, and the
+# robot's measured reach (rl.lessons) bounds the rest: a staircase step stays inside
+# the static reach down (0.65 m at 0.15 m aside); the break of climb_over starts past
+# the 1.55 m the robot can bridge with momentum, so it can only be climbed round; and
+# the swing gap runs from the 0.58 m a still hang crosses to 1.10 m of the 1.47 m a
+# swing at most could.
 FAMILIES = {
     1: (('shift', 0.0, 0.30, 1.40, 0.10),),                        # lesson 1: 1.10
     2: (('gaps', 1, 1, 2, 1), ('width', 0.04, 0.04, 0.30, 0.02)),  # lesson 2: 2 x 0.25
     3: (('rows', 1, 1, 2, 1), ('spacing', 0.25, 0.30, 0.50, 0.05)),  # lesson 3: 2 x 0.45
-    4: (('break', 0.35, 0.35, 0.75, 0.05),),                       # lesson 4: 0.65
-    5: (('drop', 0.25, 0.30, 0.55, 0.05),),                        # lesson 5: 0.45
+    4: (('steps', 1, 1, 3, 1), ('drop', 0.25, 0.30, 0.45, 0.05),   # lesson 4: 3 steps,
+        ('gap', 0.05, 0.10, 0.30, 0.05)),                          #   <= 0.40 down, <= 0.20 on
+    5: (('break', 1.80, 1.80, 2.50, 0.10),),                       # lesson 5: 2.20
     6: (('tiers', 1, 1, 2, 1), ('rise', 0.30, 0.30, 0.50, 0.05),   # lesson 6: 2, ~0.46,
         ('scatter', 0.0, 0.02, 0.08, 0.02)),                       #   +-0.06
     7: (('side', 0.60, 0.60, 1.10, 0.05),),                        # lesson 7: 1.00
     8: (('behind', 0.35, 0.35, 0.70, 0.05),),                      # lesson 8: 0.63
-    9: (('reach', 0.55, 0.55, 0.85, 0.05),),                       # lesson 9: 0.75
+    9: (('gap', 0.30, 0.55, 1.10, 0.05),),                         # lesson 9: 0.90
 }
 
 
 # where each benchmark lesson sits in its family (rl.lessons draws them): every value
 # must lie inside the family's last range, so the benchmark is a wall training can draw
 BENCHMARK = {1: dict(shift=1.10), 2: dict(gaps=2, width=0.25), 3: dict(rows=2, spacing=0.45),
-             4: dict(**{'break': 0.65}), 5: dict(drop=0.45),
+             4: dict(steps=3, drop=0.40, gap=0.20), 5: dict(**{'break': 2.20}),
              6: dict(tiers=2, rise=0.46, scatter=0.06), 7: dict(side=1.00),
-             8: dict(behind=0.63), 9: dict(reach=0.75)}
+             8: dict(behind=0.63), 9: dict(gap=0.90)}
 
 
 def first_tops():
@@ -118,20 +123,36 @@ def sample(family, top, rng, probe=None):
         goals, end = _goals_from(y0, rng)
         rungs.append(_row(y0, end, Z0))
         goal_rungs = [len(rungs) - 1]
-    elif family in (3, 5, 9):                      # to another row: up, down, far up
-        if family == 3:
-            m, dz = p['rows'], p['spacing']
-        else:
-            m, dz = 1, (-p['drop'] if family == 5 else p['reach'])
+    elif family == 3:                              # rows above, up to the top one
+        m, dz = p['rows'], p['spacing']
         rungs = [_row(Y0, Y1, Z0)] + [_row(Y0, Y1, Z0 + k * dz) for k in range(1, m + 1)]
         z = Z0 + m * dz
         goals, goal_rungs = [np.array([X, HY + d, z]), np.array([X, -HY + d, z])], [m]
-    elif family == 4:                              # a break in the start row, a row above
+    elif family == 4:                              # down a staircase: each step lower, further on
+        y = HY + rng.uniform(0.12, 0.30)           # the start row ends past the left hook
+        rungs, z = [_row(-0.9, y, Z0)], Z0
+        for i in range(p['steps']):
+            y0 = y + (p['gap'] if probe == 'gap' else rng.uniform(0.05, p['gap']))
+            z -= p['drop'] if probe == 'drop' else rng.uniform(0.25, p['drop'])
+            if i < p['steps'] - 1:
+                y = y0 + rng.uniform(0.40, 0.60)   # room for both hooks on every step
+                rungs.append(_row(y0, y, z))
+        goals, end = _goals_from(y0, rng, z=z)
+        rungs.append(_row(y0, end, z))
+        goal_rungs = [len(rungs) - 1]
+    elif family == 5:                              # a break in the start row, a row above
         e = HY + rng.uniform(0.12, 0.30)
         f0 = e + p['break']
         goals, end = _goals_from(f0, rng)
-        rungs = [_row(-0.9, e, Z0), _row(Y0, Y1, Z0 + rng.uniform(0.35, 0.50)), _row(f0, end, Z0)]
+        rungs = [_row(-0.9, e, Z0), _row(Y0, end + rng.uniform(0.20, 0.50), Z0 + rng.uniform(0.35, 0.50)),
+                 _row(f0, end, Z0)]
         goal_rungs = [2]
+    elif family == 9:                              # one gap past the static reach: swing
+        e = HY + rng.uniform(0.12, 0.30)
+        y0 = e + p['gap']
+        goals, end = _goals_from(y0, rng)
+        rungs = [_row(rng.uniform(-0.6, -0.45), e, Z0), _row(y0, end, Z0)]
+        goal_rungs = [1]
     elif family == 6:                              # tiers of short rungs
         rungs, z = [_row(Y0, Y1, Z0)], Z0
         for t in range(p['tiers']):
@@ -267,10 +288,11 @@ def main():
     for k in range(1, 10):
         lay = lesson_layout(lesson_key(k))
         assert ck.ok(lay), f"benchmark lesson {k} fails the wall check"
+        assert ck.ok(mirror(lay)), f"benchmark lesson {k}, mirrored, fails the wall check"
         for name, lo, _, last, _ in FAMILIES[k]:
             v = BENCHMARK[k][name]
             assert lo <= v <= last, f"lesson {k}: {name} {v} outside its family's [{lo}, {last}]"
-    print("benchmark lessons 1..9: usable walls, each inside its family's last range")
+    print("benchmark lessons 1..9, both ways round: usable walls, each inside its family's last range")
     t0 = __import__('time').perf_counter()
     walls = draw(ck, {f: 1.0 for f in FAMILIES}, last_tops(), rng, 256)
     dt = __import__('time').perf_counter() - t0

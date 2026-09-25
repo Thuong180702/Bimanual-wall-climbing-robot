@@ -257,8 +257,8 @@ class MultiLesson(gym.Env):
     was 1.5 GB per env on the real-actuator robot; only `rl.render` asks for them.
     """
 
-    def __init__(self, lessons, seed=0, visual=False):
-        self.tasks = {k: ClimbTask(k, visual=visual) for k in lessons}
+    def __init__(self, lessons, seed=0, visual=False, mirror=False):
+        self.tasks = {k: ClimbTask(k, visual=visual, mirror=mirror) for k in lessons}
         self.active = list(lessons)
         self.rng = np.random.default_rng(seed)
         self.cur = self.tasks[self.active[0]]
@@ -1036,7 +1036,8 @@ def order_check(FakeModel, FakeEnv):
                 t = np.float32(t + np.float32(CONTROL_DT / FRAME_SKIP))
             n += 1
         assert episode_steps(T) >= n, f"a {T} s episode can last {n} steps, lag {episode_steps(T)}"
-    assert Walls().lag == episode_steps(TIMEOUT) and Curriculum([9]).lag == episode_steps(120.0)
+    k = max(LESSONS, key=lambda k: LESSONS[k]['timeout'])       # the longest lesson
+    assert Walls().lag == episode_steps(TIMEOUT) and Curriculum([k]).lag == episode_steps(LESSONS[k]['timeout'])
     print(f"order test: a cohort's fast ends wait for its slow ones ({UNLOCK_MIN} passes "
           f"at step 10 did not unlock; the cohort is 50 %); a rollback drops what the old "
           f"policy began. OK")
@@ -1080,7 +1081,7 @@ def walls_check(FakeModel, FakeEnv):
     assert 0.01 < step, f"a pool's success (0.01) can outrank a step of a top ({step:.3f})"
     off = Walls(enabled=False, lag=0)
     off.model = FakeModel(FakeEnv())
-    assert off.active == list(FAMILIES) and off.tops[9]['reach'] == FAMILIES[9][0][3]
+    assert off.active == list(FAMILIES) and off.tops[9][FAMILIES[9][0][0]] == FAMILIES[9][0][3]
     assert off.score() == off.progress() == len(FAMILIES), "a tie-break with nothing counted"
     for f in FAMILIES:                                   # every family passed: + 0.01
         off.locals = {'infos': [dict(reason='success', lesson=f, probe=-1, probe_val=0.0,

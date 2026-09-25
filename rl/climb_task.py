@@ -18,7 +18,7 @@ fingers included.
 """
 import numpy as np, mujoco
 from controller.kinematics import Estimator, JOINTS, THROAT_PT, triad, rotvec
-from .lessons import LESSONS, xml_path, rung_segments
+from .lessons import LESSONS, xml_path, rung_segments, spec_of
 from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET, GRIP_CLIFF
 
 FRAME_SKIP = 20          # sim steps per control step: 0.002 s x 20 = 25 Hz
@@ -279,12 +279,13 @@ GRIP_STOP = np.radians(-37.0)   # finger setpoint limit: 3 deg inside GRIP_BAND'
 
 
 class ClimbTask:
-    def __init__(self, lesson=1, visual=True, xml=None):
+    def __init__(self, lesson=1, visual=True, xml=None, mirror=False):
         """`xml`: another scene of the same lesson -- `rl.mjx_scene.c_path`'s simplified
-        robot, for the cross-checks against MJX"""
+        robot, for the cross-checks against MJX. `mirror`: the lesson toward the
+        robot's right (rl.lessons.mirrored)"""
         self.lesson = lesson
-        self.spec = LESSONS[lesson]
-        self.env = ClimbingEnv(xml=xml or xml_path(lesson), success_z=1e9,
+        self.spec = spec_of(lesson, mirror)
+        self.env = ClimbingEnv(xml=xml or xml_path(lesson, mirror), success_z=1e9,
                                timeout_s=self.spec['timeout'],
                                held_fn=self._attached, visual=visual)
         self.est = Estimator(self.env.model)
