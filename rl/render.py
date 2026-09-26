@@ -116,7 +116,7 @@ def sheet(imgs, cols=3, pad=6, bg=28):
 
 
 def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
-          deterministic=True, azimuth=200.0, distance=1.9, ckpt=''):
+          deterministic=True, azimuth=200.0, distance=1.9, ckpt='', mirror=False):
     """Roll a saved policy out on a lesson and write it to mp4.
 
     Reuses `controller.record.Video`, which already fades the walls and pipes raw
@@ -139,7 +139,7 @@ def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
 
     pre = f'out/{run}/{ckpt}'
     venv = VecNormalize.load(pre + 'vecnorm.pkl',
-                             DummyVecEnv([lambda: MultiLesson([lesson], visual=True)]))
+                             DummyVecEnv([lambda: MultiLesson([lesson], visual=True, mirror=mirror)]))
     venv.training = False
     venv.norm_reward = False
     model = PPO.load(pre + 'model', env=venv, device='cpu')
