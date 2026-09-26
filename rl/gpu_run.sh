@@ -39,15 +39,40 @@
 # A second call with the same name carries the same run on (its preflight skipped),
 # so a short first call measures the card: HOURS=2 SCORE=0 bash rl/gpu_run.sh gpu1,
 # then HOURS=22 bash rl/gpu_run.sh gpu1. SCORE=0 skips step 3, 30-60 min of CPU work
-# while the GPU sits idle.
+# while the GPU sits idle. On another box, the run's .tgz carries it on (croc'd over,
+# wherever it landed): HOURS=22 bash rl/gpu_run.sh gpu1 ~/gpu1.tgz -- unpacked into
+# out/gpu1 by this script, never over another run, the preflight again on the new card.
 set -uo pipefail
+NAME=${1:?usage: bash rl/gpu_run.sh <run name> [<run name>.tgz, packed on another box]}
+PKG=${2:-}; [ -z "$PKG" ] || [ "${PKG#/}" != "$PKG" ] || PKG=$PWD/$PKG   # before the cd
 cd "$(dirname "$0")/.."
-NAME=${1:?usage: bash rl/gpu_run.sh <run name>}
 RUN=out/$NAME
+PY=.venv/bin/python
+steps() { $PY -c "import json, sys; print(json.load(open(sys.argv[1]))['timesteps'])" "$1" 2>/dev/null || echo 0; }
+
+# ---- 0. a run packed on another box, carried on here ------------------------------
+# Unpacked by this script, not by hand: unpacked by hand anywhere but out/, the package
+# left out/<name> without a checkpoint and the 22 h run began again at step 0 without a
+# word (gpu1, 2026-09-26). A run already in out/<name> is carried on instead only if it
+# can be the package's own -- as far along as the package, or further.
+if [ -n "$PKG" ]; then
+    [ -f "$PKG" ] || { echo "no such file: $PKG"; exit 1; }
+    got=$($PY -c "import json, sys, tarfile; t = tarfile.open(sys.argv[1]); print(json.load(t.extractfile(next(m for m in t if m.name.split('/')[1:] == ['state.json'])))['timesteps'])" "$PKG") \
+        || { echo "$PKG holds no run's checkpoint (<name>/state.json)"; exit 1; }
+    had=$(steps "$RUN/state.json")
+    if [ "$had" = 0 ]; then
+        mkdir -p "$RUN" && tar xzf "$PKG" -C "$RUN" --strip-components=1 || { echo "cannot unpack $PKG"; exit 1; }
+        echo "unpacked $PKG into $RUN: carrying it on from $got steps"
+    elif [ "$had" -lt "$got" ]; then
+        echo "$RUN holds a run at $had steps, and $PKG one at $got: another run."
+        echo "Move it aside (mv $RUN $RUN.aside) and call this again."; exit 1
+    else
+        echo "$RUN is $PKG's run, carried on to $had steps (packed at $got): carrying it on"
+    fi
+fi
 [ -z "${ENVS:-}" ] && [ -f "$RUN/envs" ] && ENVS=$(cat "$RUN/envs")   # what the preflight found
 HOURS=${HOURS:-24} TOTAL=${TOTAL:-3000000000} ENVS=${ENVS:-4096} SEED=${SEED:-0}
 EPISODES=${EPISODES:-50} MAX_FAILS=${MAX_FAILS:-3} WALLS=${WALLS:-adr} STALL=${STALL:-1800}
-PY=.venv/bin/python
 [[ "$HOURS" =~ ^[0-9]+$ ]] || { echo "HOURS=$HOURS: whole hours only"; exit 1; }
 # a restart recompiles nothing it has compiled before
 export JAX_COMPILATION_CACHE_DIR=${JAX_COMPILATION_CACHE_DIR:-$HOME/.cache/jax_climb}
@@ -128,8 +153,7 @@ fails=0
 while :; do
     left=$(( deadline - $(date +%s) ))
     [ "$left" -gt 600 ] || { say "time budget reached"; break; }
-    have=$($PY -c "import json, sys; print(json.load(open(sys.argv[1]))['timesteps'])" \
-           "$RUN/state.json" 2>/dev/null || echo 0)
+    have=$(steps "$RUN/state.json")
     need=$(( TOTAL - have ))
     [ "$need" -gt 0 ] || { say "step budget reached: $have"; break; }
     resume=; [ -f "$RUN/state.json" ] && resume=--resume

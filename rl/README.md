@@ -443,9 +443,14 @@ again (`PPO.load` alone would put every restart back on the bare seed).
 **Carrying a run to another box** -- the pilot on one rental, the long run on the
 next: `out/<name>.tgz` is the whole run (the last checkpoint with its optimizer,
 observation statistics and ADR state, the best, the snapshots, the logs). On the new
-box, after `gpu_setup.sh`: `tar xzf <name>.tgz -C out`, then the same `gpu_run.sh
-<name>` call. The preflight runs again there (the card is in its stamp) and training
-resumes from the last checkpoint; `provenance.txt` records both machines.
+box, after `gpu_setup.sh`, croc it over and hand it to the runner wherever it landed:
+`HOURS=22 bash rl/gpu_run.sh gpu1 ~/gpu1.tgz`. The runner unpacks it into
+`out/gpu1/` itself and says from how many steps it carries on; a run already there
+that is not the package's own (fewer steps than it) stops the call instead. Unpacked
+by hand, anywhere but the repo's `out/`, a package leaves the run without its
+checkpoint, and gpu1's 22 h run started again from step 0 without a word. The preflight runs again there
+(the card is in its stamp) and training resumes from the last checkpoint;
+`provenance.txt` records both machines.
 
 **What a run leaves in `out/<name>/`, for an audit and for the paper** -- every file
 appended across resumes, none of them needing the trainer to read:
