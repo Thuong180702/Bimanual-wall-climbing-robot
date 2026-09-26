@@ -503,7 +503,7 @@ class MjxClimb:
         sen = self._sensors(d)
         thr = self._throat_true(d)
         holds = [self._nearest_rung(w, thr[s]) for s in (0, 1)]
-        con, _ = self._contact(d)
+        con, on = self._contact(d)
         z2 = jp.zeros(2)
         st = State(d=d, lesson=lesson, ctrl=ctrl, key=key, no_grip_t=ngt,
                    Rf=_triad(sen['acc'], sen['mag']), anchor=jp.array(0),
@@ -520,13 +520,17 @@ class MjxClimb:
         _, seat_d, _ = self._seg_point(thr[0], w.rung_c, w.rung_a, w.rung_h)
         axis = w.rung_a[jp.argmin(jp.where(w.rung_valid, seat_d, jp.inf))]
         sign = jp.sign((thr[0] - thr[1]) @ axis)
-        st = st._replace(prev_d=dd, prev_live=live, held=self._holding(con, sen),
+        st = st._replace(prev_d=dd, prev_live=live, held=self._holding(w, con, on, thr, sen),
                          cross_axis=axis, cross_sign=jp.where(sign == 0, 1.0, sign))
         return st, self._obs(T, st, sen)
 
     @staticmethod
-    def _holding(con, sen):
-        return (con > ct.HOLD_LOAD) & MjxClimb._gripping(sen)
+    def _holding(w, con, on, thr, sen):
+        """climb_task._holding: loaded, gripping, and on a SEAT of a rung it touches --
+        the throat at most SEAT_TOL past the last full one"""
+        u = jp.abs(((thr[:, None, :] - w.rung_c[None]) * w.rung_a[None]).sum(-1))   # (2, N_RUNG)
+        seat = (on & (u <= w.rung_h[None] - ct.SEAT_IN + ct.SEAT_TOL)).any(-1)
+        return (con > ct.HOLD_LOAD) & MjxClimb._gripping(sen) & seat
 
     def physics(self, T, st, action):
         """ctrl from the action, then FRAME_SKIP substeps with climb_task._attached's
@@ -559,7 +563,7 @@ class MjxClimb:
         touch, on = self._contact(d)
         thr = self._throat_true(d)
         dd, live = self._dists(w, thr)
-        free, held = touch <= 0.0, self._holding(touch, sen)
+        free, held = touch <= 0.0, self._holding(w, touch, on, thr, sen)
         dp = thr - st.prev_thr
         loaded = touch > ct.HOLD_LOAD
         first_on = jp.argmax(on, axis=1)

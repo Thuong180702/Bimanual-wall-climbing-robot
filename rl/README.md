@@ -135,7 +135,7 @@ physical parameters left free, and each parameter has a range.
 | 6 staggered | tiers (1 -> 2), tier rise (0.30 -> 0.50 m), height scatter (0.02 -> 0.08 m) | 2, ~0.46, 0.06 |
 | 7 corner | side wall distance (0.60 -> 1.10 m) | 1.00 |
 | 8 behind | back rung distance (0.35 -> 0.70 m) | 0.63 |
-| 9 swing gap | one gap in the row (0.55 -> 1.10 m: past the static reach, inside what a swing can) | 0.90 |
+| 9 swing gap | one gap in the row (0.55 -> 0.90 m: past the static reach; 1.10 until the one motion found across 0.90 took all the reach there is, below) | 0.90 |
 
 The ranges come from the robot's reach, measured hanging from one hook with
 `urdf/_reach.py`'s constraints (no self-collision, both hooks latchable, a hang): 0.56 m
@@ -760,10 +760,25 @@ landings on both. What differs is what the policy SEES there: at those states th
 simplified robot's hook-rung force reads 420 N against the full robot's 260 (p50;
 |difference| p50 192 N, p90 996 N), its hook pad 422 against 265 and its wrist force
 263 against 214, where a hook loaded anywhere else differs by 29-38 N (p50). The pad
-and the wrist force are in the observation; `mjx_check model` compares which bodies
-touch and one step's motion, not these forces, so it passed. Mirrored (toward the
-right) the same policy is 0/20: 13 timeouts with the leading right hook hanging 40-80
-mm short of seg1's end and 0.1 m low for the whole episode.
+and the wrist force are in the observation; `mjx_check model` compared which bodies
+touch and one step's motion, not these forces, so it passed. The cause is the rung's
+END: the full scene's rungs are flat-ended cylinders, the simplified one's capsules
+whose 15 mm caps stand past each end, and a hook hanging off an end sinks into the cap
+-- 1398 N (mean) against the full robot's 199 on gpu1's gait, p90 2855 N apart.
+Pulling the caps 10 mm in matched the force (151 against 199; the simplified robot in C
+then scored 9/30 on lesson 2, the full one 8/30) and broke MJX against C: C MuJoCo
+gives two capsules lying parallel two contacts, at the ends of their overlap, MJX one
+-- at the inner end of a rod that runs past the rung's straight part -- and each hook
+plate has a rod along the rung at each end. Near rung ends one control step went from
+2.8e-6 to 8.4e-5 rad apart (p50), and gpu1 on lesson 2 from 22 and 20 of 40 (C, MJX)
+to 13 and 28: the engine training runs on moved AWAY from the full robot. So the caps
+stay where they were; `mjx_check model` now reports the force on hooks near rung ends
+beside the touch pairs; and a hold half off an end no longer counts (`SEAT_TOL`,
+above), so nothing pays for being where the robots differ. The way to match both is
+in `rl.mjx_scene`'s notes (those parallel rods as a ball at each end, where C's two
+contacts fall -- more collision pairs, to be timed on the GPU first).
+Mirrored (toward the right) the same policy is 0/20: 13 timeouts with the leading
+right hook hanging 40-80 mm short of seg1's end and 0.1 m low for the whole episode.
 
 **How long a generated wall needs (the 60 s `walls.TIMEOUT`).** One step of family 4
 at its last tops (0.45 m down, 0.30 m on) was found by the same search
@@ -790,9 +805,10 @@ deliberate one, time -2.8, fight -0.9, stale -0.5, dangle -0.3 for the right han
 11 s off, flight -0.3). Not found: a catch deep enough to leave the right hook room
 behind the left (1.40 m on, 1.22 m hook to hook), the right hand across first (0.65
 m: it has to cross the left arm), the right past the left on the far rung (it stopped
-level with it). The 0.90 m gap takes all the reach there is, and family 9's last top,
-1.10 m, is past anything found. Videos of this and of the family-4 step:
-`out/climb_demo/lesson9_full.mp4`, `family4_step.mp4` (`plan_video.py`).
+level with it). The 0.90 m gap takes all the reach there is, so family 9's last top is
+now 0.90 m, lesson 9's own; it was 1.10, past anything found. Videos of this and of
+the family-4 step: `out/climb_demo/lesson9_full.mp4`, `family4_step.mp4`
+(`plan_video.py`).
 
 **GPU throughput, measured on a Tesla V100-SXM2-32GB** (gpu1): the batch alone 5,620
 control-steps/s at 4096 envs (729 ms a batch step), training 4,490 steps/s (29.2 s a
@@ -832,6 +848,7 @@ asserts all of it.
 | `K_DANGLE` over a cumulative budget | charging a *continuous* stretch off the wall was evadable: 88 short hops kept every stretch under the grace and a hand off 79 % of the episode paid 0.13 |
 | `K_STALE` | across every run, **the left hand never once let go**. The hands deadlock — the right is airborne 79–84 % of the time, so the left never gets a safe moment. `K_DANGLE` says do not stay off, `K_STALE` says do not stay on. Now **0.001**, not 0.01: at 0.01 two hands hanging for 60 s cost 28.6 — three times a fall — and that is the landscape `win5` settled into (below). Nudges must never add up to more than the fall they exist to prevent; the incentive test asserts a full idle episode (−7.4) stays above `FAIL_R`. Charged only while the **other hand is loaded**, when letting go is possible at all: a hand that holds while its partner is in the air has no choice, and paid for it through every reach, climb and swing (0.1–0.3 each) |
 | finger inside `GRIP_BAND` gates `_holding` and `_success` | nothing ever asked a finger to close, and the simulator lets an open hook carry the whole robot. The 10M policy held with the finger at +20° for most of an episode. There are **two** ways out of the band and it used both — the left hand opened, the right ratcheted −36 → −46 → −37, past the −45° cliff where pull-off drops from >1200 N to 72 N |
+| a hold counts only **on a seat** (`SEAT_TOL`) | gpu1 landed lesson 2's leading hook at the very end of the next segment -- throat p50 0.598 m where it begins at 0.60 and its last full seat at 0.6325, half the hook off -- and was banked, graded and paid for it, on the simplified robot it trained on (17/30 there, 7/30 on the full one: below). `_holding`, and with it every grab, bank and success, also asks that the throat be at most `SEAT_TOL` (5 mm) past the last full seat of a rung it touches. The found climbs, the family-4 step and lesson 9 replay to the same returns; the seat test hangs a loaded, gripping hook 20 mm past its seat (115 N: not holding) and 4 mm inside it (105 N: holding) |
 | every hold test reads **contact force** (`_contact`) | see the section below — this replaced `ON_RUNG`, `CLEAR_OF` and `env.latched`, all three of which were proxies a policy could satisfy without holding, or *fail* while holding |
 | progress measured **at the rung** (`_route`, `_cost`) | the straight-line distance to a goal 1.4 m along the wall paid the `win9` policy +0.3–0.4 m for dropping half a metre under the far segment — the nearest it could get to the goal with the other hand parked — and it hung there for 58 s in 20/20 episodes: lesson 1.5 at 0 % for 5.3M steps with every earlier lesson above 80 % (the `win9` section). The bank now measures each hand at its **rung point** (nearest point on any rung) to the goal, which a loaded hook can move only by sliding, and sliding is charged; the live reach goes to the goal along the shortest route through the rungs (`route_table`) plus `AIR` x the depth below every rung (through the nearest rung until 2026-09-26, which made every reach for another rung uphill halfway: gpu1, family 3, 0 % for 90M steps). Identical along a rung (lesson 1 replays to the same reward); a dive is charged live and refunded on the way back up. The detour must stay out of the bank: a loaded hook's throat sits 30–80 mm off its line under load, uncharged, and with the detour banked that was refunded on every re-seat — the first check run banked 56 m per episode on it. Route test: the same dive is +137 mm straight-line, −108 mm along the routes; a loaded hook pulled 30 mm off its line moves the bank 0; a hook lifted 0.30 m toward the rows above is paid 0.30. Barrier test: along every lesson's shortest route, both hands, the live cost never rises (worst 0.0 mm) |
 | the map describes **seats**, not geometry (`SEAT_IN`) | the nearest-rung offsets and the end distances the policy sees, and the potential it is paid on, clip each rung half a hook-width (32.5 mm) in from its ends: a hook centred on the geometric end hangs half off it. On the `win9` video the hook ratcheted to the very end of its segment and let go — the user's reading of it |

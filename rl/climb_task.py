@@ -46,6 +46,11 @@ SEAT_IN = 0.0325         # m: half the hook's width along the rung. A hook centr
                          # is this far in. The map the policy sees, and the potential it
                          # is paid on, describe SEATS, not geometry -- the user's point on
                          # the win9 video: it reached for the end itself and got half a hold
+SEAT_TOL = 0.005         # m a hold may sit past the last full seat and still COUNT (`_holding`):
+                         # the whole hook on the rung, give or take a rounding. gpu1 took
+                         # lesson 2's next segment at its very end (throat p50 at the rung's
+                         # end, half the hook off it) and was paid in full for it -- 7/30 on
+                         # the full robot, 17/30 on the simplified one it trained on
 REACH_TOL = 0.35        # m: a hold placed by arm reach (see `_reach_point`) may sit
                          # this far from the IMU-based guess and still be believed.
                          # The guess is only asked which side of the anchor the hand
@@ -845,9 +850,22 @@ class ClimbTask:
         Load alone is not a grip: the README records a hand pressed on a wall reading
         >20 N through the pad and 86 N through the wrist with the finger shut on
         nothing.
+
+        And seated means on a SEAT: the throat at most SEAT_TOL past the last full seat
+        of a rung it touches. A hook half off a rung's end carries the robot, in the
+        simulator, often enough to be learnt: gpu1 landed lesson 2's leading hook
+        there (throat p50 at the rung's end) and was banked, graded and paid for it --
+        and there the simplified robot it trained on reads its hook 160 N (p50) heavier
+        than the full one at the same states, so what it learnt did not transfer.
         """
-        return np.array([self._contact(s)[0] > HOLD_LOAD and self._gripping(s)
-                         for s in 'LR'])
+        out = []
+        for s in 'LR':
+            load, on = self._contact(s)
+            p = self._throat_true(s)
+            seat = any(abs(float((p - c) @ a)) <= h - SEAT_IN + SEAT_TOL
+                       for c, a, h in (self.segs[r] for r in on))
+            out.append(load > HOLD_LOAD and self._gripping(s) and seat)
+        return np.array(out)
 
     def _dist(self):
         return float(self._hand_dists().sum())
@@ -1294,6 +1312,25 @@ def main():
           f"-> holding = {t._holding()[0]}")
     assert not t._holding()[0], f"a hand opened to {ang:+.0f} deg still counts as holding"
 
+    # ...nor a hook hanging off the end of its rung (SEAT_TOL): the start row cut short
+    # 20 mm inside the left hook's last full seat, then 4 mm past it -- loaded and
+    # gripping both times, holding only the second
+    import os
+    from .lessons import OUT, _ry, scene_xml
+    yL = float(t._throat_true('L')[1])
+    fp = os.path.join(OUT, 'check_seat.xml')
+    seat = {}
+    for cut, want in ((-0.020, False), (0.004, True)):
+        spec = dict(LESSONS[1], rungs=[_ry('seat_check', -0.90, yL + SEAT_IN + cut, 1.00)])
+        open(fp, 'w').write(scene_xml(spec, 'check_seat'))
+        ts = ClimbTask(1, visual=False, xml=fp)
+        ts.reset()
+        load, ok = ts._contact('L')[0], ts._holding()[0]
+        assert load > HOLD_LOAD and ts._gripping('L'), f"the seat check's hook is not loaded ({load:.0f} N)"
+        assert ok == want, f"a hook {cut * 1e3:+.0f} mm from its last full seat: holding {ok}"
+        seat[cut] = (load, ok)
+    print(f"seat test: a hook 20 mm past its last full seat, {seat[-0.020][0]:.0f} N on the rung, "
+          f"is not holding; 4 mm inside it, {seat[0.004][0]:.0f} N, is")
     # squeezing as hard as possible must STAY in the band, loaded and swinging: the
     # stop is at the band's edge, not at the cliff. Random actions on every other
     # joint swing the body; only the fingers are held shut.

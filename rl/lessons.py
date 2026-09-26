@@ -303,9 +303,11 @@ LESSONS = {
                    _ry('back', -0.90, 1.50, 1.00, x=-0.19)],
             goal_rungs=['rung_back'],
             goals=[[-0.19, 0.157, 1.00], [-0.19, -0.157, 1.00]]),
-    # One gap past the static reach (0.58 m of gap is the most a still hang crosses)
-    # and well inside the 1.47 m momentum could carry a hand: one hook holds while
-    # the robot swings the other across.
+    # One gap past the static reach (0.58 m of gap is the most a still hang crosses):
+    # one hook holds while the robot swings the other across. Thought well inside the
+    # 1.47 m kinematics allow a swing; the one motion found across it (rl/README.md,
+    # 2026-09-26) catches the far rung 1.10 m from the other hook, all the reach there
+    # is, and has the swing carry the loaded hook 0.18 m on to make room for the other.
     9: dict(name='swing_gap', timeout=60.0,
             title='a 0.90 m gap, past the static reach: swing across',
             walls=[WALL_FRONT],

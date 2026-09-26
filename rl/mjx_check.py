@@ -342,7 +342,8 @@ def check_physics(lessons=(1, 2, 7, 8)):
 def check_model(lessons=(1, 1.85, 2), episodes=3, below=(0.35, 0.45, 0.55)):
     """The simplified robot against the FULL one, at the same states. The full robot
     runs; at every control step its state is copied into the simplified robot (both in
-    C MuJoCo) and compared two ways: which body pairs touch there and how hard, and
+    C MuJoCo) and compared three ways: which body pairs touch there and how hard, the
+    force on a hook at a rung's end (where the two robots' rungs differ in shape), and
     where one control step from that state takes each. `physics` cannot see any of
     this -- it runs the simplified robot on both engines.
 
@@ -381,7 +382,20 @@ def check_model(lessons=(1, 1.85, 2), episodes=3, below=(0.35, 0.45, 0.55)):
     def gap(t, geoms, rung):
         return min(mujoco.mj_geomDistance(t.env.model, t.env.data, g, rung, 0.05, ft) for g in geoms)
 
-    def compare(label, F, S, act, steps=None, arms=None):
+    ends = []           # (near an end, full N, simplified N, full pad, simplified pad) a hook
+
+    def end_loads(F, S):
+        """each loaded hook's rung force and pad on both robots, and whether its outer
+        edge is within 10 mm of the rung's end or past it"""
+        for sd in 'LR':
+            load, on = F._contact(sd)
+            if load <= ct.HOLD_LOAD or not on:
+                continue
+            c, a, h = F.segs[next(iter(on))]
+            near = abs(float((F._throat_true(sd) - c) @ a)) > h - ct.SEAT_IN - 0.010
+            ends.append((near, load, S._contact(sd)[0], F.env.hand(sd)['pad'], S.env.hand(sd)['pad']))
+
+    def compare(label, F, S, act, steps=None, arms=None, hooks=False):
         """`arms`: a rung's name. Its contacts with the arm are judged by surface, not by
         touch/no-touch: a row grazed by arms moving at random flips on a millimetre, far
         below the contact's own softness (a loaded hook sinks 1-3 mm), so the stand-ins'
@@ -407,6 +421,8 @@ def check_model(lessons=(1, 1.85, 2), episodes=3, below=(0.35, 0.45, 0.55)):
                 mujoco.mj_forward(S.env.model, S.env.data)
                 mujoco.mj_forward(F.env.model, F.env.data)
                 pf, ps = pairs(F), pairs(S)
+                if hooks:
+                    end_loads(F, S)
                 for key in set(pf) | set(ps):
                     touch[key] += [key in pf and key in ps, key in pf and key not in ps,
                                    key in ps and key not in pf, pf.get(key, 0.0), ps.get(key, 0.0)]
@@ -458,7 +474,29 @@ def check_model(lessons=(1, 1.85, 2), episodes=3, below=(0.35, 0.45, 0.55)):
 
     gait = lambda o, a, rng: pol[0](o[None])[0] if pol else rng.uniform(-0.5, 0.5, 17)
     for k in lessons:
-        compare(f"lesson {k:>4}, the full robot's gait", _task(k), _task(k, c_path(k)), gait)
+        compare(f"lesson {k:>4}, the full robot's gait", _task(k), _task(k, c_path(k)), gait, hooks=True)
+
+    # A hook near a rung's END, where the full robot's flat-ended cylinder and this
+    # robot's capsule differ (rl.mjx_scene: RUNGS). The touch pairs above cannot see it
+    # -- the hook is on the rung in both -- but the force can, and the policy reads it
+    # through the pad and the wrist: gpu1's gait on lesson 2 read 1398 N here against
+    # the full robot's 199 (mean), p90 2855 N apart.
+    E = np.array(ends, float)
+    for name, m in (('near a rung end', E[:, 0] == 1), ('further in', E[:, 0] == 0)):
+        dl, dp = np.abs(E[m, 1] - E[m, 2]), np.abs(E[m, 3] - E[m, 4])
+        print(f"model: hooks {name} ({m.sum()} states): |full - simplified| rung force p50 "
+              f"{np.median(dl):.0f} p90 {np.percentile(dl, 90):.0f} N, pad p50 {np.median(dp):.0f} "
+              f"p90 {np.percentile(dp, 90):.0f} N; mean force {E[m, 1].mean():.0f} full, "
+              f"{E[m, 2].mean():.0f} simplified")
+    # a known gap, not a pass: on win17's gait p90 689 N apart and 3.3x the full robot's
+    # mean. Guarded so a stand-in that makes it worse is seen; the fix is in
+    # rl.mjx_scene's RUNGS note, and SEAT_TOL keeps the reward away from it meanwhile
+    m = E[:, 0] == 1
+    ratio = E[m, 2].mean() / E[m, 1].mean()
+    p90 = np.percentile(np.abs(E[m, 1] - E[m, 2]), 90)
+    assert m.sum() >= 50 and p90 <= 1000.0 and ratio <= 4.5, (
+        f"a hook near a rung end bears {ratio:.1f}x the full robot's force on the simplified "
+        f"one, p90 {p90:.0f} N apart ({m.sum()} states): worse than the known 3.3x, 689 N")
 
     # a row under the hang: lesson 1 with one more full row dz lower, both robots
     wander = lambda o, a, rng: np.clip(0.8 * a + 0.6 * rng.normal(0, 1, 17), -1, 1)

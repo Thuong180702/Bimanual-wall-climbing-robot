@@ -26,7 +26,19 @@ where one control step takes each (`python -m rl.mjx_check model`).
     past its ends, so every seat on a rung holds exactly as on the cylinder and the
     error is only under a hook hanging off the end. (Caps inside the length left
     the last 15 mm of every rung unable to hold a hook edge, and the gap lessons
-    land hooks exactly there.)
+    land hooks exactly there.) That error is large: the real rungs are flat-ended
+    cylinders, and at the same states a hook near an end bore 1398 N on this robot
+    against 199 on the full one (mean, gpu1's gait on lesson 2; p90 2855 N apart),
+    the pad and wrist the policy reads with it (`rl.mjx_check model` reports it).
+    Pulling the caps 10 mm in matched the force (151 against 199) and broke MJX
+    against C instead: C MuJoCo gives two capsules lying parallel two contacts, at
+    the ends of their overlap, and MJX one -- at the inner end of a rod that runs
+    past the straight part -- and each hook plate has a rod along the rung at each
+    end. One control step apart went 2.8e-6 -> 8.4e-5 rad (p50) near rung ends, and
+    gpu1 on lesson 2 from 22 and 20 of 40 (C, MJX) to 13 and 28. So the caps stay;
+    what a hold half off an end is worth is `climb_task.SEAT_TOL`'s business. The way
+    to match both: those parallel rods as two balls each, at their ends, where C's
+    two contacts fall -- more pairs for MJX, to be timed on the GPU first.
   * what can touch a rung is capsules and balls, never boxes: MJX's capsule-box
     test separates only on the box's face normals, so a 2.4 m rung passing a 12 mm
     plate at a slight angle "penetrates" it (50-75 mm contacts where C saw none,
@@ -67,7 +79,8 @@ hook on its rung in one robot and not the other in at most 2.4 % of the states o
 lessons 1 and 2, and 6.5 % on 1.85 -- a hook off a rung's end, still on its cap; the
 finger motor on a rung in this robot alone 0.0 %, in the full one alone at most
 3.2 %; and win17 on the full robot, this one in C and this one in MJX, 8 episodes on
-each of its eleven lessons: 76, 73 and 76 of 88; 24 each on lessons 1, 1.5, 1.7,
+each of its eleven lessons: 76, 73 and 76 of 88 (70, 74 and 70 once a hold half off a
+rung's end stopped counting, climb_task.SEAT_TOL); 24 each on lessons 1, 1.5, 1.7,
 1.85 and 2: 90, 94 and 83 of 120, lesson 2 alone 10, 9 and 3 of 24 (the gap lesson,
 hooks on rung ends: the way to watch -- though the full robot alone moved 97 -> 90 of
 120 across an unrelated scene change, so +-7 is noise here). One known difference: a

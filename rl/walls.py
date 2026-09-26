@@ -38,8 +38,7 @@ CLEAR = 0.02                     # m every rung but the start one keeps from the
 # robot's measured reach (rl.lessons) bounds the rest: a staircase step stays inside
 # the static reach down (0.65 m at 0.15 m aside); the break of climb_over starts past
 # the 1.55 m the robot can bridge with momentum, so it can only be climbed round; and
-# the swing gap runs from the 0.58 m a still hang crosses to 1.10 m of the 1.47 m a
-# swing at most could.
+# the swing gap runs from the 0.58 m a still hang crosses to lesson 9's own 0.90 m.
 FAMILIES = {
     1: (('shift', 0.0, 0.30, 1.40, 0.10),),                        # lesson 1: 1.10
     2: (('gaps', 1, 1, 2, 1), ('width', 0.04, 0.04, 0.30, 0.02)),  # lesson 2: 2 x 0.25
@@ -56,7 +55,11 @@ FAMILIES = {
         ('scatter', 0.0, 0.02, 0.08, 0.02)),                       #   +-0.06
     7: (('side', 0.60, 0.60, 1.10, 0.05),),                        # lesson 7: 1.00
     8: (('behind', 0.35, 0.35, 0.70, 0.05),),                      # lesson 8: 0.63
-    9: (('gap', 0.30, 0.55, 1.10, 0.05),),                         # lesson 9: 0.90
+    # lesson 9: 0.90. It ran to 1.10 m, inside the 1.47 m kinematics allow a swing; the one
+    # motion found across 0.90 (CEM, 2026-09-26) needed every bit of the reach there is --
+    # the catch 1.10 m from the other hook, 2.5 mm inside the far rung's seat -- and no
+    # search from further back reached past 1.07 m. Past 0.90 no wall is known passable.
+    9: (('gap', 0.30, 0.55, 0.90, 0.05),),
 }
 
 
@@ -77,7 +80,8 @@ def spec(f):
 
 # the ranges of checkpoints from before they were recorded with their tops (gpu1 up to
 # 102.9M steps): where they differ from today's
-LEGACY = {3: repr((('rows', 1, 1, 2, 1), ('spacing', 0.25, 0.30, 0.50, 0.05)))}
+LEGACY = {3: repr((('rows', 1, 1, 2, 1), ('spacing', 0.25, 0.30, 0.50, 0.05))),
+          9: repr((('gap', 0.30, 0.55, 1.10, 0.05),))}
 
 
 def first_tops():
