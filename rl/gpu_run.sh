@@ -53,22 +53,19 @@ steps() { $PY -c "import json, sys; print(json.load(open(sys.argv[1]))['timestep
 # ---- 0. a run packed on another box, carried on here ------------------------------
 # Unpacked by this script, not by hand: unpacked by hand anywhere but out/, the package
 # left out/<name> without a checkpoint and the 22 h run began again at step 0 without a
-# word (gpu1, 2026-09-26). A run already in out/<name> is carried on instead only if it
-# can be the package's own -- as far along as the package, or further.
+# word (gpu1, 2026-09-26). Never over a run already in out/<name>, whichever run it is:
+# the call stops and says how to carry either one on.
 if [ -n "$PKG" ]; then
     [ -f "$PKG" ] || { echo "no such file: $PKG"; exit 1; }
-    got=$($PY -c "import json, sys, tarfile; t = tarfile.open(sys.argv[1]); print(json.load(t.extractfile(next(m for m in t if m.name.split('/')[1:] == ['state.json'])))['timesteps'])" "$PKG") \
-        || { echo "$PKG holds no run's checkpoint (<name>/state.json)"; exit 1; }
-    had=$(steps "$RUN/state.json")
-    if [ "$had" = 0 ]; then
-        mkdir -p "$RUN" && tar xzf "$PKG" -C "$RUN" --strip-components=1 || { echo "cannot unpack $PKG"; exit 1; }
-        echo "unpacked $PKG into $RUN: carrying it on from $got steps"
-    elif [ "$had" -lt "$got" ]; then
-        echo "$RUN holds a run at $had steps, and $PKG one at $got: another run."
-        echo "Move it aside (mv $RUN $RUN.aside) and call this again."; exit 1
-    else
-        echo "$RUN is $PKG's run, carried on to $had steps (packed at $got): carrying it on"
+    if [ -f "$RUN/state.json" ]; then
+        echo "$RUN already holds a run, at $(steps "$RUN/state.json") steps. To carry that one on, call this"
+        echo "without the .tgz; to carry the package on instead, first: mv $RUN $RUN.aside"
+        exit 1
     fi
+    grep -qx '[^/]*/state.json' <<< "$(tar tzf "$PKG")" \
+        || { echo "$PKG is not a run packed by this script (no <name>/state.json in it)"; exit 1; }
+    mkdir -p "$RUN" && tar xzf "$PKG" -C "$RUN" --strip-components=1 || { echo "cannot unpack $PKG"; exit 1; }
+    echo "unpacked $PKG into $RUN: carrying it on from $(steps "$RUN/state.json") steps"
 fi
 [ -z "${ENVS:-}" ] && [ -f "$RUN/envs" ] && ENVS=$(cat "$RUN/envs")   # what the preflight found
 HOURS=${HOURS:-24} TOTAL=${TOTAL:-3000000000} ENVS=${ENVS:-4096} SEED=${SEED:-0}

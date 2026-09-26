@@ -446,7 +446,7 @@ observation statistics and ADR state, the best, the snapshots, the logs). On the
 box, after `gpu_setup.sh`, croc it over and hand it to the runner wherever it landed:
 `HOURS=22 bash rl/gpu_run.sh gpu1 ~/gpu1.tgz`. The runner unpacks it into
 `out/gpu1/` itself and says from how many steps it carries on; a run already there
-that is not the package's own (fewer steps than it) stops the call instead. Unpacked
+stops the call instead, whichever run it is (called again, drop the `.tgz`). Unpacked
 by hand, anywhere but the repo's `out/`, a package leaves the run without its
 checkpoint, and gpu1's 22 h run started again from step 0 without a word. The preflight runs again there
 (the card is in its stamp) and training resumes from the last checkpoint;
