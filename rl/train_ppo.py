@@ -573,12 +573,30 @@ class Walls(Curriculum):
         self.W = W
         super().__init__(list(W.FAMILIES), active, history, enabled,
                          episode_steps(W.TIMEOUT) if lag is None else lag)
-        self.tops = W.first_tops() if enabled else W.last_tops()
-        for f, t in ((walls or {}).get('tops') or {}).items():
-            self.tops[int(f)].update(t)
-        self.probes = {k: list(v) for k, v in ((walls or {}).get('probes') or {}).items()}
+        self._load(walls)
         self.rng = np.random.default_rng(seed)
         self.checker = None
+
+    def _load(self, walls):
+        """a checkpoint's tops and probes, each family's only if its ranges are the ones
+        they were grown over (rl.walls.spec; LEGACY's for a checkpoint that predates the
+        record). A family whose ranges changed since starts over: first tops, no probes,
+        no books -- gpu1's family 3 kept 0.30 m, its old first top, and the new 0.10 would
+        have been skipped on the resume"""
+        w = walls or {}
+        was = w.get('spec') or {str(f): s for f, s in self.W.LEGACY.items()}
+        moved = {f for f in self.W.FAMILIES if was.get(str(f), self.W.spec(f)) != self.W.spec(f)}
+        self.tops = self.W.first_tops() if self.enabled else self.W.last_tops()
+        for f, t in (w.get('tops') or {}).items():
+            if int(f) not in moved:
+                self.tops[int(f)].update(t)
+        self.probes = {k: list(v) for k, v in (w.get('probes') or {}).items()
+                       if int(k.split(':')[0]) not in moved}
+        for f in sorted(moved):
+            self.hist.pop(f, None)
+            if w.get('tops'):
+                print(f"[adr] family {f}'s ranges changed since this checkpoint: it starts over "
+                      f"at {self.tops[f]}")
 
     def progress(self):
         """how far every top has come, first -> last, 0..1 a family, summed"""
@@ -636,14 +654,12 @@ class Walls(Curriculum):
 
     def state(self):
         return dict(super().state(), walls=dict(
-            tops={str(f): t for f, t in self.tops.items()}, probes=self.probes))
+            tops={str(f): t for f, t in self.tops.items()}, probes=self.probes,
+            spec={str(f): self.W.spec(f) for f in self.W.FAMILIES}))
 
     def restore(self, state):
-        w = state.get('walls') or {}
-        for f, t in (w.get('tops') or {}).items():
-            self.tops[int(f)].update(t)
-        self.probes = {k: list(v) for k, v in (w.get('probes') or {}).items()}
         super().restore(state)
+        self._load(state.get('walls'))
 
 
 class BoundExploration(BaseCallback):
@@ -1080,6 +1096,25 @@ def walls_check(FakeModel, FakeEnv):
     st = json.loads(json.dumps(w.state()))
     r = Walls(st['active'], st['history'], st['walls'])
     assert r.tops == w.tops and r.active == w.active, "tops did not survive state.json"
+    # ...but only against the ranges they were grown over: a family whose ranges changed
+    # starts over -- tops, probes, books -- and a checkpoint from before the ranges were
+    # recorded (gpu1 to 102.9M) is read against LEGACY's
+    from .walls import LEGACY, first_tops
+    moved = json.loads(json.dumps(st))
+    moved['walls']['spec']['1'] = 'another range'
+    r = Walls(moved['active'], moved['history'], moved['walls'])
+    assert r.tops[1] == first_tops()[1] and 1 not in r.hist and r.tops[2] == w.tops[2] \
+        and not any(k.startswith('1:') for k in r.probes), "a family whose ranges changed kept its tops"
+    old = json.loads(json.dumps(st))
+    del old['walls']['spec']
+    old['walls']['tops']['3'] = {'rows': 1, 'spacing': 0.30}
+    old['history']['3'] = [False] * WINDOW
+    r = Walls(old['active'], old['history'], old['walls'])
+    assert r.tops[3] == first_tops()[3] and 3 not in r.hist and r.tops[1] == w.tops[1] \
+        and all(r.tops[f] == w.tops[f] for f in FAMILIES if f not in LEGACY), "a legacy checkpoint's tops"
+    r.model = FakeModel(FakeEnv())
+    r.restore(old)                                       # a rollback onto a legacy best, too
+    assert r.tops[3] == first_tops()[3] and 3 not in r.hist and r.tops[1] == w.tops[1], "a legacy rollback"
     step = min(st / (b - a) / len(ps) for ps in FAMILIES.values() for _, _, a, b, st in ps)
     assert 0.01 < step, f"a pool's success (0.01) can outrank a step of a top ({step:.3f})"
     off = Walls(enabled=False, lag=0)
@@ -1098,7 +1133,8 @@ def walls_check(FakeModel, FakeEnv):
     assert json.dumps(off.tops, sort_keys=True) == tops, "the no-curriculum ablation moved a top"
     print(f"walls test: ADR moves a top by its step on a full window of {WINDOW} probes at it "
           f"({UNLOCK_AT:.0%} up, {WARM_RATE:.0%} down), within its ends; families enter in "
-          f"order; tops survive state.json; the ablation starts every family at its last tops. OK")
+          f"order; tops survive state.json, a family whose ranges changed starting over (a legacy "
+          f"checkpoint read against rl.walls.LEGACY); the ablation starts every family at its last tops. OK")
 
 
 def guard_check(FakeModel, FakeEnv, feed):

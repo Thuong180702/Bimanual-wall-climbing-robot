@@ -43,7 +43,12 @@ CLEAR = 0.02                     # m every rung but the start one keeps from the
 FAMILIES = {
     1: (('shift', 0.0, 0.30, 1.40, 0.10),),                        # lesson 1: 1.10
     2: (('gaps', 1, 1, 2, 1), ('width', 0.04, 0.04, 0.30, 0.02)),  # lesson 2: 2 x 0.25
-    3: (('rows', 1, 1, 2, 1), ('spacing', 0.25, 0.30, 0.50, 0.05)),  # lesson 3: 2 x 0.45
+    # lesson 3: 2 x 0.45. It started at 0.30 up: gpu1 never lifted a hook past 28 mm
+    # there, 0 % for 90M steps, while family 2 climbed from its 0.04 m gaps. A row straight
+    # above clears the start hang from 0.07 m (Checker); the full robot climbs one row of
+    # 0.10, 0.15, 0.30 and 0.45 m in C (CEM, 2026-09-26), phase one converging 20, 20, 30
+    # and 40 iterations in -- 0.45 in 1 search of 3.
+    3: (('rows', 1, 1, 2, 1), ('spacing', 0.10, 0.10, 0.50, 0.05)),
     4: (('steps', 1, 1, 3, 1), ('drop', 0.25, 0.30, 0.45, 0.05),   # lesson 4: 3 steps,
         ('gap', 0.05, 0.10, 0.30, 0.05)),                          #   <= 0.40 down, <= 0.20 on
     5: (('break', 1.80, 1.80, 2.50, 0.10),),                       # lesson 5: 2.20
@@ -61,6 +66,18 @@ BENCHMARK = {1: dict(shift=1.10), 2: dict(gaps=2, width=0.25), 3: dict(rows=2, s
              4: dict(steps=3, drop=0.40, gap=0.20), 5: dict(**{'break': 2.20}),
              6: dict(tiers=2, rise=0.46, scatter=0.06), 7: dict(side=1.00),
              8: dict(behind=0.63), 9: dict(gap=0.90)}
+
+
+def spec(f):
+    """family f's ranges as a checkpoint records them: its tops mean something only
+    against the ranges they were grown over (train_ppo.Walls starts a family over when
+    they changed)"""
+    return repr(FAMILIES[f])
+
+
+# the ranges of checkpoints from before they were recorded with their tops (gpu1 up to
+# 102.9M steps): where they differ from today's
+LEGACY = {3: repr((('rows', 1, 1, 2, 1), ('spacing', 0.25, 0.30, 0.50, 0.05)))}
 
 
 def first_tops():
