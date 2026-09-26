@@ -50,6 +50,9 @@ from .lessons import LESSONS, canon_axis
 from .mjx_scene import N_RUNG, lesson_layout, model as scene_model, slots
 
 LESSON_KEYS = sorted(LESSONS)
+N_PTS = 256        # route points a wall carries (climb_task.route_table): 180 on the
+                   # largest family walls, lesson 3's three full rows
+FAR_PT = 1e3       # padding: a point, and a route distance, no hand ever takes
 REASONS = ('', 'success', 'timeout', 'fell', 'released', 'blowup')
 _ENV = {k: v.default for k, v in inspect.signature(ClimbingEnv).parameters.items()}
 FALL_Z, FREE_FALL_S, QVEL_MAX = _ENV['fall_z'], _ENV['free_fall_s'], _ENV['qvel_max']
@@ -140,6 +143,9 @@ class State(NamedTuple):
     cross_sign: jax.Array
     off_t: jax.Array
     held_t: jax.Array
+    slide_rung: jax.Array      # (2,) each hook's loaded run: its rung slot (-1: none),
+    slide_ref: jax.Array       # where along it the run began,
+    slide_net: jax.Array       # and how far from there it is now
     n_steps: jax.Array
     wall: 'Wall'               # this episode's wall, copied at its reset: a new bank
                                # (Batch.set_bank) never moves a rung under a robot
@@ -158,6 +164,8 @@ class Wall(NamedTuple):
     wall_quat: jax.Array
     goals: jax.Array           # (2, 3)
     goal_mask: jax.Array       # (N_RUNG,)
+    pts: jax.Array             # (N_PTS, 3) climb_task.route_table's points, padded far away
+    pts_g: jax.Array           # (2, N_PTS) their route distance to each goal
     timeout: jax.Array
     family: jax.Array          # rl.walls family, -1 for a lesson
     probe: jax.Array           # which of its parameters sits at its top, -1 none
@@ -170,6 +178,7 @@ class Tables(NamedTuple):
     generated walls (rl.walls) that `Batch.set_bank` refills without a recompile"""
     walls: Wall                # (R, ...)
     tau_idle: jax.Array        # (L,) climb_task's idle-hang torque, per lesson
+    fight_idle: jax.Array      # (L,) ...and its internal force
     d0: mjx.Data               # (L,) the secured hang, per lesson
     ctrl0: jax.Array
     ngt0: jax.Array
@@ -196,6 +205,7 @@ class MjxClimb:
         self.s_f = np.stack([sen('ft_force_' + s) for s in 'LR'])
         self.s_t = np.stack([sen('ft_torque_' + s) for s in 'LR'])
         self.s_pad = np.array([m.sensor('grip_' + s).adr[0] for s in 'LR'])
+        self.ft_site = np.array([m.site('s_ft_' + s).id for s in 'LR'])
         self.hook = np.array([m.body('hook_' + s).id for s in 'LR'])
         self.base, self.torso = m.body('base_link').id, m.body('torso_upper').id
         self.rung_geoms = np.array([m.geom(f'slot_rung{i}').id for i in range(N_RUNG)])
@@ -230,12 +240,19 @@ class MjxClimb:
                 c[i], a[i], h[i] = ci, canon_axis(ai), hi     # whatever wrote the layout
             mask = np.zeros(N_RUNG, bool)
             mask[lay['goal_rungs']] = True
+            P, G = ct.route_table([(c[i], a[i], h[i]) for i in range(n)], lay['goals'])
+            assert len(P) <= N_PTS, f"{len(P)} route points: raise N_PTS"
+            pts = np.full((N_PTS, 3), FAR_PT)
+            pts[:len(P)] = P
+            pts_g = np.full((2, N_PTS), FAR_PT)
+            pts_g[:, :len(P)] = G
             f, pr = lay.get('family', -1), lay.get('probe')
             probe = -1 if pr is None else [s[0] for s in FAMILIES[f]].index(pr)
             out.append(dict(rung_c=c, rung_a=a, rung_h=h, rung_valid=np.arange(N_RUNG) < n,
                             slot_pos=sl['rung_pos'], slot_quat=sl['rung_quat'],
                             slot_size=sl['rung_size'], wall_pos=sl['wall_pos'],
                             wall_quat=sl['wall_quat'], goals=lay['goals'], goal_mask=mask,
+                            pts=pts, pts_g=pts_g,
                             timeout=lay['timeout'], family=f, probe=probe,
                             probe_val=lay.get('probe_val', 0.0),
                             d0_row=lay.get('d0_row', LESSON_KEYS.index(1))))
@@ -249,7 +266,8 @@ class MjxClimb:
         d0, ctrl0, ngt0 = jax.jit(jax.vmap(self._secure))(
             w.slot_pos[:L], w.slot_quat[:L], w.slot_size[:L], w.wall_pos[:L], w.wall_quat[:L])
         tau_idle = jax.vmap(lambda d: jp.abs(d.sensordata[self.s_tau]).sum())(d0)
-        return Tables(walls=w, tau_idle=tau_idle, d0=d0, ctrl0=ctrl0, ngt0=ngt0)
+        fight_idle = jax.vmap(lambda d: self._internal(d, self._sensors(d)))(d0)
+        return Tables(walls=w, tau_idle=tau_idle, fight_idle=fight_idle, d0=d0, ctrl0=ctrl0, ngt0=ngt0)
 
     @staticmethod
     def wall(T, row):
@@ -373,21 +391,37 @@ class MjxClimb:
         i = order[0]
         return jp.concatenate([out, jp.stack([hs[i] - s[i], hs[i] + s[i]])])
 
-    def _route(self, w, p):
-        """climb_task._route: (off, point)"""
-        hs = jp.maximum(w.rung_h - ct.SEAT_IN, 0.0)
-        q, dist, _ = self._seg_point(p, w.rung_c, w.rung_a, hs)
-        dist = jp.where(w.rung_valid, dist, jp.inf)
-        i = jp.argmin(dist)
-        return dist[i], q[i]
-
     def _dists(self, w, thr):
-        """(climb_task._hand_dists, climb_task._live) for both hands"""
-        g = w.goals
-        out = [self._route(w, thr[s]) for s in (0, 1)]
-        d = jp.stack([jp.sqrt(((q - g[s]) ** 2).sum()) for s, (_, q) in enumerate(out)])
-        live = jp.stack([off for off, _ in out]) + d
-        return d, live
+        """(climb_task._hand_dists, climb_task._live) for both hands: the bank's from
+        the NEAREST rung's point (climb_task._route), the live one along the routes
+        through the rungs (climb_task._cost)"""
+        hs = jp.maximum(w.rung_h - ct.SEAT_IN, 0.0)
+        d, live = [], []
+        for s in (0, 1):
+            q, dist, _ = self._seg_point(thr[s], w.rung_c, w.rung_a, hs)
+            dist = jp.where(w.rung_valid, dist, jp.inf)
+            d.append(jp.sqrt(((q[jp.argmin(dist)] - w.goals[s]) ** 2).sum()))
+            dv = w.pts - thr[s][None]
+            air = jp.sqrt((dv ** 2).sum(-1))
+            reach = jp.sqrt((dv[:, 0] ** 2 + dv[:, 1] ** 2) / ct.HOP ** 2 + dv[:, 2] ** 2 / ct.HOP_UP ** 2)
+            out = air * jp.maximum(1.0 - 1.0 / jp.maximum(reach, 1e-9), 0.0)
+            below = jp.where(w.rung_valid, jp.maximum(q[:, 2] - thr[s][2], 0.0), jp.inf).min()
+            live.append((air + ct.K_OVER * out + w.pts_g[s]).min() + ct.AIR * below)
+        return jp.stack(d), jp.stack(live)
+
+    def _internal(self, d, sen):
+        """climb_task._internal: N of force the two wrists' (world-frame) forces cancel"""
+        F = jp.einsum('sij,sj->si', d.site_xmat[self.ft_site], sen['f'])
+        n = jp.sqrt((F ** 2).sum(-1))
+        return 0.5 * (n.sum() - jp.sqrt((F.sum(0) ** 2).sum()))
+
+    @staticmethod
+    def _order(w, st, a):
+        """climb_task._order: which way round the hands belong along axis a"""
+        g = (w.goals[0] - w.goals[1]) @ a
+        c = st.cross_axis @ a
+        return jp.where(jp.abs(g) > 0.05, jp.sign(g),
+                        jp.where(jp.abs(c) > 0.5, st.cross_sign * jp.sign(c), 0.0))
 
     # ---- the estimator ----------------------------------------------------------
     def _tree(self, d, q):
@@ -479,7 +513,8 @@ class MjxClimb:
                    prev_d=z2, prev_live=z2, credit=z2, held=jp.zeros(2, bool),
                    prev_thr=thr, prev_loaded=con > ct.HOLD_LOAD, let_go=jp.zeros(2, bool),
                    grabs=jp.zeros(2, jp.int32), cross_axis=jp.zeros(3), cross_sign=jp.array(1.0),
-                   off_t=z2, held_t=z2, n_steps=jp.array(0), wall=w)
+                   off_t=z2, held_t=z2, slide_rung=jp.full(2, -1), slide_ref=z2, slide_net=z2,
+                   n_steps=jp.array(0), wall=w)
         st, sen = self._sense(T, st, d, jp.zeros(3), noise)
         dd, live = self._dists(w, thr)
         _, seat_d, _ = self._seg_point(thr[0], w.rung_c, w.rung_a, w.rung_h)
@@ -529,14 +564,21 @@ class MjxClimb:
         loaded = touch > ct.HOLD_LOAD
         first_on = jp.argmax(on, axis=1)
         ax = w.rung_a[first_on]
-        slide = jp.where(loaded & st.prev_loaded & on.any(1), jp.abs((dp * ax).sum(-1)), 0.0).sum()
+        # climb_task: NET over each loaded run
+        run = loaded & st.prev_loaded & on.any(1)
+        new = run & (st.slide_rung != first_on)
+        ref = jp.where(new, (st.prev_thr * ax).sum(-1), st.slide_ref)
+        net = jp.abs((thr * ax).sum(-1) - ref)
+        slide = jp.where(run, net - jp.where(new, 0.0, st.slide_net), 0.0).sum()
+        slide_rung = jp.where(run, first_on, -1)
+        slide_ref, slide_net = jp.where(run, ref, 0.0), jp.where(run, net, 0.0)
         was = st.prev_loaded
         n_steps = st.n_steps + 1
         off_t = st.off_t + free
         held_t = jp.where(free, 0.0, st.held_t + 1)
         grace = ct.DANGLE_GRACE / (ct.FRAME_SKIP * self.dt)
         parked = (free & (off_t > grace) & (off_t > ct.DANGLE_MAX_FRAC * n_steps)).sum()
-        stale = (held_t > ct.STALE_AFTER / (ct.FRAME_SKIP * self.dt)).sum()
+        stale = ((held_t > ct.STALE_AFTER / (ct.FRAME_SKIP * self.dt)) & loaded[::-1]).sum()
         flight = flight > 0
         let_go = st.let_go | (free & ~flight)
         took = held & ~st.held & let_go & loaded[::-1]
@@ -557,11 +599,12 @@ class MjxClimb:
         acc = st.credit + credit
         bank = jp.where(took, acc, 0.0).sum()
         acc = jp.where(took, 0.0, acc)
-        sep = thr[0] - thr[1]
-        sep_err = jp.maximum(0.0, ct.MIN_SEP - st.cross_sign * (sep @ st.cross_axis))
+        shared = on[0] & on[1]                     # climb_task._sep_error: one rung only
+        sa = w.rung_a[jp.argmax(shared)]
+        sep, o = (thr[0] - thr[1]) @ sa, self._order(w, st, sa)
+        sep_err = jp.where(shared.any(), jp.maximum(0.0, ct.MIN_SEP - jp.where(o != 0, o * sep, jp.abs(sep))), 0.0)
         effort = jp.maximum(0.0, jp.abs(sen['tau']).sum() - T.tau_idle[w.d0_row])
-        grip = jp.sqrt((sen['f'] ** 2).sum(-1)).sum()
-        fight = jp.maximum(0.0, grip - self.weight)
+        fight = jp.maximum(0.0, self._internal(d, sen) - T.fight_idle[w.d0_row])
         r = (ct.K_BANK * bank + ct.K_GRAB * first.sum()
              + ct.K_REACH * (st.prev_live - live).sum()
              - ct.K_DANGLE * parked - ct.K_STALE * stale - ct.K_SEP * sep_err
@@ -570,7 +613,8 @@ class MjxClimb:
              - ct.K_ACT * (a @ a) - ct.K_VEL * (sen['dq'] @ sen['dq']))
         st = st._replace(held=held, prev_d=dd, prev_live=live, prev_thr=thr, prev_loaded=loaded,
                          let_go=let_go, grabs=grabs, credit=acc, off_t=off_t,
-                         held_t=held_t, n_steps=n_steps)
+                         held_t=held_t, slide_rung=slide_rung, slide_ref=slide_ref,
+                         slide_net=slide_net, n_steps=n_steps)
         # climb_task._success
         near = jp.sqrt(((thr - g) ** 2).sum(-1)) <= ct.LATCH_TOL
         on_goal = (on & w.goal_mask[None]).any(1)

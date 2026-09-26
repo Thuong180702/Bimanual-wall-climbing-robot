@@ -46,7 +46,7 @@ SEAT_IN = 0.0325         # m: half the hook's width along the rung. A hook centr
                          # is this far in. The map the policy sees, and the potential it
                          # is paid on, describe SEATS, not geometry -- the user's point on
                          # the win9 video: it reached for the end itself and got half a hold
-REACH_TOL = 0.35         # m: a hold placed by arm reach (see `_reach_point`) may sit
+REACH_TOL = 0.35        # m: a hold placed by arm reach (see `_reach_point`) may sit
                          # this far from the IMU-based guess and still be believed.
                          # The guess is only asked which side of the anchor the hand
                          # is on, and mid-swing it is 148 mm off on average, 1.4 m at
@@ -59,6 +59,85 @@ N_NEAR = 3               # nearest rungs reported per hand. Without these the po
                          # memorise each fixed layout. Three is what a hand chooses
                          # between; the map supplies them, so this is hardware-legal.
 FAR = np.array([9.0, 9.0, 9.0])   # padding for a scene with fewer than N_NEAR rungs
+
+
+def _rung_points(segs):
+    """(points, rung index of each): every rung's seats sampled ROUTE_STEP apart"""
+    P, R = [], []
+    for i, (c, a, h) in enumerate(segs):
+        hs = max(h - SEAT_IN, 0.0)
+        for s in np.linspace(-hs, hs, max(1, int(np.ceil(2 * hs / ROUTE_STEP))) + 1):
+            P.append(np.asarray(c, float) + s * np.asarray(a, float))
+            R.append(i)
+    return np.array(P), np.array(R)
+
+
+def _reach(d):
+    """a move d (..., 3) against the reach: 1 at its edge, (across / HOP, up / HOP_UP)'s
+    length"""
+    return np.sqrt((d[..., 0] ** 2 + d[..., 1] ** 2) / HOP ** 2 + d[..., 2] ** 2 / HOP_UP ** 2)
+
+
+def _rung_graph(P, R, hop=None):
+    """edge lengths between the points (0 = none): neighbours along a rung, and any two
+    points of different rungs a move apart that fits the reach (`_reach`), or at most
+    `hop` apart every way when it is given"""
+    d = P[:, None] - P[None]
+    D = np.linalg.norm(d, axis=-1)
+    k = np.arange(len(P))
+    fits = _reach(d) <= 1.0 if hop is None else D <= hop
+    return np.where(R[:, None] == R[None], np.where(np.abs(k[:, None] - k[None]) == 1, D, 0.0),
+                    np.where(fits, D, 0.0))
+
+
+def route_table(segs, goals):
+    """(points, G): every rung's seats sampled ROUTE_STEP apart, and each point's route
+    distance to each goal [L, R] -- Dijkstra over moves along a rung and hops of at most
+    HOP between rungs, each goal joining its own rung's points in a straight line. The
+    live cost (`ClimbTask._cost`) is measured along these routes: the straight line to a
+    goal ran across family 5's break, which no hand can cross, and made the way over the
+    top uphill. `segs`: [(centre, unit axis, half length)]; rl.mjx_task builds the same
+    tables from the same numbers."""
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
+    P, R = _rung_points(segs)
+    n = len(P)
+    A = np.zeros((n + 1, n + 1))
+    A[:n, :n] = _rung_graph(P, R)
+    goals = [np.asarray(g, float) for g in goals]
+    own = [int(np.argmin([np.linalg.norm(g - (np.asarray(c) + np.clip((g - c) @ a, -h, h) * np.asarray(a)))
+                          for c, a, h in segs])) for g in goals]
+    G = []
+    for g, r in zip(goals, own):
+        A[n, :n] = np.where(R == r, np.linalg.norm(P - g, axis=1), 0.0)
+        A[:n, n] = A[n, :n]
+        G.append(dijkstra(csr_matrix(A), indices=n)[:n])
+    # ...and the goals themselves, which sit between the samples: without them the cost
+    # at a goal read twice the way to its nearest sample, 25 mm on lesson 1
+    ext = [np.concatenate([Gi, [min((np.linalg.norm(g - P[R == r], axis=1) + Gi[R == r]).min(), 0.0 if j == i else np.inf)
+                                for j, (g, r) in enumerate(zip(goals, own))]])
+           for i, Gi in enumerate(G)]
+    return np.concatenate([P, goals]), np.array(ext)
+
+
+def _hill(t, i, hop):
+    """the largest rise of hand i's live cost above its running minimum, walking its
+    shortest route from where it starts to its goal, through the rungs with hops of at
+    most `hop` (straight lines through the air): what the reward charges a climber for
+    going the right way before it pays"""
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
+    P, R = _rung_points(list(t.segs.values()))
+    src = int(np.argmin(np.linalg.norm(P - t._throat_true('LR'[i]), axis=1)))
+    dst = int(np.argmin(np.linalg.norm(P - t.goals[i], axis=1)))
+    _, pred = dijkstra(csr_matrix(_rung_graph(P, R, hop)), indices=src, return_predecessors=True)
+    path = [dst]
+    while path[-1] != src:
+        path.append(pred[path[-1]])
+    Q = P[path[::-1]]
+    c = np.array([t._cost(q0 + u * (q1 - q0), i) for q0, q1 in zip(Q, Q[1:])
+                  for u in np.linspace(0, 1, max(2, int(np.linalg.norm(q1 - q0) / 0.01)), endpoint=False)])
+    return float(np.max(c - np.minimum.accumulate(c)))
 
 
 def _rotm(v):
@@ -80,6 +159,23 @@ def _rotm(v):
 # ponytail: first-guess reward weights, sweep them before trusting a run
 K_BANK = 5.0             # per metre of progress BANKED by taking a new hold
 K_REACH = 2.0            # per metre of live approach -- shaping only, see below
+AIR = 0.5                # the live cost's extra charge per metre a hand hangs below EVERY
+                         # rung (`_cost`): what keeps a dive under a far rung a loss. Charged
+                         # for any air it outran what a hook lifted straight up at lesson 5's
+                         # break gains (a 21 mm hill); for air below the NEAREST rung it
+                         # jumped where a climbing hook's nearest rung became the one above
+                         # (100-120 mm on lessons 3, 5, 6)
+ROUTE_STEP = 0.04        # m between the points each rung is sampled at for `route_table`
+HOP = 1.20               # m: the longest move ACROSS between two rungs a route may take
+                         # -- family 9's widest gap (1.10), swung; family 5's break (1.80
+                         # and up) is not one, so its route goes round, over the top --
+HOP_UP = 0.65            # ...and up or down: the static reach (0.56 m up, measured), which
+                         # a swing does not stretch. A move fits when (across / HOP)^2 +
+                         # (up / HOP_UP)^2 <= 1. With 1.2 m every way, a route took off from
+                         # lesson 5's break 1.1 m ahead and 0.45 up, and a hook lifted
+                         # straight up there climbed a 36 mm hill against that fiction
+K_OVER = 2.0             # extra metres charged a metre of air a hand is outside that reach
+                         # of a rung point: no straight line across a break a route goes round
 K_SEP = 0.05             # per step, per metre the hands are closer than MIN_SEP
 MIN_SEP = 0.12           # m the hooks must keep along the rung. The hooks are 65 mm
                          # wide, so anything under that is two hands claiming the
@@ -90,7 +186,9 @@ MIN_SEP = 0.12           # m the hooks must keep along the rung. The hooks are 6
 HOLD_LOAD = 20.0         # N of hook-on-rung CONTACT force before a hand counts as
                          # holding. Measured either side of it: 72-229 N while
                          # holding, 0.0 N free -- so the exact value does not matter.
-DANGLE_GRACE = 3.0       # s of TOTAL off-time per hand that is free -- one reach
+DANGLE_GRACE = 6.0       # s of TOTAL off-time per hand that is free -- one reach, and
+                         # one swing: at 3 s lesson 9's swing (the free hand off the
+                         # whole 6.6 s it pumps and reaches) was charged 0.85 for it
 DANGLE_MAX_FRAC = 0.5    # and past that, a hand may be off at most this fraction of
                          # the episode so far. Being off half the time is what
                          # alternating looks like; 79 % is one hand doing everything.
@@ -137,7 +235,8 @@ K_VEL = 1e-4             # joint velocity penalty -- smoothness
 # and 0.0053 of "fighting", a 60 s idle cost -58 against -10 for a fall, and the
 # incentive test below failed. The numbers in the table above are that 11.1 kg robot.
 K_EFFORT = 5e-5          # per step, per N.m of torque above the idle hang
-K_FIGHT = 5e-5           # per step, per N of grip above body weight
+K_FIGHT = 5e-5           # per step, per N of internal force (`_internal`: what the
+                         # wrists' forces cancel) above the idle hang's
 K_TIME = 0.003           # per step. A whole 1500-step episode costs 4.5 against
                          # SUCCESS_R's 10, so finishing early is worth real points
                          # and giving up early still loses (FAIL_R is -10).
@@ -291,6 +390,7 @@ class ClimbTask:
         self.est = Estimator(self.env.model)
         self.segs = rung_segments(self.env.model)
         self.goals = [np.asarray(g, float) for g in self.spec['goals']]
+        self._pts, self._route_g = route_table(list(self.segs.values()), self.goals)
         self.lo = self.env.model.actuator_ctrlrange[:, 0].copy()
         self.hi = self.env.model.actuator_ctrlrange[:, 1].copy()
         # The finger joint runs to -90 deg, but the README measures the hook levering
@@ -339,6 +439,8 @@ class ClimbTask:
         # the two baselines effort and fight are priced above (see K_EFFORT)
         self.weight = float(m.body_subtreemass[self.env.base] * -m.opt.gravity[2])
         self.tau_idle = None               # N.m, set by the first reset: the secured hang
+        self.fight_idle = None             # N, its internal force (`_internal`), likewise
+        self._ft = {s: self.env.model.site('s_ft_' + s).id for s in 'LR'}
         self.obs_dim = len(self.reset()[0])
 
     # ---- hardware-legal sensing -------------------------------------------
@@ -547,19 +649,39 @@ class ClimbTask:
                 best = (d, q)
         return best
 
-    def _cost(self, p, goal):
-        """metres to go for a hand at p, LIVE: to the nearest point on any rung, then
-        from that point to the goal. Progress is measured AT THE RUNG, not at the hand.
+    def _cost(self, p, i):
+        """metres to go for hand i (0 = L) at p, LIVE: along the route through the rungs
+        (`route_table`) from the rung point that is cheapest to fly to -- the air to it,
+        and K_OVER a metre more of it outside the reach (`_reach`) -- plus AIR x how
+        far p hangs below every rung. Progress is measured along the routes a climber
+        can take, not through the air.
 
         The plain distance |p - goal| paid for leaving the rung. On lesson 1.5 the
         left hook walked off the end of its segment, and with the goal 1.4 m along
         the wall the cheapest way to get "closer" was to hang 0.4 m below the far
         segment: +0.14 m of straight-line progress, +0.3 of reach, and a state no
         lesson had taught it to leave -- win9 (5.3M steps, lesson 1.5 at 0 %) and
-        mac13 both: 20/20 and 7/8 episodes hanging there for 58 s. Measured at the
-        rung the same drop is a 0.15 m LOSS. Along a rung the two agree exactly; off
-        a rung this one charges the detour and refunds it on the way back -- still
-        a function of where the hand is, so it telescopes and cannot be pumped.
+        mac13 both: 20/20 and 7/8 episodes hanging there for 58 s.
+
+        Two measures after it failed differently, 2026-09-26. Through the NEAREST rung
+        (the detour off it plus that point's straight line to the goal) the first half
+        of every reach for another rung was uphill: a hook lifted toward the row above
+        paid its lift until the upper rung became the nearer -- K_REACH x 0.15 m for
+        trying, on family 3's easiest walls -- and gpu1 (102.9M steps) never lifted a
+        hook past 28 mm there, 0 % for 90M steps. Through the BEST rung's nearest point
+        the hill went, the dive came back (a straight line through the air to the
+        goal's own segment, 49 mm shorter from 0.47 m down than from the edge), AIR
+        sent it away again -- and the climb over lesson 5's break stayed uphill, 0.37 m
+        for a hook lifted straight up, because the straight line ran across a break
+        no hand crosses; lessons 4, 6 and 7 kept 0.06-0.09 m hills where the nearest
+        point of the next rung was not on the way. The barrier test now walks every
+        lesson's shortest route with each hand and asserts no hill.
+
+        On a rung this is the route distance itself (its own point costs no air, and
+        no other within a hop can be cheaper); off it, flying to a point of a rung the
+        route uses only gets cheaper as the hand closes in, faster than AIR charges the
+        air; the dive costs 158 mm against hovering at the edge. A function of where
+        the hand is, so it telescopes and cannot be pumped.
 
         Live only. The detour must stay out of the bank: the bank credits a free
         hand and a loaded hook nothing, and a loaded hook's throat is pulled 30-80 mm
@@ -570,8 +692,13 @@ class ClimbTask:
         moved. `_hand_dists`, which the bank uses, is measured at the rung point,
         which a loaded hook can move only by sliding -- and sliding is charged.
         """
-        off, q = self._route(p)
-        return off + float(np.linalg.norm(q - goal))
+        d = self._pts - p
+        air = np.linalg.norm(d, axis=1)
+        out = air * np.maximum(1.0 - 1.0 / np.maximum(_reach(d), 1e-9), 0.0)   # outside the reach
+        via = float(np.min(air + K_OVER * out + self._route_g[i]))
+        below = min(max(0.0, float(c[2] + np.clip((p - c) @ a, -max(h - SEAT_IN, 0.0), max(h - SEAT_IN, 0.0)) * a[2] - p[2]))
+                    for c, a, h in self.segs.values())
+        return via + AIR * below
 
     def _hand_dists(self):
         """the bank's potential: each hand's rung point to its goal"""
@@ -579,9 +706,8 @@ class ClimbTask:
                          for i, s in enumerate('LR')])
 
     def _live(self):
-        """the live potential: the same plus the detour off the rung"""
-        return np.array([self._cost(self._throat_true(s), self.goals[i])
-                         for i, s in enumerate('LR')])
+        """the live potential: each hand's way to its goal along the routes (`_cost`)"""
+        return np.array([self._cost(self._throat_true(s), i) for i, s in enumerate('LR')])
 
     def _contact(self, side):
         """(N of normal force between this hook and a rung, names of rungs touched)
@@ -622,8 +748,9 @@ class ClimbTask:
             p - (c + np.clip((p - c) @ a, -h, h) * a))))
             for nm, (c, a, h) in self.segs.items()), key=lambda v: v[1])
 
-    def _sep_error(self):
-        """metres of hand separation missing ALONG the rung they travel on.
+    def _sep_error(self, con):
+        """metres of hand separation missing along the rung BOTH hooks are on (`con`:
+        each hand's `_contact`), 0 unless they share one.
 
         Pricing only the crossed case was not enough, and the failure is instructive:
         `max(0, -separation)` is zero at zero separation, so the policy moved the
@@ -635,20 +762,46 @@ class ClimbTask:
         The torso frame was tried first and is not a usable reference: the body spins
         on its hooks -- measured, the torso yawed -90..+13 deg over one episode -- so
         a body-frame test disagreed with the real hand order on 54 % of steps and
-        charged 0.93 for an episode that was crossed 99 % of the time.
+        charged 0.93 for an episode that was crossed 99 % of the time. The rung axis
+        does not spin, and the sign (`_order`) says "each hand on its own side".
 
-        The rung axis does not spin. `cross_axis` and `cross_sign` are fixed at reset
-        from the hand order the robot starts in, which is the order its shoulders put
-        them in, so the sign means "the left hand is still on its own side".
-
-        The corner (lesson 7, family 7) is the one wall that ends across this axis:
-        both goals sit on the side rung at one y, so once one hand is round the
-        corner the other one's approach reads up to MIN_SEP short -- at most
-        K_SEP * MIN_SEP = 0.006 a step, a few seconds' worth against SUCCESS_R's 10.
-        Left as it is.
+        Only two hooks on ONE rung can claim the same span of it. Measured along the
+        start rung whatever the hooks were on, until 2026-09-26, it charged what could
+        never collide: a climb with the hands on two rows, 0.7-2.1 a climb (family 3,
+        CEM-found, replayed), lesson 9's swing with the free hand in the air passing
+        the holding one, 1.56 over 6.6 s -- and the corner's side rung, where both
+        goals sit at one y, read MIN_SEP short to the end.
         """
-        sep = self._throat_true('L') - self._throat_true('R')
-        return max(0.0, MIN_SEP - self.cross_sign * float(sep @ self.cross_axis))
+        shared = con[0][1] & con[1][1]
+        if not shared:
+            return 0.0
+        a = self.segs[next(n for n in self.segs if n in shared)][1]
+        sep, o = float((self._throat_true('L') - self._throat_true('R')) @ a), self._order(a)
+        return max(0.0, MIN_SEP - (o * sep if o else abs(sep)))
+
+    def _internal(self):
+        """N of force the two wrists spend pulling against each other: the part of their
+        (world-frame) forces that cancels, (|F_L| + |F_R| - |F_L + F_R|) / 2.
+
+        It was the two forces' SUM over body weight until 2026-09-26, which also billed
+        whatever accelerates the body: lesson 9's swing loads the holding wrist to 634 N,
+        three times body weight, at the bottom of each arc, with the free hand at 4 N --
+        charged 0.38 as fighting over 6.6 s -- and every pull-up of a climb likewise
+        (0.5-2.0 a climb). What moves the body is the forces' resultant; only what
+        cancels lifts nothing."""
+        F = [self.env.data.site_xmat[self._ft[s]].reshape(3, 3) @ self.env.hand(s)['force'] for s in 'LR']
+        return 0.5 * float(np.linalg.norm(F[0]) + np.linalg.norm(F[1]) - np.linalg.norm(F[0] + F[1]))
+
+    def _order(self, a):
+        """which way round the hands belong along a rung of axis a: +1 when the left
+        one's side is +a. The goals say it where they lie apart along it; the start
+        order carried over where they do not (the front rung, on the corner lesson);
+        0 -- either way round -- on a rung across both"""
+        g = float((self.goals[0] - self.goals[1]) @ a)
+        if abs(g) > 0.05:
+            return float(np.sign(g))
+        c = float(self.cross_axis @ a)
+        return self.cross_sign * float(np.sign(c)) if abs(c) > 0.5 else 0.0
 
     def _attached(self):
         """is ANY hook still on the wall? -- the `released` timer's question.
@@ -773,6 +926,7 @@ class ClimbTask:
         self._sense()
         if self.tau_idle is None:            # deterministic: keyframe + the same secure()
             self.tau_idle = float(np.abs(self.tau).sum())
+            self.fight_idle = self._internal()
         self.prev_d, self.prev_live = self._hand_dists(), self._live()
         self.credit = np.zeros(2)            # relative approach earned since the last hold
         self.held = self._holding()
@@ -784,6 +938,8 @@ class ClimbTask:
         self.cross_axis = self.segs[self._seat('L')[0]][1]
         sep = self._throat_true('L') - self._throat_true('R')
         self.cross_sign = float(np.sign(sep @ self.cross_axis)) or 1.0
+        self.slide_ref = [None, None]     # each hook's loaded run: (rung, where along it it began)
+        self.slide_net = np.zeros(2)      # ...and how far from there it is now
         self.off_t = np.zeros(2)          # TOTAL control steps each hand has been off
         self.off_run = np.zeros(2)        # consecutive control steps each hand has been off
         self.held_t = np.zeros(2)         # steps since each hand was last fully clear
@@ -805,11 +961,24 @@ class ClimbTask:
         # a loaded hook dragged along its rung: metres, either direction, truth
         thr = np.array([self._throat_true(s) for s in 'LR'])
         dp = thr - self.prev_thr
+        # -- NET, over each loaded run: charged as the hook gets further from where the
+        # run began and refunded as it comes back. Charged step by step, both ways,
+        # it billed jitter: a loaded hook's throat rocks 0.1-0.3 mm a step, every step,
+        # and 16-62 % of the slide charged on four CEM-found climbs was that (0.8-2.4 a
+        # climb). A drag is still charged in full -- its net is its length -- so
+        # K_SLIDE > K_BANK still closes 'reach free, get dragged back loaded'.
         loaded, slide = touch > HOLD_LOAD, 0.0
         for k, (_, on) in enumerate(con):
             if loaded[k] and self.prev_loaded[k] and on:
-                ax = self.segs[next(iter(on))][1]
-                slide += abs(float(dp[k] @ ax))
+                rung = next(iter(on))
+                ax = self.segs[rung][1]
+                if self.slide_ref[k] is None or self.slide_ref[k][0] != rung:
+                    self.slide_ref[k], self.slide_net[k] = (rung, float(self.prev_thr[k] @ ax)), 0.0
+                net = abs(float(thr[k] @ ax) - self.slide_ref[k][1])
+                slide += net - self.slide_net[k]
+                self.slide_net[k] = net
+            else:
+                self.slide_ref[k], self.slide_net[k] = None, 0.0
         self.prev_thr, self.prev_loaded, was_loaded = thr, loaded, self.prev_loaded
         self.n_steps += 1
         self.off_t += free                      # cumulative: never reset by a touch
@@ -818,7 +987,10 @@ class ClimbTask:
         grace = DANGLE_GRACE / (FRAME_SKIP * self.dt)
         parked = float(np.sum(free & (self.off_t > grace)
                               & (self.off_t > DANGLE_MAX_FRAC * self.n_steps)))
-        stale = float(np.sum(self.held_t > STALE_AFTER / (FRAME_SKIP * self.dt)))
+        # ...but only while the other hand is loaded, when letting go is possible at
+        # all: a hand that holds while its partner is in the air has no choice, and
+        # was charged for it through every reach, climb and swing (0.1-0.3 each)
+        stale = float(np.sum((self.held_t > STALE_AFTER / (FRAME_SKIP * self.dt)) & loaded[::-1]))
         # A hand re-anchors only after it has genuinely let go and taken hold again.
         # Without the let_go gate, a weight shift that drops the wrist load counts as
         # taking a new hold, and a hand that never leaves the rung banks progress --
@@ -873,10 +1045,9 @@ class ClimbTask:
         self.credit += credit
         bank = float(self.credit[took].sum())
         self.credit[took] = 0.0
-        sep_err = self._sep_error()
+        sep_err = self._sep_error(con)
         effort = max(0.0, float(np.abs(self.tau).sum()) - self.tau_idle)
-        grip = sum(float(np.linalg.norm(self.env.hand(s)['force'])) for s in 'LR')
-        fight = max(0.0, grip - self.weight)
+        fight = max(0.0, self._internal() - self.fight_idle)
         r = (K_BANK * bank + K_GRAB * float(first.sum())
              + K_REACH * float((self.prev_live - live).sum())
              - K_DANGLE * parked - K_STALE * stale - K_SEP * sep_err
@@ -1122,6 +1293,7 @@ def main():
     print(f"grip test (mở toang): ngón {ang:+.0f} deg, tiếp xúc {t._contact('L')[0]:.0f} N "
           f"-> holding = {t._holding()[0]}")
     assert not t._holding()[0], f"a hand opened to {ang:+.0f} deg still counts as holding"
+
     # squeezing as hard as possible must STAY in the band, loaded and swinging: the
     # stop is at the band's edge, not at the cliff. Random actions on every other
     # joint swing the body; only the fingers are held shut.
@@ -1192,29 +1364,39 @@ def main():
         f"the anchor moved {moved*1000:.1f} mm on load flicker alone: a hand that "
         f"never let go is banking progress again")
 
-    # Crossing must read zero in the normal hang and grow once the hands swap sides.
+    # Crossing must read zero in the normal hang and grow once the hands swap sides --
+    # on the rung both hooks are on. With no rung shared nothing can collide: the
+    # hands on two rows (a climb) or one in the air (a swing) are charged nothing.
     t = ClimbTask(1)
     t.reset()
-    at_hang = t._sep_error()
+    con = [t._contact(s) for s in 'LR']
+    at_hang = t._sep_error(con)
     sep = t.cross_sign * float(
         (t._throat_true('L') - t._throat_true('R')) @ t.cross_axis)
     real = t._throat_true
     # inverted: the hands swap sides. together: both hands on the same point --
     # the case that only pricing "crossed" missed, and that dropped the robot.
     t._throat_true = lambda s: real('R') if s == 'L' else real('L')
-    inverted = t._sep_error()
+    inverted = t._sep_error(con)
     t._throat_true = lambda s: real('R')
-    together = t._sep_error()
+    together = t._sep_error(con)
+    t._throat_true = real
+    apart = t._sep_error([con[0], (con[1][0], {'rung_other'})])   # on two different rungs
+    flying = t._sep_error([(0.0, set()), con[1]])                  # the left one in the air
+    t._throat_true = lambda s: real('R') if s == 'L' else real('L')
+    flying_crossed = t._sep_error([(0.0, set()), con[1]])
     t._throat_true = real
     print(f"separation test: hands {sep*1000:+.0f} mm apart -> penalty "
           f"{at_hang*1000:.0f} mm | swapped -> {inverted*1000:.0f} mm | "
-          f"on the same point -> {together*1000:.0f} mm")
+          f"on the same point -> {together*1000:.0f} mm | on two rungs, or one hand in the air "
+          f"past the other -> {max(apart, flying, flying_crossed)*1000:.0f} mm")
     assert sep > MIN_SEP, "the hang keyframe starts inside the separation floor"
     assert at_hang == 0.0, f"the hang posture is charged {at_hang*1000:.0f} mm"
     assert abs(together - MIN_SEP) < 1e-9, (
         f"two hands on the same point are charged {together*1000:.0f} mm, expected "
         f"{MIN_SEP*1000:.0f} -- this is the case that made the second grab fail")
     assert inverted > together, "swapping the hands must cost more than merging them"
+    assert apart == flying == flying_crossed == 0.0, "hands that share no rung were charged for their separation"
 
     # The attitude filter must beat the bare triad while the body moves, and must
     # not drift while it hangs still. Random actions swing the body hard.
@@ -1325,19 +1507,57 @@ def main():
     hover = edge + 0.04 * a0
     hang = edge + 0.30 * a0 - np.array([0.134, 0.0, 0.467])
     assert np.linalg.norm(hang - g) < np.linalg.norm(hover - g), "the dive is no longer nearer in 3D"
-    # (the hover is itself 72 mm from the last SEAT of the segment, SEAT_IN, so the
-    # dive's loss against it is ~80 mm, not the 146 against the geometric end)
-    assert t._cost(hang, g) > t._cost(hover, g) + 0.05, (t._cost(hang, g), t._cost(hover, g))
+    # (through the best rung alone the dive would GAIN 49 mm on the hover, by a straight
+    # line to the goal's own segment; AIR's charge on the 0.41 m more of air makes it a
+    # 158 mm loss)
+    assert t._cost(hang, 0) > t._cost(hover, 0) + 0.05, (t._cost(hang, 0), t._cost(hover, 0))
     on = c0 - 0.10 * a0
-    assert abs((t._cost(on, g) - t._cost(on + 0.30 * a0, g)) - 0.30) < 1e-9, "progress along the rung must be paid in full"
-    assert t._cost(hover, g) < t._cost(edge, g) + 0.05, "hovering just past the edge is charged the air, nothing more"
+    assert abs((t._cost(on, 0) - t._cost(on + 0.30 * a0, 0)) - 0.30) < 1e-9, "progress along the rung must be paid in full"
+    assert t._cost(hover, 0) < t._cost(edge, 0) + 0.05, "hovering just past the edge is charged the air, nothing more"
     pulled = on + np.array([0.0, 0.0, -0.03])           # a loaded hook's throat, off its line
     assert abs(np.linalg.norm(t._route(pulled)[1] - g) - np.linalg.norm(t._route(on)[1] - g)) < 1e-12, \
         "the bank must not see a loaded hook pulled off its line (mac14: 698 holds and 56 m banked per episode when it did)"
-    assert abs(t._cost(pulled, g) - t._cost(on, g) - 0.03) < 1e-9, "the live term sees the whole detour"
+    # (the live term charges it instead -- AIR a metre at least: in a row of segments the
+    # straight line on to the goal's own one barely lengthens for a 30 mm drop)
+    assert t._cost(pulled, 0) - t._cost(on, 0) >= AIR * 0.03 - 1e-9, "the live term does not see the detour"
+    # ...and a reach for the next rung is progress from its first millimetre. Through
+    # the NEAREST rung, a hook lifted off the start row toward the row above paid for
+    # the first half of the way: gpu1 never lifted one past 28 mm on family 3, 0 % for
+    # 90M steps.
+    t3 = ClimbTask(3)
+    t3.reset()
+    g3 = t3.goals[0]
+    zs = (0.0, 0.01, 0.05, 0.10, 0.20, 0.30)
+    lift = [t3._cost(np.array([g3[0], g3[1], 1.00 + z]), 0) for z in zs]
+    assert all(b < a - (1 - AIR) * (z1 - z0) + 1e-9 for a, b, z0, z1 in zip(lift, lift[1:], zs, zs[1:])), \
+        f"lifting toward the row above is not paid: {np.round(lift, 3)}"
     print(f"route test: the win9 dive is {(np.linalg.norm(hover - g) - np.linalg.norm(hang - g))*1e3:+.0f} mm "
-          f"of straight-line progress and {(t._cost(hover, g) - t._cost(hang, g))*1e3:+.0f} mm at the rung; "
-          f"0.30 m along the rung pays 0.30; a loaded hook pulled 30 mm off its line moves the bank 0")
+          f"of straight-line progress and {(t._cost(hover, 0) - t._cost(hang, 0))*1e3:+.0f} mm along the routes; "
+          f"0.30 m along the rung pays 0.30; a loaded hook pulled 30 mm off its line moves the bank 0; "
+          f"a hook lifted 0.30 m toward the rows above is paid {lift[0] - lift[-1]:.2f}")
+
+    # ...and no hill anywhere a climber has to go: every lesson, each hand, along its
+    # shortest route through the rungs at the robot's own reach (0.65 m; 1.0 across
+    # lesson 9's gap, which is swung), the live cost never rises above what it has
+    # already come down to. Through the nearest rung it rose 0.15 m on family 3's
+    # first walls; through the best rung's nearest point, 0.06-0.09 m on lessons 4, 6
+    # and 7, and 0.37 m for a hook lifted straight up at lesson 5's break.
+    hills = []
+    for k in range(1, 10):
+        tk = ClimbTask(k, visual=False)
+        tk.reset()
+        hills += [(_hill(tk, i, 1.0 if k == 9 else 0.65), k, 'LR'[i]) for i in (0, 1)]
+    h, k, sd = max(hills)
+    assert h < 0.01, f"lesson {k}, hand {sd}: the live cost climbs {h*1e3:.0f} mm on the way to its goal"
+    t5 = ClimbTask(5, visual=False)
+    t5.reset()
+    c5, a5, h5 = t5.segs['rung_start']
+    brk = c5 + (h5 - SEAT_IN) * (a5 if a5 @ (t5.goals[0] - c5) > 0 else -a5)   # the last seat before the break
+    up = [t5._cost(brk + np.array([0.0, 0.0, z]), 0) for z in (0.0, 0.05, 0.10, 0.20, 0.30, 0.40)]
+    assert all(b < a for a, b in zip(up, up[1:])), f"a hook lifted at lesson 5's break is not paid: {np.round(up, 3)}"
+    print(f"barrier test: along each lesson's shortest route, both hands, the live cost never climbs "
+          f"(worst {h*1e3:.1f} mm, lesson {k} {sd}); at lesson 5's break a hook lifted 0.4 m toward the row "
+          f"over it is paid {up[0] - up[-1]:.2f}")
 
     # Progress must be paid for a supported reach, and for nothing else. Three ways
     # policies moved the body without one, each of which banked under an earlier

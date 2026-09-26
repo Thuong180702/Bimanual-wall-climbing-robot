@@ -129,7 +129,7 @@ physical parameters left free, and each parameter has a range.
 |---|---|---|
 | 1 traverse | each hand's shift along the row (0.30 -> 1.40 m) | 1.10 |
 | 2 gaps | gap count (1 -> 2), gap width (0.04 -> 0.30 m) | 2 x 0.25 |
-| 3 climb up | rows (1 -> 2), row spacing (0.30 -> 0.50 m) | 2 x 0.45 |
+| 3 climb up | rows (1 -> 2), row spacing (0.10 -> 0.50 m; it was 0.30 -> 0.50, below) | 2 x 0.45 |
 | 4 climb down | a staircase of short rungs, each lower and further along: steps (1 -> 3), drop a step (0.30 -> 0.45 m), gap a step (0.10 -> 0.30 m) | 3 steps, <= 0.40 down, <= 0.20 on |
 | 5 climb over | break in the start row, a row above to go round it (1.80 -> 2.50 m: past the 1.55 m it can bridge) | 2.20 |
 | 6 staggered | tiers (1 -> 2), tier rise (0.30 -> 0.50 m), height scatter (0.02 -> 0.08 m) | 2, ~0.46, 0.06 |
@@ -152,7 +152,10 @@ is drawn uniformly from fixed ranges. Every wall is checked before use
 (`walls.Checker`): its goals on seats of their rungs, and nothing but the start rung
 within 2 cm of the robot in its start hang. `python -m rl.walls` asserts every family
 gives usable walls at its first and last ranges, and that each benchmark lesson is a
-wall its family can draw at its last range.
+wall its family can draw at its last range. A checkpoint records each family's ranges
+with its tops (`walls.spec`); on a resume a family whose ranges have changed since
+starts over -- first tops, no probes, no books -- and a checkpoint from before the
+record is read against `walls.LEGACY` (gpu1's family 3 went from 0.30 back to 0.10 m).
 
 **The curriculum is two fixed rules and nothing chosen by hand while training:**
 
@@ -697,6 +700,100 @@ observes the same; checkpoints trained on the lesson scenes before this (win17, 
 fixture) are replayed in their own convention (`rl.mjx_check._fromto_axes`), and
 replay as before (76 / 73 / 74 of 88).
 
+**gpu1 carried on to 102.9M steps (V100, 2026-09-26): families 1 and 2 learned, family
+3 never started.** Mechanically clean -- 4,486 steps/s, approx_kl ~0.013, explained
+variance 0.97, std 0.50, no rollback, no NaN. ADR took family 1 to its last range
+(1.40 m) and family 2 to 2 gaps of 0.26 m; on the full robot, best checkpoint, 20
+episodes each: lesson 1 19/20 and 20/20 mirrored, lesson 2 10/20 and 1/20, lesson 3
+0/20 both ways. Family 3 sat at 0 % from its unlock at 12.8M to the end, every episode
+a timeout, three quarters of all steps spent on it, its tops never moved: on its
+easiest walls the policy never lifted a hook past 28 mm. Two causes: the live reach
+was uphill for the first half of any reach for another rung (above), and the first
+step was already 0.30 m -- family 2, whose gaps start at 4 cm, got through the same
+hill as ADR widened them.
+
+Before changing either, climbing up had to be shown possible at all: the classical
+controller never managed it. It was searched for in C MuJoCo itself -- the
+cross-entropy method over joint-setpoint keyframes moved at most `ACT_SCALE` a control
+step (a policy's own 1.5 rad/s), in four phases (left hook over the upper rung while
+the right holds, seat it, right hook over, seat it), each ending in a hold -- and
+replayed as actions through `ClimbTask.step`, which scored it: success on one row of
+0.30 m at 13.7 s and of 0.45 m at 13.3 s, and on 0.10 and 0.15 m. It swings one arm
+over and pulls up on the other, braces a forearm and a wrist on the lower rung and an
+arm on the wall (up to ~500 N, at most 9 mm of soft-contact depth), and holds elbow
+and shoulders at their 120 N.m peak 2-9 % of the time and over the motors' rating
+10-23 % -- the simulator's limits, not a real motor's continuous ones. A narrow
+motion: 0.45 m was found in one search of three. Its scripts and the two chains are in
+`out/climb_demo/` (not in git). So family 3 now starts at 0.10 m, which a row straight
+above clears in the start hang (from 0.07 m), and the live reach goes along the routes
+through the rungs (below).
+
+**Every reward term was then audited on motions known to be right (2026-09-26).**
+Five motions found by that search -- one-row climbs of 0.10, 0.15, 0.30 and 0.45 m,
+and on lesson 9 a one-hand swing that pumps for 6.6 s and reaches 1.08 m -- replayed
+through `ClimbTask.step` with each term summed on its own (`out/climb_demo/ledger.py`),
+and the live reach walked along every lesson's shortest route (the barrier test).
+Six terms charged doing it right, each fixed in the reward table below: the live
+reach (hills of 0.06-0.37 m on lessons 3-7), `K_SEP` (hands on two rows), `K_FIGHT`
+(a swing's centripetal load), `K_STALE` (a hand that cannot let go), `K_SLIDE`
+(jitter) and the dangle grace (a swing). Returns, before -> after: climbs 0.10 m
++5.46 -> +8.52, 0.15 +8.56 -> +11.09, 0.30 +8.67 -> +11.88, 0.45 +7.11 -> +11.95;
+the swing -4.63 -> -1.01 (separation -1.56 -> 0, dangle -0.85 -> -0.10, fight
+-0.38 -> -0.03, stale -0.10 -> 0, slide -1.41 -> -0.89). What is left is meant:
+effort 1.3-2.2 a climb (torque above a still hang, the energy term), time 1.0, the
+net slide 0.2-1.5, `K_ACT` and `K_VEL` ~0.1 each. The no-pump, jump/drag and
+incentive tests pass unchanged (an idle episode -7.58 against -10 for a fall), and
+`rl.mjx_check task` matches C to 4e-10.
+
+**Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
+(2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
+the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines
+agree, the robots do not (`rl.mjx_check policy` fails on it, 5/10/16 of 20). In all
+three the leading hook takes the next segment AT ITS END: throat p50 0.598-0.608 m
+where seg1 begins at 0.60 and its seat at 0.6325, half the hook off the rung;
+successes land deeper (p50 0.603-0.631) than failures (0.588-0.595). The physics of
+it is the same on both robots: from the same states, held 1 s at their setpoints, a
+hook near a rung end keeps its load as often on the full robot as on the simplified
+one (and in MJX as in C, to 0.1 mm of slide), and 3 s of the full robot's own
+setpoints after each landing, replayed open-loop, keep the hook on seg1 in 50 % of 26
+landings on both. What differs is what the policy SEES there: at those states the
+simplified robot's hook-rung force reads 420 N against the full robot's 260 (p50;
+|difference| p50 192 N, p90 996 N), its hook pad 422 against 265 and its wrist force
+263 against 214, where a hook loaded anywhere else differs by 29-38 N (p50). The pad
+and the wrist force are in the observation; `mjx_check model` compares which bodies
+touch and one step's motion, not these forces, so it passed. Mirrored (toward the
+right) the same policy is 0/20: 13 timeouts with the leading right hook hanging 40-80
+mm short of seg1's end and 0.1 m low for the whole episode.
+
+**How long a generated wall needs (the 60 s `walls.TIMEOUT`).** One step of family 4
+at its last tops (0.45 m down, 0.30 m on) was found by the same search
+(`out/climb_demo/plan_chain.py`, `PLAN=f4fast`: left to the row's end, right after
+it, left down, right down) and replays through `ClimbTask.step` to success in 11.7 s
+(+19.4); at twice the phase times it takes 24.6 s. Three steps are ~35 s at the
+faster pace. Family 5 at 2.50 m (up a row, ~2.8 m along the top, down) comes to ~25-30
+s from its parts: a row up 13.7 s in the found climbs, gpu1's lesson-1 pace 0.32 m/s
+along a rung (1.1 m in 3.4 s, 20/20), a row down ~12 s. Both fit in 60 s with 1.7-2x
+to spare, where family 2's episodes take 16.6 s on average in training (3.6x). The
+benchmark gives lessons 4 and 5 120 s; a generated wall is capped at lesson 1's 60 s
+because the per-step nudges of a longer idle episode would add up past `FAIL_R`.
+
+**Lesson 9 can be done, at the edge of the robot's reach (2026-09-26).** The same
+search, one hand a phase (`plan_chain.py`: `PLAN=l9c`, then `l9e` and `l9f` from its
+end): the left hook to the start row's end, the right up behind it (0.12 m, `MIN_SEP`),
+the left swung across the 0.90 m gap -- it catches the far rung at y 1.285, 2.5 mm
+inside its seat, 1.10 m from the right hook, where three searches from further back
+reached 1.06-1.07 m -- then the right lets go and the swing carries the loaded left
+hook 0.18 m along the far rung (a slide, charged), the right takes the rung behind it
+and the left steps to its goal. Replayed through `ClimbTask.step`: success at 37.1 s,
++16.20 (bank +13.6, reach +5.8, grabs +2; effort -6.1, slide -3.7 of which 1.8 the
+deliberate one, time -2.8, fight -0.9, stale -0.5, dangle -0.3 for the right hand's
+11 s off, flight -0.3). Not found: a catch deep enough to leave the right hook room
+behind the left (1.40 m on, 1.22 m hook to hook), the right hand across first (0.65
+m: it has to cross the left arm), the right past the left on the far rung (it stopped
+level with it). The 0.90 m gap takes all the reach there is, and family 9's last top,
+1.10 m, is past anything found. Videos of this and of the family-4 step:
+`out/climb_demo/lesson9_full.mp4`, `family4_step.mp4` (`plan_video.py`).
+
 **GPU throughput, measured on a Tesla V100-SXM2-32GB** (gpu1): the batch alone 5,620
 control-steps/s at 4096 envs (729 ms a batch step), training 4,490 steps/s (29.2 s a
 131k-step update); the card busy 86-100 % at ~190 W, 1.6 GB of its memory in use.
@@ -730,13 +827,13 @@ asserts all of it.
 | `K_BANK` on progress credited **relative to the holding hand** | paying live world distance paid for the phase-7 slide: the first policy crossed 0.75 m with a hook that never opened its finger. A per-hand *anchor* — bank how far the hold travelled in the world between supported grabs — fixed that and was beaten by the drag (the `win5` section): a light hand (under `HOLD_LOAD`) whose partner is loaded is credited its approach **minus the partner's own motion toward that goal, both ways**; a loaded hook is credited nothing either way (its motion along the rung is a slide, `K_SLIDE`'s business); a hand nobody carries is credited nothing forward and debited in full back. A drag, a tap and a jump earn exactly nothing; the one loop that would pay — reach free, get dragged back loaded — costs `K_SLIDE > K_BANK`. The first draft was one-sided to be safe (every retreat debited, only the partner's *forward* motion subtracted) and it charged a known-good one-hand step **−220 mm per episode** for ordinary settling: −7.5 m of debits against +6.3 m of credit over ten episodes. One-sided rules charge for noise |
 | anchor moves only after the hand got `CLEAR_OF` the rung | without it, a wrist-load dip counted as taking a new hold — on the 5.1M policy **every** re-anchor was that, with the hook never leaving the rung |
 | both terms charged **both ways** | paying only in the good direction is a pump: measured **+27.28 paid for 0.000 m of travel** and 99 release/reseat cycles in one episode |
-| `K_DANGLE` with a `DANGLE_GRACE` | the flat version taxed the release climbing is made of, −15.25 against +5.57 of progress |
-| `K_SEP` | the distance term is a **sum** over both hands, so it does not care which hand works: policies froze one hand and crossed the other over it. Pricing only *crossed* then parked both hands on the same point (mean separation 1 mm), so it is a floor, not a sign test |
+| `K_DANGLE` with a `DANGLE_GRACE` | the flat version taxed the release climbing is made of, −15.25 against +5.57 of progress. The grace is **6 s** of off-time per hand, not 3: lesson 9's swing keeps the free hand off for the 6.6 s it pumps and reaches, and at 3 s paid 0.85 for it |
+| `K_SEP` | the distance term is a **sum** over both hands, so it does not care which hand works: policies froze one hand and crossed the other over it. Pricing only *crossed* then parked both hands on the same point (mean separation 1 mm), so it is a floor, not a sign test. Measured only when **both hooks touch the same rung**: two hooks on two rungs cannot claim one span, and measured along the start rung whatever they were on it charged 0.7–2.1 a climb with the hands on two rows and 1.56 on lesson 9's swing, the free hand in the air passing the holder |
 | `K_DANGLE` over a cumulative budget | charging a *continuous* stretch off the wall was evadable: 88 short hops kept every stretch under the grace and a hand off 79 % of the episode paid 0.13 |
-| `K_STALE` | across every run, **the left hand never once let go**. The hands deadlock — the right is airborne 79–84 % of the time, so the left never gets a safe moment. `K_DANGLE` says do not stay off, `K_STALE` says do not stay on. Now **0.001**, not 0.01: at 0.01 two hands hanging for 60 s cost 28.6 — three times a fall — and that is the landscape `win5` settled into (below). Nudges must never add up to more than the fall they exist to prevent; the incentive test asserts a full idle episode (−7.4) stays above `FAIL_R` |
+| `K_STALE` | across every run, **the left hand never once let go**. The hands deadlock — the right is airborne 79–84 % of the time, so the left never gets a safe moment. `K_DANGLE` says do not stay off, `K_STALE` says do not stay on. Now **0.001**, not 0.01: at 0.01 two hands hanging for 60 s cost 28.6 — three times a fall — and that is the landscape `win5` settled into (below). Nudges must never add up to more than the fall they exist to prevent; the incentive test asserts a full idle episode (−7.4) stays above `FAIL_R`. Charged only while the **other hand is loaded**, when letting go is possible at all: a hand that holds while its partner is in the air has no choice, and paid for it through every reach, climb and swing (0.1–0.3 each) |
 | finger inside `GRIP_BAND` gates `_holding` and `_success` | nothing ever asked a finger to close, and the simulator lets an open hook carry the whole robot. The 10M policy held with the finger at +20° for most of an episode. There are **two** ways out of the band and it used both — the left hand opened, the right ratcheted −36 → −46 → −37, past the −45° cliff where pull-off drops from >1200 N to 72 N |
 | every hold test reads **contact force** (`_contact`) | see the section below — this replaced `ON_RUNG`, `CLEAR_OF` and `env.latched`, all three of which were proxies a policy could satisfy without holding, or *fail* while holding |
-| progress measured **at the rung** (`_route`, `_cost`) | the straight-line distance to a goal 1.4 m along the wall paid the `win9` policy +0.3–0.4 m for dropping half a metre under the far segment — the nearest it could get to the goal with the other hand parked — and it hung there for 58 s in 20/20 episodes: lesson 1.5 at 0 % for 5.3M steps with every earlier lesson above 80 % (the `win9` section). The bank now measures each hand at its **rung point** (nearest point on any rung) to the goal, which a loaded hook can move only by sliding, and sliding is charged; the live reach adds the detour off the rung, both hands, both ways. Identical along a rung (lesson 1 replays to the same reward); a dive is charged live and refunded on the way back up. The detour must stay out of the bank: a loaded hook's throat sits 30–80 mm off its line under load, uncharged, and with the detour banked that was refunded on every re-seat — the first check run banked 56 m per episode on it. Route test: the same dive is +137 mm straight-line, −146 mm at the rung; a loaded hook pulled 30 mm off its line moves the bank 0 |
+| progress measured **at the rung** (`_route`, `_cost`) | the straight-line distance to a goal 1.4 m along the wall paid the `win9` policy +0.3–0.4 m for dropping half a metre under the far segment — the nearest it could get to the goal with the other hand parked — and it hung there for 58 s in 20/20 episodes: lesson 1.5 at 0 % for 5.3M steps with every earlier lesson above 80 % (the `win9` section). The bank now measures each hand at its **rung point** (nearest point on any rung) to the goal, which a loaded hook can move only by sliding, and sliding is charged; the live reach goes to the goal along the shortest route through the rungs (`route_table`) plus `AIR` x the depth below every rung (through the nearest rung until 2026-09-26, which made every reach for another rung uphill halfway: gpu1, family 3, 0 % for 90M steps). Identical along a rung (lesson 1 replays to the same reward); a dive is charged live and refunded on the way back up. The detour must stay out of the bank: a loaded hook's throat sits 30–80 mm off its line under load, uncharged, and with the detour banked that was refunded on every re-seat — the first check run banked 56 m per episode on it. Route test: the same dive is +137 mm straight-line, −108 mm along the routes; a loaded hook pulled 30 mm off its line moves the bank 0; a hook lifted 0.30 m toward the rows above is paid 0.30. Barrier test: along every lesson's shortest route, both hands, the live cost never rises (worst 0.0 mm) |
 | the map describes **seats**, not geometry (`SEAT_IN`) | the nearest-rung offsets and the end distances the policy sees, and the potential it is paid on, clip each rung half a hook-width (32.5 mm) in from its ends: a hook centred on the geometric end hangs half off it. On the `win9` video the hook ratcheted to the very end of its segment and let go — the user's reading of it |
 | the anchor follows the **SLAM** position along its rung (`SLAM_TAU`) | the loaded hook creeps along the rung while it holds — 85–210 mm per episode on `mac16`, 100 mm by the first hand-over — and nothing on the arm can see it: two hooks on a smooth rung have no world reference. At a gap the far segment then read 60–210 mm too far and the hook was pushed into its end face 38 mm short. The real robot's lidar SLAM sees the body move against the wall; simulated as the base position with `SLAM_SIG` (2 cm) of noise, low-passed over 1 s, it moves the anchor's map point along its rung. Replayed on the mac16 policy: anchor error p50 20 mm / p90 34 everywhere (was 51 / 149 on lesson 1.5 and 145–179 / 300 on lesson 1), −18 ± 27 mm at the moment the hook meets the far segment (was +89, 60–210). The slam test creeps the loaded hook 25 mm under a pull and asserts the anchor follows. A second touch zone on the hook's lip was tried first and was exact (every end contact at z = −110 mm in the hook frame, every seat at z ≥ −98) — but the robot has no such sensor, and it is gone |
 | the pool's **steps go where the failures are** | a stuck lesson-1.5 episode runs 1490 steps against ~200 for a one-step lesson, so drawing by episode gave the newest lesson 96 % of the samples, and what it learnt while stuck was learnt in the states lesson −1 starts from: −1 fell to 0–2 % in three runs (mac14, mac16, mac17). Each lesson's draw probability is now its share of the steps divided by its mean episode length, and the share is how much it still fails — `max(1 − rate, MIN_SHARE)` — so a lesson at 0 % is fed whether it is the frontier or the one behind it that regressed. Four rules were measured on 2.5–4.5M-step runs: by episode (above); a fixed 25 % for the frontier, which starved it — lesson 1 got a quarter of the samples `win9` gave it and `win10` was still 0 % at 1.4M; a fixed 60 %, which reached **lesson 2 in 2M steps** (mac26, the best run there has been) but left lesson −1 at 0 % from 0.6M on; and this one, which held every lesson at 85–100 % through 4.5M (mac27) with a slower frontier. Squaring the need concentrates harder (66 % of the steps for a stuck frontier instead of 49 %) but starves the early curriculum while several lessons are half-learnt, and lesson 1 stalled for 2M (mac28). A slow frontier is fixed by more steps; a forgotten lesson is not |
@@ -745,11 +842,11 @@ asserts all of it.
 | `MIN_GRABS` in `_success` | the task was completable with **neither hand ever leaving the rung**: 1 m traversed with the right hook never further than 24 mm from the rail and the left hand carrying under 10 N for 89 % of the episode. Alternating grips is not one way of doing this task, it is the task |
 | finger setpoint stopped at the **band's edge** | the joint runs to −90° but the hook levers itself off past −45°, where pull-off drops from >1200 N to 72 N. The 20.8M policy drove the right finger to **−83°** and the hook walked out of the throat while carrying 100 N, so the stop went to the cliff. That left a 5° trap: a policy that squeezes as hard as it can sits at −40…−44° under load — a fine hold physically (98–179 N) that neither the reward nor the estimator recognised, because both ask for `GRIP_BAND`. On the 10.8M `win8` policy **90 %** of loaded steps on lesson 1.5 (34 % on lesson 1) were "not gripping" for that reason alone; the estimator kept its anchor on a hand that was moving and saw the far ledge 240–500 mm from where it was. The stop is now the band's edge, −40°: squeeze as hard as you like, it is in band (375/382 loaded steps while swinging, asserted) |
 | `K_FLIGHT`, and a jump earns nothing | the 21M policy's whole lesson-1 gait was jumps: the right hook let go and re-caught within 1–5 control steps while the left hung in the air — off **96 %** of the time, **0.0** load swaps per episode — and each brief tap of the left hand then banked what the jump had covered. A control step in which, for even one physics substep, no hook bore `HOLD_LOAD` is a jump: charged, nobody is loaded so nothing is credited, and the landing is no cycle. Replayed: that policy drops from 5/5 to **0/12** |
-| `K_SLIDE` | sliding stays legal — the rung is smooth on purpose — but a **loaded** hook dragged along it pays 10/m, because it is friction work and because it is invisible: measured in shadow on the alternating policy, the anchored hook was dragged **100–724 mm per tenure**, both hooks seated (next section). This is *not* what makes dragging unprofitable — the relative credit is. Raising it to 20 was tried when the drag appeared and it stalled learning outright: 3M steps at 30 % on the very first lesson, std 0.42, because the same charge lands on the few centimetres the holding hook settles by during every honest reach. It has to beat the live shaping term and the bank: `assert K_SLIDE > K_BANK and K_SLIDE > 2 K_REACH` |
+| `K_SLIDE` | sliding stays legal — the rung is smooth on purpose — but a **loaded** hook dragged along it pays 10/m, because it is friction work and because it is invisible: measured in shadow on the alternating policy, the anchored hook was dragged **100–724 mm per tenure**, both hooks seated (next section). This is *not* what makes dragging unprofitable — the relative credit is. Raising it to 20 was tried when the drag appeared and it stalled learning outright: 3M steps at 30 % on the very first lesson, std 0.42, because the same charge lands on the few centimetres the holding hook settles by during every honest reach. It has to beat the live shaping term and the bank: `assert K_SLIDE > K_BANK and K_SLIDE > 2 K_REACH`. Charged on the **net** of each loaded run — as the hook gets further from where the run began, refunded as it comes back — not step by step: a loaded hook's throat rocks 0.1–0.3 mm every step, and that jitter was 16–62 % of the slide four CEM-found climbs paid (0.8–2.4 a climb). A drag's net is its length, so it is still charged in full |
 | a hold counts only while the **other hand is loaded** | three points of contact. A hold taken with nothing else on the wall was a jump's landing or a hand-over with a gap in it, and the gap is where the map goes wrong: 86 of 129 anchor switches on the 3M policy had no step with both hands confirmed and baked in 62 mm each. Gated, the same curriculum unlocks at the same pace (lesson 2 at 0.94M against 0.89M), hand-overs with overlap go from 30 % to 53 %, and the anchor's error at the end of a lesson-1 traverse drops from 540–980 mm to 27–320 mm. What is paid is what can be seen |
 | credit classified by the load at **both ends** of the step | the pump the finger-stop fix uncovered: with every touch now in band, a 3M local policy took **578 holds per episode** with the right hand — 97 % of its lifts one or two steps long — and banked **20 m** of credit on a body that moved 0.4 m, +78 per episode against +25 for actually crossing the gap. Lift (free at the end of the step): the 30 mm forward credited. Touch down (loaded at the end): the 30 mm back credited nothing, and not a slide either. Two closures were tried first and were the wrong tools — charging a slide with load at *either* end taxed every seat and unseat of an honest gait (the 95 % lesson-1 policy paid 1.5 m per episode of it and fell to 50 %), and requiring three steps clear before a hold refused the 1–2-step hops honest hands take 70–90 % of the time, so the first lesson stayed at 0 % for 3M steps. Classified by the load at the *start* of the step, the lift is worth 0 and the touch-down debits the 30 mm; and the partner's motion is subtracted only while the partner is loaded at both ends. Replayed: the 95 % policy is back to 15/16 and 13/16, the pumping policy nets −122. That closure had a mirror, and `mac14` found it: classified by the start, the lift is the free step, so it rocked the hook on the rung at 12.5 Hz — throat 32 mm *back* on the lift (ignored), 31 mm *forward* on the touch-down (credited): 698 holds and 23 m per episode, +241. Classifying by either end of a step leaves the other end open. Now a step is a slide's business only with load at **both** ends of it — the slide charge's own test — and every other step is a potential difference, both ways; so every motion of a rung point is either a charged slide or a two-way credit, and no cycle between the two pays. Both one-step cycles are in the jump/drag test and net exactly nothing; the rocking policy replays to −38, the two 95 % lesson-1 policies to 11/12 |
 | `K_GRAB`, once per hand per episode | seating a hook from the air is the one skill the reach credit cannot teach by itself. Under the relative credit the 600k policy carried the free hand to within 40 mm of its goal and **hovered there for the whole episode** — 0.2 grabs per episode, paying the dangle charge rather than come down, because the grab that would have banked its credit was a rare event with a small payoff. The earlier world-anchored reward had taught seating by accident, by paying shuffles *on* the rung first. One bonus for each hand's first supported hold: flutter cannot farm it, and it is a partial payment of `MIN_GRABS`, not a goal of its own |
-| `K_EFFORT`, `K_FIGHT`, `K_TIME` | the gait was legal but nothing like climbing. Measured against a still hang (29.6 N·m, 107 N): the stuck episode ran 145 N·m and **202 N of grip on a 109 N robot** — ~95 N of the two arms pulling against each other. All three price the *excess* over hanging still, never the absolute, so existing stays free |
+| `K_EFFORT`, `K_FIGHT`, `K_TIME` | the gait was legal but nothing like climbing. Measured against a still hang (29.6 N·m, 107 N): the stuck episode ran 145 N·m and **202 N of grip on a 109 N robot** — ~95 N of the two arms pulling against each other. All three price the *excess* over hanging still, never the absolute, so existing stays free. `K_FIGHT` prices the force the wrists **cancel**, (\|F_L\| + \|F_R\| − \|F_L + F_R\|) / 2 in the world frame, not their sum over body weight: the sum also billed whatever accelerates the body — lesson 9's swing loads the holding wrist to 634 N, three times body weight, with the free hand at 4 N (0.38 over one swing), and every pull-up of a climb (0.5–2.0) |
 
 Replayed on the audited policies the set does what it should. The 10.4M run's
 99-step success scored +13.23 against its 1490-step stuck episode's −51.17, with no
@@ -881,13 +978,38 @@ seconds, for arriving in a state no lesson had taught it to leave. Every earlier
 lesson has one continuous rung, so straight-line and along-the-rung had always
 agreed, and the seam only opened at the first gap.
 
-Progress is now measured at the rung. A hand's rung point is the nearest point on
-any rung (`_route`); the bank measures that point to the goal, and the live reach
-adds the detour off the rung, both hands, both ways (`_cost`). Along a rung nothing
-changes — 0.30 m of reach still pays 0.30 and lesson 1 replays to the same reward.
-Off the rung the detour is charged and refunded on the way back; it is a function
-of the state, so it telescopes and cannot be pumped. The route test asserts the
-win9 dive itself: +137 mm in a straight line, −146 mm at the rung.
+Progress is now measured through the rungs. A hand's rung point is the nearest point
+on any rung (`_route`); the bank measures that point to the goal. The live reach
+(`_cost`) is the way a climber can go: every rung is sampled every `ROUTE_STEP`
+(4 cm), each point knows its shortest route to each goal (`route_table`: Dijkstra,
+moves along a rung, hops between rungs inside an ellipse `HOP` 1.2 m across and
+`HOP_UP` 0.65 m up or down -- a swing bridges family 9's 1.1 m gaps, nothing
+stretches the 0.56 m static reach up), and a hand pays the air to its cheapest such
+point (`K_OVER` a metre more of the air outside that ellipse) plus that point's route,
+plus `AIR` (0.5) a metre it hangs below every rung. Along a rung nothing changes --
+0.30 m of reach still pays 0.30 and lesson 1 replays to the same reward. Off it the
+air is charged and refunded on the way back; it is a function of the state, so it
+telescopes and cannot be pumped. The route test asserts the win9 dive itself: +137 mm
+in a straight line, −108 mm along the routes.
+
+It took four tries on 2026-09-26, each measured by walking every lesson's shortest
+route with each hand and recording how far the cost rose above its running minimum
+(the barrier test, now asserted: worst 0.0 mm). Through the NEAREST rung (the detour
+off it plus its point's straight line to the goal, the version before) the first
+half of every reach for another rung was uphill: a hook lifted toward the row above
+paid its lift until the upper rung was the nearer one -- `K_REACH` x 0.15 m charged
+for trying on family 3's easiest walls -- and gpu1 never lifted a hook past 28 mm
+there in 90M steps. Through the BEST rung's nearest point the dive came back (a
+straight line through the air to the goal's own segment), and the climb over lesson
+5's break stayed uphill, 0.37 m for a hook lifted straight up, because that straight
+line crossed a break no hand crosses; lessons 4, 6 and 7 kept 0.06-0.09 m hills
+where the nearest point of the next rung was not on the way. Routes with a hop of
+1.2 m every way still left 36 mm at lesson 5 (a route took off 1.1 m ahead and 0.45
+up), the ellipse 21 mm, and `AIR` charged below the NEAREST rung jumped 100-120 mm
+where a climbing hook's nearest rung became the one above (lessons 3, 5, 6). Below
+EVERY rung it is zero everywhere a route goes. A hook lifted 0.30 m toward the row
+above is paid 0.30; at lesson 5's break one lifted 0.4 m toward the row over it is
+paid 0.11.
 
 The first check run of it (`mac14`, 3M) scored **+241 per episode on lesson 1.5**
 with a body that never moved — the right hand taking 698 "holds" per episode and

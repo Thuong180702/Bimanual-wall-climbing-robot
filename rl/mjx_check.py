@@ -137,7 +137,8 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
         def begin():
             nonlocal T
             o, _ = t.reset()
-            T = task.tables._replace(tau_idle=task.tables.tau_idle.at[li].set(t.tau_idle))
+            T = task.tables._replace(tau_idle=task.tables.tau_idle.at[li].set(t.tau_idle),
+                                     fight_idle=task.tables.fight_idle.at[li].set(t.fight_idle))
             st, oj = start(T, li, mjx.put_data(mc, t.env.data), jp.asarray(t.ctrl),
                            jp.asarray(t.env._no_grip_t), jax.random.PRNGKey(0),
                            jp.asarray(rec['noise']))
