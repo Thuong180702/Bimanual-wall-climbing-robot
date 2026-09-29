@@ -292,7 +292,8 @@ class MjxVecEnv(VecEnv):
         from . import mjx_task          # JAX only on this path
         self.mt = mjx_task
         self.bank = bank                # > 0: procedural walls (Walls), drawn from set_bank
-        self.batch = mjx_task.Batch(n, seed, bank=bank)
+        # fit: collide only what the walls in play need (rl.mjx_task.Batch._fit)
+        self.batch = mjx_task.Batch(n, seed, bank=bank, fit=True)
         # substeps where the solver's contact cap was full, of all simulated; the
         # checkpoint line prints the share and zeroes it (rl.mjx_scene.MAX_CONTACTS)
         self.capped = self.substeps = 0
@@ -622,6 +623,15 @@ class Walls(Curriculum):
             self.checker = self.W.Checker()
         env.env_method('set_bank', self.W.draw(self.checker, dict(zip(self.active, self.weights())),
                                                self.tops, self.rng, BANK))
+
+    def _on_training_start(self):
+        """every env onto a wall of the bank before the first step. SB3's learn() has
+        just reset them on the lessons' rows -- all nine lessons and their mirrors --
+        and those episodes would run for up to their timeouts, off the curriculum, and
+        hold the batch's collision pairs at their widest (rl.mjx_task.Batch._fit)"""
+        self.draw_bank(self.training_env)
+        self.model._last_obs = self.training_env.reset()
+        self.model._last_episode_starts = np.ones(self.training_env.num_envs, dtype=bool)
 
     def _on_rollout_start(self):
         self.draw_bank(self.training_env)

@@ -206,7 +206,7 @@ def check_physics(lessons=(1, 2, 7, 8)):
     from mujoco import mjx
     from . import climb_task as ct
     from .climb_task import ClimbTask
-    from .mjx_scene import c_path, MAX_CONTACTS, ITERATIONS
+    from .mjx_scene import c_path, MAX_CONTACTS, ITERATIONS, N_RUNG
     from .mjx_task import MjxClimb, LESSON_KEYS
 
     print(f"physics: MJX on {jax.devices()[0].device_kind}, one robot at a time -- compiling first")
@@ -335,6 +335,28 @@ def check_physics(lessons=(1, 2, 7, 8)):
         assert all(np.isfinite(np.asarray(x)).all() for x in (obs, end, r)), "a NaN got out"
         obs, end, r, term, trunc, info = b.step(z3)
     print("physics: a NaN state or estimate ends as 'blowup' at FAIL_R, finite, and resets")
+
+    # A batch that collides only the rung slots and walls in play (Batch's `fit`, what
+    # training runs) must step as one that collides every pair: families 1..3's walls
+    # at their last tops, 20 steps of random actions from the same keys
+    from . import walls as W
+    lays = W.draw(W.Checker(), {1: 1.0, 2: 1.0, 3: 1.0}, W.last_tops(), np.random.default_rng(0), 32)
+    shared, runs = MjxClimb(32), []
+    for fit in (False, True):
+        b = Batch(16, seed=3, task=shared, fit=fit)
+        b.set_bank(lays)
+        seq = [np.asarray(b.reset())]
+        rng = np.random.default_rng(1)
+        for _ in range(20):
+            obs, end, r, term, trunc, info = b.step(rng.uniform(-1, 1, (16, 17)).astype(np.float32))
+            seq += [np.asarray(obs), np.asarray(r)]
+        runs.append((shared.pairs, seq))
+    gap = max(float(np.abs(x - y).max() / max(1.0, np.abs(y).max())) for x, y in zip(runs[0][1], runs[1][1]))
+    print(f"physics: a batch fitted to families 1..3 collides {runs[1][0][0]} rung slots"
+          f"{' and the extra wall' if runs[1][0][1] else ', not the extra wall'}, and over 20 steps "
+          f"differs from one colliding every pair by {gap:.1e} (relative)")
+    assert runs[0][0] == (N_RUNG, True) and runs[1][0] == (3, False) and gap <= 1e-5, \
+        "a batch colliding only the pairs in play is not the batch colliding every pair"
     print("physics: OK")
 
 

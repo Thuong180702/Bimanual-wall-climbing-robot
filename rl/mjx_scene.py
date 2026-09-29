@@ -417,12 +417,19 @@ def _pad(g):
     g.solref, g.solimp = PAD_PARAMS['solref'], PAD_PARAMS['solimp']
 
 
-def build(layout=None):
+def build(layout=None, n_rung=N_RUNG, wall2=True):
     """the MjSpec: the robot as MJX can collide it, N_RUNG rung slots, two wall planes.
 
     layout=None parks every slot (the MJX model; each env places its own). A lesson's
     layout fills them and names them after that lesson's rungs and walls (the C
-    model: `ClimbTask` finds rungs by name)."""
+    model: `ClimbTask` finds rungs by name).
+
+    `n_rung`, `wall2`: collide only the first n_rung rung slots and, with wall2, the
+    extra wall -- every geom is still there. A slot no wall in a batch fills is parked
+    PARK m away and never touched, but MJX tests every pair of it every substep
+    whatever the distance: the pairs of rung slots 3..5 and of the extra wall are
+    42 % of a substep's memory traffic, and families 1..3 use neither
+    (`rl.mjx_task.Batch`'s `fit`)."""
     full = _full()
     boxes = _boxes(full)
     spec = mujoco.MjSpec.from_file(SCENE)
@@ -502,10 +509,10 @@ def build(layout=None):
     def pair(a, b):
         spec.add_pair(geomname1=a, geomname2=b, condim=3, **_mix(par[a], par[b]))
 
-    for w in rungs:
+    for w in rungs[:n_rung]:
         for r in rung:
             pair(r, w)
-    for w in walls:
+    for w in walls[:2 if wall2 else 1]:
         for r in wall:
             pair(r, w)
     for a, b in SELF + [(motor[f'{a}_L'], motor[f'{b}_R']) for a in DISTAL for b in DISTAL]:
@@ -544,11 +551,11 @@ def c_path(lesson):
     return p
 
 
-def model():
+def model(n_rung=N_RUNG, wall2=True):
     """the MJX model: every slot parked. Through the same XML text `c_path` writes --
     the writer keeps 6 significant digits, and the two must be the same robot to the
     last one for `rl.mjx_check task` to compare them exactly."""
-    return mujoco.MjModel.from_xml_string(build().to_xml())
+    return mujoco.MjModel.from_xml_string(build(n_rung=n_rung, wall2=wall2).to_xml())
 
 
 def main():

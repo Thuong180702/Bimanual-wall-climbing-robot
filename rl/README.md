@@ -816,6 +816,30 @@ control-steps/s at 4096 envs (729 ms a batch step), training 4,490 steps/s (29.2
 22 hours is ~350M steps. On this Mac's CPU the batch runs ~400 control-steps/s at 256
 envs, against ~6400 for C MuJoCo in 12 processes.
 
+**What a batch step waits on, and what was cut (2026-09-29).** One robot's MJX state is
+47.6 KB -- 195 MB for 4096 envs -- and the policy a 64x64 MLP, so the card's memory
+was never the limit and more envs do not help: the step is memory-bandwidth bound.
+XLA's own count for one substep, per env: 1.74 MFLOP against 5.16 MB moved, 0.34 flop
+a byte where a V100 needs ~17 to be compute bound; 4096 envs x 20 substeps move
+~420 GB a control step, ~470 ms at 900 GB/s of the 728 measured, while the flops
+would take 9. Collision is 82 % of those bytes (4.22 MB), the Newton solver 10 %.
+MJX tests every listed pair every substep however far apart: 1143 pairs, 972 of them
+the robot's 162 capsules against 6 rung slots, 112 its collision meshes against the 2
+wall planes (69 vertices a mesh). A slot no wall in play fills is parked 50 m away and
+never touched -- and families 1..3 fill at most 3 rung slots and never the extra wall
+(families 4 and 6 need 4 and 6 slots, 7 and 8 the extra wall). The batch now collides
+only what the walls that can be drawn, or are being climbed, fill (`Batch`'s `fit`,
+`MjxClimb.set_pairs`): 578 pairs and 3.00 MB a substep for families 1..3, 1.72x less,
+740 and 3.29 MB up to family 5; it grows before such a wall can be drawn, shrinks once
+none is live, and recompiles on each change. The physics is the same to the bit (0.0
+over 60 substeps on lesson 2 on the CPU; `mjx_check physics` asserts it on the card,
+families 1..3 at their last tops). MJX's own broad phase (`max_geom_pairs`) cut the
+bytes 0-14 % and, at 162 pairs, dropped real contacts: its bounding spheres make every
+capsule near a 2.4 m rung look alike. `rl.mjx_task --envs N` prints both speeds, every
+pair and fitted to lessons 1..3. Training also starts every env on a generated wall now
+(`Walls._on_training_start`): SB3's reset had put them on the nine benchmark lessons,
+which ran to their timeouts off the curriculum.
+
 **It learns, from scratch, on the MJX path** -- measured on this Mac's CPU with 256
 envs (8192 steps an update), seed 1, 1.5M steps, 184 updates, 85 min: lessons -2, -1
 and 0 passed (92 / 90 / 90 % at the end) and lesson 1 unlocked; approx_kl 0.008-0.014

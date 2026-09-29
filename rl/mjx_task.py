@@ -47,7 +47,7 @@ from controller.kinematics import JOINTS, THROAT_PT, MAG_WORLD
 from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET, SLAM_SIG
 from . import climb_task as ct
 from .lessons import LESSONS, canon_axis
-from .mjx_scene import N_RUNG, lesson_layout, model as scene_model, slots
+from .mjx_scene import N_RUNG, PARK, lesson_layout, model as scene_model, slots
 
 LESSON_KEYS = sorted(LESSONS)
 N_PTS = 256        # route points a wall carries (climb_task.route_table): 180 on the
@@ -222,6 +222,19 @@ class MjxClimb:
         # the four pyramid rows of each contact; their sum is its normal force
         self.efc4 = con.efc_address[:, None] + np.arange(4)
         self.tables = self._tables()
+        self.pairs = (N_RUNG, True)      # what `mx` collides (set_pairs); the tables use all
+
+    def set_pairs(self, n_rung, wall2):
+        """step with the collision pairs of the first `n_rung` rung slots and, with
+        `wall2`, of the extra wall only (rl.mjx_scene.build): the same geoms, sensors
+        and state shapes, the tables untouched -- a wall whose rungs and walls all lie
+        inside moves exactly as with every pair (`rl.mjx_check physics` asserts it)"""
+        if (n_rung, wall2) == self.pairs:
+            return
+        mx = mjx.put_model(scene_model(n_rung, wall2), impl='jax')
+        shape = lambda x: [a.shape for a in jax.tree_util.tree_leaves(mjx.make_data(x))]
+        assert shape(mx) == shape(self.mx), "a pair set that changes the state's shapes"
+        self.mx, self.pairs = mx, (n_rung, wall2)
 
     # ---- per-lesson tables ------------------------------------------------------
     @staticmethod
@@ -660,11 +673,16 @@ class Batch:
     """N envs on MJX with the auto-reset a VecEnv needs; the curriculum sets the
     lesson draw weights (`probs`, over LESSON_KEYS) without a recompile."""
 
-    def __init__(self, n, seed=0, task=None, bank=0):
+    def __init__(self, n, seed=0, task=None, bank=0, fit=False):
         self.task = task or MjxClimb(bank)
         self.n = n
+        self.fit = fit
         self.key = jax.random.PRNGKey(seed)
-        t = self.task
+        self._compile()
+        self.set_probs({k: 1.0 for k in LESSON_KEYS})
+
+    def _compile(self):
+        t, n = self.task, self.n
         self._reset = jax.jit(jax.vmap(t.reset, in_axes=(None, 0, 0)))
 
         def step(T, st, actions, probs, key):
@@ -678,12 +696,36 @@ class Batch:
             return st, jp.where(done[:, None], fresh_obs, obs), obs, r, term, trunc, info
 
         self._step = jax.jit(step)
-        self.set_probs({k: 1.0 for k in LESSON_KEYS})
+
+    def _fit(self):
+        """with `fit`, collide only the rung slots and walls that a wall which can be
+        drawn (probs > 0) or is being climbed (a live env's) fills: MJX tests every
+        pair every substep however far, and while families 1..3 train, rung slots
+        3..5 and the extra wall are 42 % of a substep's memory traffic, which is what
+        a batch step waits on (rl.mjx_scene.build). Grows before such a wall can be
+        drawn, shrinks once none is live; each change recompiles the step."""
+        if not self.fit:
+            return
+        W = self.task.tables.walls
+        rows = np.nonzero(np.asarray(self.probs) > 0)[0]
+        valid, wall_z = [np.asarray(W.rung_valid)[rows]], [np.asarray(W.wall_pos)[rows, 2]]
+        if hasattr(self, 'state'):
+            valid.append(np.asarray(self.state.wall.rung_valid))
+            wall_z.append(np.asarray(self.state.wall.wall_pos)[:, 2])
+        need = (max(1, max(int(v.sum(-1).max()) for v in valid)),
+                any(bool((z > -PARK / 2).any()) for z in wall_z))
+        if need != self.task.pairs:
+            print(f"[mjx] collision pairs: rung slots {need[0]} of {N_RUNG}, extra wall "
+                  f"{'yes' if need[1] else 'no'} (was {self.task.pairs[0]}, "
+                  f"{'yes' if self.task.pairs[1] else 'no'}); recompiling the step", flush=True)
+            self.task.set_pairs(*need)
+            self._compile()
 
     def set_probs(self, weights):
         """{lesson key: weight}; lessons not named are never drawn, nor is the bank"""
         p = np.array([float(weights.get(k, 0.0)) for k in LESSON_KEYS] + [0.0] * self.task.bank)
         self.probs = jp.asarray(p / p.sum())
+        self._fit()
 
     def set_bank(self, layouts):
         """refill the generated rows with `layouts` (rl.walls) and draw only from
@@ -695,11 +737,13 @@ class Batch:
         self.task.tables = self.task.tables._replace(walls=W._replace(
             **{f: getattr(W, f).at[L:].set(jp.asarray(v)) for f, v in new.items()}))
         self.probs = jp.asarray(np.r_[np.zeros(L), np.full(K, 1.0 / K)])
+        self._fit()
 
     def reset(self):
         self.key, k1, k2 = jax.random.split(self.key, 3)
         lessons = jax.random.choice(k1, self.probs.shape[0], (self.n,), p=self.probs)
         self.state, obs = self._reset(self.task.tables, lessons, jax.random.split(k2, self.n))
+        self._fit()
         return obs
 
     def step(self, actions):
@@ -711,20 +755,28 @@ class Batch:
 
 
 def bench(n, steps=20):
+    """control-steps/s of one batch: colliding every pair (every lesson), then fitted to
+    lessons 1..3 -- the collision pairs families 1..3 need, what training runs early"""
     print(f"{n} envs on {jax.devices()[0].device_kind}: building and compiling first")
     b = Batch(n)
-    t0 = time.perf_counter()
-    b.reset()
     a = np.zeros((n, 17), np.float32)
-    jax.block_until_ready(b.step(a))
-    print(f"{n} envs: build + compile {time.perf_counter() - t0:.0f} s on {jax.devices()[0]}")
-    t0 = time.perf_counter()
-    for _ in range(steps):
-        out = b.step(a)
-    jax.block_until_ready(out)
-    dt = time.perf_counter() - t0
-    print(f"  {n * steps / dt:,.0f} control-steps/s ({dt / steps * 1000:.0f} ms per batch step, "
-          f"{ct.FRAME_SKIP} physics substeps each)")
+    for fit in (False, True):
+        if fit:
+            b.fit = True
+            b.set_probs({k: 1.0 for k in (1, 2, 3)})
+        t0 = time.perf_counter()
+        b.reset()                      # fitted: the envs on lessons 1..3, the pairs cut
+        jax.block_until_ready(b.step(a))
+        r, w = b.task.pairs
+        label = f"{r} rung slots{' and the extra wall' if w else ''} collided"
+        print(f"{n} envs, {label}: build + compile {time.perf_counter() - t0:.0f} s on {jax.devices()[0]}")
+        t0 = time.perf_counter()
+        for _ in range(steps):
+            out = b.step(a)
+        jax.block_until_ready(out)
+        dt = time.perf_counter() - t0
+        print(f"  {n * steps / dt:,.0f} control-steps/s ({dt / steps * 1000:.0f} ms per batch step, "
+              f"{ct.FRAME_SKIP} physics substeps each)")
 
 
 if __name__ == '__main__':
