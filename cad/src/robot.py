@@ -1,5 +1,5 @@
-"""The whole robot at its zero pose, in MILLIMETRES (CAD default): 17 vendor actuators and the aluminium
-between them.
+"""The whole robot at its zero pose, in MILLIMETRES (CAD default): 17 vendor actuators,
+four Livox Mid-360 lidars and the aluminium between them.
 
 Every actuator solid is the manufacturer's own STEP (step.parts, checksum
 verified); everything else is drawn here. Placement comes from the same
@@ -15,10 +15,11 @@ from cadgen import build123d as bd
 from cadgen import report, step, track
 
 from lib.build import BUILDERS, fuse
-from lib.spec import BODY_DIR, IFACE, MOTOR_OF, fk, motor_placements
+from lib.spec import BODY_DIR, IFACE, LIDARS, MOTOR_OF, fk, motor_placements
 from purchased.ak45_36 import ak45_36
 from purchased.ak60_39 import ak60_39
 from purchased.ak80_64 import ak80_64
+from purchased.mid360 import mid360
 
 MM = 0.001
 MOTOR_MODEL = {"AK80-64": ak80_64, "AK60-39": ak60_39, "AK45-36": ak45_36}
@@ -48,6 +49,17 @@ def robot():
         out_dir = tuple(-v for v in bd_)
         s = _loc(tuple(v * 1000 for v in o), out_dir) * built[key]
         s.label = "%s  %s" % (name, key)
+        kids.append(s)
+
+    report("lidars")
+    sensor = mid360()
+    for name, (link, o, z, x) in LIDARS.items():
+        lo, R = F[link]
+        link_pl = bd.Plane(origin=tuple(v * 1000 for v in lo), x_dir=(R[0][0], R[1][0], R[2][0]),
+                           z_dir=(R[0][2], R[1][2], R[2][2]))
+        s = bd.Location(link_pl) * bd.Location(bd.Plane(
+            origin=tuple(v * 1000 for v in o), x_dir=x, z_dir=z)) * sensor
+        s.label = "%s  Livox Mid-360" % name
         kids.append(s)
 
     report("structure")

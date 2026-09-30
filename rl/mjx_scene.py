@@ -52,7 +52,9 @@ where one control step takes each (`python -m rl.mjx_check model`).
     with its ends (a capsule's cap stood 27.5 mm proud of the end the rung meets); the
     rest of the arm, link by link, a capsule fitted to its motor and one to each of its
     bracket plates (ARM) -- a row under the arms, the posture of every climb up, down or
-    over, went through them before; base and torso a rod up each vertical edge.
+    over, went through them before; base and torso a rod up each vertical edge, and the
+    lidar cage its own capsules, as scene.xml has them. The lidars inside the cage meet
+    nothing here.
   * one HAND against the other: the hooks' own boxes (box-box is a full SAT in MJX)
     and the three motors above each hook, as the cylinders they are. (Boxes round
     the motors met 9 mm deep in 11 % of the full robot's states on lesson 2, where
@@ -202,7 +204,7 @@ def _boxes(m):
                 else:
                     vs = []
                     for g in gs:
-                        if m.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH:
+                        if m.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH or 'lidar' in m.mesh(m.geom_dataid[g]).name:
                             continue
                         if tag == 'web' and 'web' not in m.mesh(m.geom_dataid[g]).name:
                             continue
@@ -440,14 +442,22 @@ def build(layout=None, n_rung=N_RUNG, wall2=True):
     # scene.xml draws it: a plane against a convex mesh (its vertices) or a cylinder is
     # exact in MJX, and cheap. Named '<body>:col<i>'; a hook's two boxes, which carry
     # the grip pad, 'hook_<s>:shank' and ':lip'. The visuals go, and their meshes.
-    wall, meshes, motor = [], set(), {}
+    wall, meshes, motor, guard = [], set(), {}, []
     for body in spec.worldbody.find_all(mujoco.mjtObj.mjOBJ_BODY):
         n = nbox = 0
         for g in list(body.geoms):
             if not (g.contype or g.conaffinity):
                 spec.delete(g)
                 continue
-            if body.name.startswith('hook_') and g.type == mujoco.mjtGeom.mjGEOM_BOX:
+            # the lidars and the roof under the head ones sit inside the cage, which
+            # meets the walls and the rungs before they could
+            if g.name.startswith('lidar_') or (g.type == mujoco.mjtGeom.mjGEOM_MESH
+                                               and 'lidar' in g.meshname):
+                spec.delete(g)
+                continue
+            if g.name.startswith('guard_'):
+                guard.append(g.name)          # capsules already: exact against a rung
+            elif body.name.startswith('hook_') and g.type == mujoco.mjtGeom.mjGEOM_BOX:
                 g.name = f"{body.name}:{('shank', 'lip')[nbox]}"
                 nbox += 1
                 _pad(g)
@@ -470,7 +480,7 @@ def build(layout=None, n_rung=N_RUNG, wall2=True):
     # renumber the rest against MJX's copy
     shapes = {k: (mujoco.mjtGeom.mjGEOM_BOX,) + v for k, v in boxes.items()}
     shapes.update(_round(full, boxes))
-    rung = RUNG + sorted(k for k in shapes if ':arm' in k)
+    rung = RUNG + sorted(k for k in shapes if ':arm' in k) + guard
     used = set(rung) | {g for p in SELF for g in p}
     for key, (typ, pos, quat, size) in shapes.items():
         if key not in used or key in wall:

@@ -45,15 +45,16 @@ the two sections after "What moved".
 
 | | before | now |
 |---|---|---|
-| total mass | 11.13 kg | **21.52 kg** |
-| of which actuators | - | 12.73 kg (59 %) |
-| of which structure | - | 6.29 kg (6061-T6) |
+| total mass | 11.13 kg | **24.16 kg** (21.52 before the lidars) |
+| of which actuators | - | 12.73 kg (53 %) |
+| of which structure | - | 7.88 kg (6061-T6; 1.59 of it the lidar mounts and cage) |
 | of which payload | - | 2.50 kg (battery, compute, wiring) |
+| of which lidars | - | 1.06 kg (4 × Livox Mid-360) |
 | arm root to arm root | 0.310 m | 0.310 m |
 | base to shoulder axis | 0.405 m | 0.405 m |
 | hook reach below the finger axis | 0.150 m | 0.110 m |
 | **vertical reach, one hand anchored** | **0.671 m** | **0.56 m** |
-| centre of mass | - | x 0.7, y 0.0, z 136.3 mm |
+| centre of mass | - | x 0.6, y 0.0, z 165.9 mm (136.3 before the lidars) |
 
 The reach is lower than both earlier figures, and both earlier figures were
 wrong in the same direction. v1's 0.671 m came from a pose with the upper arm
@@ -131,21 +132,25 @@ requirement sets come out of it:
 | joint | actuator | peak | rated | need (box) | need (env) | margin box | margin env |
 |---|---|---:|---:|---:|---:|---:|---:|
 | waist_yaw | AK60-39 | 72 | 24 | 0.0 | 0.0 | — | — |
-| shoulder_abduction | AK80-64 | 120 | 48 | 56.3 | 50.4 | 2.13× | 2.38× |
-| shoulder_flexion | AK80-64 | 120 | 48 | 34.7 | 28.7 | 3.45× | 4.18× |
-| shoulder_rotation | AK80-64 | 120 | 48 | 53.3 | 45.4 | 2.25× | 2.64× |
-| elbow | AK80-64 | 120 | 48 | 78.2 | 68.5 | **1.53×** | 1.75× |
-| forearm_roll | AK60-39 | 72 | 24 | 26.0 | 24.0 | 2.77× | 2.99× |
-| wrist_flexion | AK60-39 | 72 | 24 | 43.8 | 42.3 | 1.64× | 1.70× |
-| wrist_deviation | AK60-39 | 72 | 24 | 28.9 | 27.8 | 2.49× | 2.59× |
-| finger | AK45-36 | 24 | 8 | 14.5 | 14.5 | 1.66× | 1.66× |
+| shoulder_abduction | AK80-64 | 120 | 48 | 60.0 | 54.3 | 2.00× | 2.21× |
+| shoulder_flexion | AK80-64 | 120 | 48 | 34.7 | 28.6 | 3.46× | 4.19× |
+| shoulder_rotation | AK80-64 | 120 | 48 | 57.1 | 48.7 | 2.10× | 2.46× |
+| elbow | AK80-64 | 120 | 48 | 87.9 | 77.0 | **1.37×** | 1.56× |
+| forearm_roll | AK60-39 | 72 | 24 | 29.0 | 26.8 | 2.48× | 2.68× |
+| wrist_flexion | AK60-39 | 72 | 24 | 49.3 | 47.4 | 1.46× | 1.52× |
+| wrist_deviation | AK60-39 | 72 | 24 | 32.6 | 31.1 | 2.21× | 2.31× |
+| finger | AK45-36 | 24 | 8 | 16.3 | 16.3 | 1.47× | 1.47× |
+
+The 4 lidars and their cage (2.65 kg, all of it on the upper torso) took every
+hanging joint 11-12 % higher: the elbow's box margin from 1.53× to 1.37×, still
+over the 1.3× `verify.py` asks for.
 
 Pitch-first halved the shoulder flexion's worst case (74.4 -> 34.7 N·m): its
 axis now runs through the arm's root instead of 104 mm below the abduction one.
 
 Margins are against PEAK torque, which is the right test for a hold that lasts
 seconds. Against the CONTINUOUS rating the elbow, shoulder rotation and both
-wrist joints are over - the elbow wants 68.5 N·m where the AK80-64 is rated 48.
+wrist joints are over - the elbow wants 77.0 N·m where the AK80-64 is rated 48.
 A hang that has to last minutes needs either a brake or the next size up; that
 is a decision, not an oversight, and it is the same one v1's numbers implied.
 
@@ -159,9 +164,10 @@ Three things this table says that are worth keeping:
    sideways from the load line; the shoulder sits near it.
 3. **Continuous holding is not the binding case.** Resting on two hands halves
    the load, and a well-postured rest drives it near zero, so the rated column
-   only has to cover the two-hand hang: worst is wrist_flexion at 21.0 N·m
-   against 24 N·m rated. The single-hand reach is seconds at a time and is sized
-   against peak.
+   only has to cover the two-hand hang: worst is wrist_flexion at 24.7 N·m (half
+   its one-hand need) against 24 N·m rated - at the rating now, where it had 3 N·m
+   to spare before the lidars; the settled keyframe hang asks 4.3 N·m of any joint.
+   The single-hand reach is seconds at a time and is sized against peak.
 
 **What a thin margin actually costs.** If the elbow cannot hold a pose, the arm
 sags toward a lower-torque configuration — the robot does not fall, it just
@@ -170,6 +176,34 @@ hook on the rung (finger 1.66×, wrist_flexion 1.70×, wrist_deviation 2.59×), 
 those have the margin.
 
 ---
+
+## The lidars
+
+Four Livox Mid-360 (265 g, 65 × 65 × 60 mm, Livox's own STEP) on the upper torso,
+for the SLAM and the wall map (`cad/src/lib/lidar.py`, `cad/src/lib/spec.py`
+`LIDARS`): two on a roof over the head, 45° toward the wall and 45° away, and one
+sunk into the chest and one into the back, only their windows outside. A cage of
+Ø16 × 2 mm 6061 tube guards all four: a bent bar up each corner of the torso,
+40 mm proud of the panels, and a ring at z 0.345 m over the head joining their
+tops (the height the ray-casting study picked: lower costs the head lidars 8 % of
+what is above the hands).
+
+What the simulation has of them:
+
+| | scene.xml (C) | the MJX robot (`rl/mjx_scene.py`) |
+|---|---|---|
+| mass, inertia | each a uniform 265 g block, on `torso_upper`; mounts and cage from the solids | the same |
+| cage | 16 capsules on the tubes' centre lines (`guard_*`), exact but at the bends: the foot bend's corner stands 8 mm proud along its diagonal | the same 16, paired with every rung slot and wall: 1143 → 1271 pairs |
+| lidars | a box (the body) and a cylinder (the window) each, `lidar_*_body` / `_window` | none: inside the cage |
+| the head's roof | one hull | none |
+| the hats in the chest | none: inside the torso | none |
+| where they look | a site each at its optical origin, z its axis (`lidar_head_front`, ...) | the same |
+| what blocks them | an `occ_*` site per collision geom (group 5, 103 of them): motors as their cylinders, hooks their boxes, tubes their capsules, bracket parts their tightest box | the same sites |
+
+The visual mesh draws each lidar as its envelope (body, window, M12 plug): Livox's
+STEP is 54 000 triangles a unit and four took `torso_upper.stl` past MuJoCo's
+200 000. The exact part is in `cad/STEP/robot.step`. `rl/lidar.py` casts the rays;
+`rl/README.md` says what the policy gets from them.
 
 ## What moved, and why
 
@@ -296,11 +330,11 @@ in `cad/STEP/robot.step`.
   measured off the files match the datasheets: 61.9 × 98 × 98, 67 × 79 × 79,
   54 × 55 × 55 mm.
 - All three canonicalised to +Z = joint axis, output flange at z = 0.
-- Link masses sum to structure + actuators + payload = 21.5176 kg, and MuJoCo
-  agrees to 1 mg.
+- Link masses sum to structure + actuators + payload (and lidars) = 24.1647 kg,
+  and MuJoCo agrees to 1 mg.
 - All 19 inertia tensors positive definite and obeying the triangle inequality.
 - All 17 joints: axis, range and forcerange match spec and datasheet.
-- Torque margin ≥ 1.53× peak over the entire joint box, ≥ 1.66× over the
+- Torque margin ≥ 1.37× peak over the entire joint box, ≥ 1.47× over the
   climbing envelope.
 - No two actuator bodies intersect in any legal named pose (11 poses tested,
   including the keyframe, the arms flared 40° with the elbows bent, the −170°
@@ -308,9 +342,9 @@ in `cad/STEP/robot.step`.
 - **Keyframe `hang_on_rung`** (`_gen_keyframe.py`): arms overhead at −160°, shoulder
   rotation 0, forearms rolled ∓5° — v1's posture. Both hooks on `rung_front_line_0`
   at y = ±0.155, throats facing the wall; the pendulum takes ~20 s to stop
-  swinging, then the base drifts **0.08 mm per 5 s**. Hand forces 98 + 102 N
-  against a 211.1 N robot, no joint above 3.7 N·m, no self-contact — the only
-  other contact is the base resting on the wall, 12 N over four points.
+  swinging, then the base drifts **under 0.01 mm per 5 s**. Hand forces 116 + 116 N
+  against a 237.1 N robot, no joint above 4.3 N·m, no self-contact — the only
+  other contact is the base resting on the wall, 14 N; the lidar cage stands clear.
 - **Grip closed to `GRIP_SET` (−25°)**: holds 12 s untouched, `latched` and
   `grip_ok` true on both hands, no termination — v1's `climbing_env.py` runs
   against this scene unchanged.

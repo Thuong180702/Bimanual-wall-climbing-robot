@@ -12,6 +12,7 @@ import math
 
 from cadgen import build123d as _bd
 
+from . import lidar
 from .connect import (bolt_access, bolt_ring, cheek, face_od, face_plate,
                       hook_profile, mate_bore_r, output_plate,
                       plane_at)
@@ -709,6 +710,10 @@ def torso_upper():
                        amount=DECK)
     parts["deck"] = deck - bolt_ring(TORSO_BC, TORSO_N, TORSO_TH + 0.0004,
                                      -0.005, DECK + 0.005)
+    mounts, cuts = lidar.torso_upper_mounts()
+    for k, c in cuts.items():
+        parts[k] -= c
+    parts.update(mounts)
     return parts
 
 

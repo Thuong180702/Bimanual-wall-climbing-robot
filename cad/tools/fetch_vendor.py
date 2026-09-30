@@ -1,4 +1,5 @@
-"""Download the three vendor actuator STEP files and verify their checksums.
+"""Download the three vendor actuator STEP files and verify their checksums, and
+check the ones that have to be put in cad/vendor/ by hand.
 
 The files are the manufacturers', not ours, so they are not in the repository.
 Run this once before building the CAD.
@@ -16,6 +17,13 @@ PARTS = {
         "00e18639c4794eff5a83ea6930ae681433054ba1ed58fbb4b54434d303c4fe19",
     "cubemars_ak45_36_kv80":
         "d6d093884d7daab8517e38d75f5b86762dd1363e8c7a758280e77abbfd1e4686",
+}
+# Not on step.parts: Livox gives the Mid-360's STEP only from its download centre
+# (livoxtech.com/mid-360 -> Downloads -> 3D model, "mid-360-asm.stp"). Save it as
+# cad/vendor/<name>.step.
+BY_HAND = {
+    "livox_mid360":
+        "b93e9b51282ed319b6aa755e76a132c0eb03306da5f3b9676bcabf2e2ae25f02",
 }
 
 
@@ -37,6 +45,15 @@ def main():
             continue
         open(dst, "wb").write(data)
         print("wrote %s  (%d bytes, sha256 ok)" % (dst, len(data)))
+    for name, want in BY_HAND.items():
+        dst = os.path.join(OUT, name + ".step")
+        got = hashlib.sha256(open(dst, "rb").read()).hexdigest() if os.path.exists(dst) else None
+        if got == want:
+            print("have  %s" % name)
+        else:
+            print("FAIL  %s: %s -- put Livox's file there by hand (see BY_HAND)"
+                  % (name, "missing" if got is None else "sha256 %s, expected %s" % (got[:16], want[:16])))
+            bad += 1
     return 1 if bad else 0
 
 

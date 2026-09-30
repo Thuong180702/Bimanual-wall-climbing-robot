@@ -23,9 +23,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "cad", "src"))
 sys.path.insert(0, os.path.join(HERE, "..", "cad", "tools"))
 from lib.build import BUILDERS, CHILD_OF, PJOINT
-from lib.collide import link_collision
+from lib.collide import link_collision, named_collision
 from lib.motors import MOTORS
-from lib.spec import FIXED, JOINTS, MOTOR_OF, MOUNT_ROT, TORSO_UP, HOOK
+from lib.spec import FIXED, JOINTS, LIDARS, MID360, MOTOR_OF, MOUNT_ROT, TORSO_UP, HOOK
 
 A = json.load(open(os.path.join(HERE, "_actuators.json")))
 PROPS = A["links"]
@@ -63,6 +63,10 @@ def frictionloss(key):
 
 def geom_xml(kind, size, pos, zdir, xhint, cls="col"):
     import numpy as np
+    if kind == "capsule":
+        (a, b), r = pos, size[0]
+        return ('<geom class="%s" type="capsule" size="%.5f" '
+                'fromto="%.5f %.5f %.5f %.5f %.5f %.5f"/>' % (cls, r, *a, *b))
     z = np.array(zdir, float)
     z /= np.linalg.norm(z)
     if kind == "cylinder":
@@ -106,6 +110,44 @@ def _quat(R):
     return tuple(q)
 
 
+def _frame_quat(z, x=None):
+    """the quaternion of a frame whose z is `z` and whose x is as near `x` as it can be"""
+    import numpy as np
+    z = np.array(z, float) / np.linalg.norm(z)
+    x = np.array(x if x is not None else ((1, 0, 0) if abs(z[0]) < 0.9 else (0, 1, 0)), float)
+    x = x - z * (x @ z)
+    x /= np.linalg.norm(x)
+    return _quat(np.column_stack([x, np.cross(z, x), z]))
+
+
+def occluders(link):
+    """What a lidar cannot see through, as sites (`rl.lidar` casts its rays at them):
+    one per collision geom of the link, the same shape where a site can take it -- a
+    motor's cylinder, a hook's box, a tube's capsule -- and a part's hull as its
+    tightest box. Not the head lidars' roof: it lies under their field of view, and
+    its box would take them in. -> [(name, type, size, pos, quat)] in the link frame"""
+    import numpy as np, trimesh
+    out = []
+    for i, (kind, size, pos, zdir, xhint) in enumerate(link_collision(link)):
+        nm = "occ_%s_%d" % (link, i)
+        if kind == "mesh" and "lidar" in size[0]:
+            continue
+        if kind == "capsule":
+            (a, b), r = np.array(pos, float), size[0]
+            out.append((nm, "capsule", (r, np.linalg.norm(b - a) / 2), (a + b) / 2, _frame_quat(b - a)))
+        elif kind == "cylinder":
+            out.append((nm, "cylinder", (size[0], size[1] / 2), pos, _frame_quat(zdir)))
+        elif kind == "box":
+            out.append((nm, "box", tuple(v / 2 for v in size), pos, _frame_quat(zdir, xhint)))
+        else:
+            hull = trimesh.load(os.path.join(HERE, "meshes", "%s.stl" % size[0]))
+            ob = hull.bounding_box_oriented
+            T = ob.primitive.transform
+            out.append((nm, "box", tuple(ob.primitive.extents * 0.0005), T[:3, 3] * 0.001,
+                        _quat(T[:3, :3])))
+    return out
+
+
 def _turn(a):
     """the quat attribute for a link turned by `a` about its own z (spec.MOUNT_ROT)"""
     if not a:
@@ -145,11 +187,23 @@ def body_tree():
                  % (p, C[0], C[1], C[2], M, I[0][0], I[1][1], I[2][2],
                     I[0][1], I[0][2], I[1][2]))
         L.append('%s  <geom class="vis" mesh="%s"/>' % (p, name))
-        for g in link_collision(name):
-            L.append("%s  %s" % (p, geom_xml(*g)))
+        for gn, g in named_collision(name):
+            x = geom_xml(*g)
+            L.append("%s  %s" % (p, x.replace('<geom ', '<geom name="%s" ' % gn, 1) if gn else x))
         if name == "torso_upper":
             L.append('%s  <site name="s_imu" type="box" pos="0 0 %.5f" '
                      'size="0.02 0.02 0.01"/>' % (p, TORSO_UP[2] / 2))
+        # each lidar's optical origin, z its axis and x toward its plug (rl.lidar)
+        for ln, (host, o, z, x) in LIDARS.items():
+            if host == name:
+                c = [o[i] + z[i] * MID360["origin_z"] for i in range(3)]
+                L.append('%s  <site name="%s" type="sphere" size="0.006" group="4" '
+                         'pos="%.5f %.5f %.5f" quat="%.6f %.6f %.6f %.6f"/>'
+                         % (p, ln, *c, *_frame_quat(z, x)))
+        for nm, typ, sz, pos, q in occluders(name):
+            L.append('%s  <site name="%s" type="%s" group="5" size="%s" pos="%.5f %.5f %.5f" '
+                     'quat="%.6f %.6f %.6f %.6f"/>'
+                     % (p, nm, typ, " ".join("%.5f" % v for v in sz), *pos, *q))
         if name.startswith("hook_"):
             sd, ht, hb, hl, hw = (name[-1], HOOK["thk"], HOOK["back"],
                                   HOOK["lip"], HOOK["width"])

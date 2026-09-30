@@ -17,7 +17,7 @@ from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
 
 from lib.build import BUILDERS, CHILD_OF, fuse, mount_plane
-from lib.spec import AL, BODY_DIR, IFACE, JOINTS, MOTOR_OF, MOTORS, PAYLOAD
+from lib.spec import AL, BODY_DIR, IFACE, JOINTS, LIDARS, MID360, MOTOR_OF, MOTORS, PAYLOAD
 
 MM = 0.001
 
@@ -74,6 +74,16 @@ def link_props(link):
         mm_ = MOTORS[key]["mass_kg"]
         parts.append((key + " @" + jname, mm_, c,
                       cyl_inertia(mm_, d["od"] / 2 * MM, d["length"] * MM, axis)))
+    for nm, (host, o, z, x) in LIDARS.items():
+        if host != link:
+            continue
+        # a Livox Mid-360: its catalogue mass as a uniform block of its envelope
+        mp, (a, b, h) = MID360["mass"], MID360["size"]
+        y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]]
+        R = [x, y, z]                                  # rows: the sensor's axes in the link
+        Id = [mp * (b * b + h * h) / 12, mp * (a * a + h * h) / 12, mp * (a * a + b * b) / 12]
+        I = [[sum(R[k][i] * Id[k] * R[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+        parts.append(("Mid-360 " + nm, mp, tuple(o[i] + z[i] * h / 2 for i in range(3)), I))
     if link == "base_link":
         for nm, mp, c in PAYLOAD:
             r = 0.05

@@ -31,7 +31,8 @@ hand-written: `cad/tools/gen_urdf.py` and `urdf/_gen_scene.py` write it.
 The robot this replaced — aluminium cylinders with masses derived from
 geometry, 11.13 kg, fine in simulation and impossible to build — is in git
 history. The cost of being real is **21.52 kg instead of 11.13**, more than
-half of it in the actuators. The arm's root, the arm and the hands are where v1
+half of it in the actuators, and 24.16 kg with the four Livox Mid-360 lidars and
+the tube cage that guards them (`urdf/README.md`, "The lidars"). The arm's root, the arm and the hands are where v1
 had them. The shoulder is pitch-first, like ten of the twelve humanoids it was
 checked against: the first real-actuator version stacked it abduction-first and
 folded the raised arm up past its own abduction motor. Its vertical reach is

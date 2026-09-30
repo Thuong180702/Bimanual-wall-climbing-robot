@@ -2,7 +2,7 @@
   <!-- Frame: +X toward the front wall, +Y left, +Z up. No floor (by request). -->
   <!-- Rungs stand 60 mm off each wall face so the hook finger can pass behind them. -->
   <compiler angle="radian" meshdir="meshes/" autolimits="true"/>
-  <!-- Robot: 17 CubeMars AK-series actuators, 21.5176 kg total. -->
+  <!-- Robot: 17 CubeMars AK-series actuators, 24.1647 kg total. -->
   <option timestep="0.002" integrator="implicitfast"/>
   <statistic center="0 0.3 1.0" extent="3.5"/>
   <visual><global azimuth="150" elevation="-15" offwidth="1600" offheight="1200"/><quality shadowsize="4096"/></visual>
@@ -26,6 +26,7 @@
     <mesh name="torso_upper_col_back" file="torso_upper_col_back.stl" scale="0.001 0.001 0.001"/>
     <mesh name="torso_upper_col_lid" file="torso_upper_col_lid.stl" scale="0.001 0.001 0.001"/>
     <mesh name="torso_upper_col_deck" file="torso_upper_col_deck.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="torso_upper_col_lidar_head_roof" file="torso_upper_col_lidar_head_roof.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_L" file="shoulder_L.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_L_col_plate_out" file="shoulder_L_col_plate_out.stl" scale="0.001 0.001 0.001"/>
     <mesh name="shoulder_L_col_plate_face" file="shoulder_L_col_plate_face.stl" scale="0.001 0.001 0.001"/>
@@ -254,6 +255,10 @@
         <geom class="col" type="mesh" mesh="base_link_col_wall" pos="0 0 0"/>
         <geom class="col" type="mesh" mesh="base_link_col_floor" pos="0 0 0"/>
         <geom class="col" type="mesh" mesh="base_link_col_deck" pos="0 0 0"/>
+        <site name="occ_base_link_0" type="cylinder" group="5" size="0.03950 0.03350" pos="0.00000 0.00000 0.16600" quat="1.000000 0.000000 0.000000 0.000000"/>
+        <site name="occ_base_link_1" type="box" group="5" size="0.07000 0.09000 0.10000" pos="0.00000 -0.00000 0.10000" quat="0.000000 1.000000 -0.000000 0.000000"/>
+        <site name="occ_base_link_2" type="box" group="5" size="0.00250 0.07000 0.09000" pos="-0.00000 0.00000 0.00250" quat="-0.500000 0.500000 -0.500000 -0.500000"/>
+        <site name="occ_base_link_3" type="box" group="5" size="0.00397 0.07000 0.09000" pos="0.00000 -0.00000 0.14753" quat="0.500000 0.500000 0.500000 -0.500000"/>
         <body name="waist_link" pos="0.000000 0.000000 0.200000">
           <joint name="waist_yaw" type="hinge" axis="0 0 1" range="-0.78540 0.78540" armature="0.0444964" frictionloss="0.8667"/>
           <inertial pos="0.000000 0.000000 0.024521" mass="0.136650" fullinertia="0.000120548333 0.000120548333 0.000194636115 1.2942307e-20 4.04123696e-22 -6.75782627e-21"/>
@@ -261,8 +266,11 @@
           <geom class="col" type="mesh" mesh="waist_link_col_plate_out" pos="0 0 0"/>
           <geom class="col" type="mesh" mesh="waist_link_col_cone" pos="0 0 0"/>
           <geom class="col" type="mesh" mesh="waist_link_col_flange" pos="0 0 0"/>
+          <site name="occ_waist_link_0" type="box" group="5" size="0.00430 0.02685 0.02692" pos="-0.00008 -0.00013 0.00380" quat="-0.183013 0.683013 -0.183013 -0.683013"/>
+          <site name="occ_waist_link_1" type="box" group="5" size="0.01425 0.04574 0.04587" pos="-0.00006 -0.00025 0.01975" quat="0.702661 0.079171 0.702661 -0.079171"/>
+          <site name="occ_waist_link_2" type="box" group="5" size="0.00300 0.04972 0.04986" pos="0.00027 0.00008 0.03700" quat="0.568937 0.419894 0.568937 -0.419894"/>
           <body name="torso_upper" pos="0.000000 0.000000 0.040000">
-            <inertial pos="-0.000000 0.000000 0.136764" mass="2.743139" fullinertia="0.022039212 0.0152983208 0.0142004937 1.54036479e-18 -2.27504883e-19 -8.67361738e-19"/>
+            <inertial pos="-0.000000 -0.000000 0.151650" mass="5.390151" fullinertia="0.0569352208 0.0567033588 0.0293743153 -1.05166741e-07 1.82224868e-08 1.05356712e-08"/>
             <geom class="vis" mesh="torso_upper"/>
             <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.02210 0.16500 0.00000 0.08400 0.16500"/>
             <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 -0.02210 0.16500 0.00000 -0.08400 0.16500"/>
@@ -272,7 +280,68 @@
             <geom class="col" type="mesh" mesh="torso_upper_col_back" pos="0 0 0"/>
             <geom class="col" type="mesh" mesh="torso_upper_col_lid" pos="0 0 0"/>
             <geom class="col" type="mesh" mesh="torso_upper_col_deck" pos="0 0 0"/>
+            <geom class="col" type="mesh" mesh="torso_upper_col_lidar_head_roof" pos="0 0 0"/>
+            <geom name="lidar_head_front_body" class="col" type="box" size="0.03240 0.03240 0.01650" pos="0.04167 0.00000 0.26367" quat="0.923880 0.000000 0.382683 0.000000"/>
+            <geom name="lidar_head_front_window" class="col" type="cylinder" size="0.02550" fromto="0.05333 0.00000 0.27533 0.07250 0.00000 0.29450"/>
+            <geom name="lidar_head_back_body" class="col" type="box" size="0.03240 0.03240 0.01650" pos="-0.04167 0.00000 0.26367" quat="0.000000 -0.382683 0.000000 0.923880"/>
+            <geom name="lidar_head_back_window" class="col" type="cylinder" size="0.02550" fromto="-0.05333 0.00000 0.27533 -0.07250 0.00000 0.29450"/>
+            <geom name="lidar_chest_body" class="col" type="box" size="0.03240 0.03240 0.01650" pos="0.05650 0.00000 0.06800" quat="0.707107 0.000000 0.707107 0.000000"/>
+            <geom name="lidar_chest_window" class="col" type="cylinder" size="0.02550" fromto="0.07300 0.00000 0.06800 0.10010 0.00000 0.06800"/>
+            <geom name="lidar_back_body" class="col" type="box" size="0.03240 0.03240 0.01650" pos="-0.05650 0.00000 0.06800" quat="-0.000000 0.707107 0.000000 -0.707107"/>
+            <geom name="lidar_back_window" class="col" type="cylinder" size="0.02550" fromto="-0.07300 0.00000 0.06800 -0.10010 0.00000 0.06800"/>
+            <geom name="guard_front_l_1" class="col" type="capsule" size="0.00800" fromto="0.10200 0.07100 0.01100 0.10200 0.07100 0.19000"/>
+            <geom name="guard_front_l_2" class="col" type="capsule" size="0.00800" fromto="0.10200 0.07100 0.19000 0.10200 0.05000 0.23000"/>
+            <geom name="guard_front_l_3" class="col" type="capsule" size="0.00800" fromto="0.10200 0.05000 0.23000 0.10200 0.05000 0.34500"/>
+            <geom name="guard_front_r_1" class="col" type="capsule" size="0.00800" fromto="0.10200 -0.07100 0.01100 0.10200 -0.07100 0.19000"/>
+            <geom name="guard_front_r_2" class="col" type="capsule" size="0.00800" fromto="0.10200 -0.07100 0.19000 0.10200 -0.05000 0.23000"/>
+            <geom name="guard_front_r_3" class="col" type="capsule" size="0.00800" fromto="0.10200 -0.05000 0.23000 0.10200 -0.05000 0.34500"/>
+            <geom name="guard_back_l_1" class="col" type="capsule" size="0.00800" fromto="-0.10200 0.07100 0.01100 -0.10200 0.07100 0.19000"/>
+            <geom name="guard_back_l_2" class="col" type="capsule" size="0.00800" fromto="-0.10200 0.07100 0.19000 -0.10200 0.05000 0.23000"/>
+            <geom name="guard_back_l_3" class="col" type="capsule" size="0.00800" fromto="-0.10200 0.05000 0.23000 -0.10200 0.05000 0.34500"/>
+            <geom name="guard_back_r_1" class="col" type="capsule" size="0.00800" fromto="-0.10200 -0.07100 0.01100 -0.10200 -0.07100 0.19000"/>
+            <geom name="guard_back_r_2" class="col" type="capsule" size="0.00800" fromto="-0.10200 -0.07100 0.19000 -0.10200 -0.05000 0.23000"/>
+            <geom name="guard_back_r_3" class="col" type="capsule" size="0.00800" fromto="-0.10200 -0.05000 0.23000 -0.10200 -0.05000 0.34500"/>
+            <geom name="guard_ring_0" class="col" type="capsule" size="0.00800" fromto="0.10200 0.05000 0.34500 0.10200 -0.05000 0.34500"/>
+            <geom name="guard_ring_1" class="col" type="capsule" size="0.00800" fromto="0.10200 -0.05000 0.34500 -0.10200 -0.05000 0.34500"/>
+            <geom name="guard_ring_2" class="col" type="capsule" size="0.00800" fromto="-0.10200 -0.05000 0.34500 -0.10200 0.05000 0.34500"/>
+            <geom name="guard_ring_3" class="col" type="capsule" size="0.00800" fromto="-0.10200 0.05000 0.34500 0.10200 0.05000 0.34500"/>
             <site name="s_imu" type="box" pos="0 0 0.10925" size="0.02 0.02 0.01"/>
+            <site name="lidar_head_front" type="sphere" size="0.006" group="4" pos="0.06323 0.00000 0.28523" quat="0.923880 0.000000 0.382683 0.000000"/>
+            <site name="lidar_head_back" type="sphere" size="0.006" group="4" pos="-0.06323 0.00000 0.28523" quat="0.000000 -0.382683 0.000000 0.923880"/>
+            <site name="lidar_chest" type="sphere" size="0.006" group="4" pos="0.08700 0.00000 0.06800" quat="0.707107 0.000000 0.707107 0.000000"/>
+            <site name="lidar_back" type="sphere" size="0.006" group="4" pos="-0.08700 0.00000 0.06800" quat="-0.000000 0.707107 0.000000 -0.707107"/>
+            <site name="occ_torso_upper_0" type="cylinder" group="5" size="0.04900 0.03095" pos="0.00000 0.05305 0.16500" quat="0.707107 -0.707107 0.000000 0.000000"/>
+            <site name="occ_torso_upper_1" type="cylinder" group="5" size="0.04900 0.03095" pos="0.00000 -0.05305 0.16500" quat="0.707107 0.707107 0.000000 0.000000"/>
+            <site name="occ_torso_upper_2" type="box" group="5" size="0.00838 0.07006 0.10936" pos="0.00000 0.08000 0.10925" quat="0.721216 0.008086 0.008420 -0.692612"/>
+            <site name="occ_torso_upper_3" type="box" group="5" size="0.00397 0.07000 0.10925" pos="-0.00000 -0.08097 0.10925" quat="0.000000 0.707107 0.707107 0.000000"/>
+            <site name="occ_torso_upper_4" type="box" group="5" size="0.00150 0.08300 0.10925" pos="0.06850 0.00000 0.10925" quat="0.000000 0.000000 1.000000 0.000000"/>
+            <site name="occ_torso_upper_5" type="box" group="5" size="0.00150 0.08300 0.10925" pos="-0.06850 -0.00000 0.10925" quat="0.000000 0.000000 1.000000 0.000000"/>
+            <site name="occ_torso_upper_6" type="box" group="5" size="0.00150 0.07000 0.08300" pos="-0.00000 0.00000 0.21700" quat="0.500000 -0.500000 0.500000 0.500000"/>
+            <site name="occ_torso_upper_7" type="box" group="5" size="0.00300 0.07000 0.08300" pos="-0.00000 0.00000 0.00300" quat="0.500000 -0.500000 0.500000 0.500000"/>
+            <site name="occ_torso_upper_9" type="box" group="5" size="0.03240 0.03240 0.01650" pos="0.04167 0.00000 0.26367" quat="0.923880 0.000000 0.382683 0.000000"/>
+            <site name="occ_torso_upper_10" type="cylinder" group="5" size="0.02550 0.01355" pos="0.06292 0.00000 0.28492" quat="0.923880 0.000000 0.382683 0.000000"/>
+            <site name="occ_torso_upper_11" type="box" group="5" size="0.03240 0.03240 0.01650" pos="-0.04167 0.00000 0.26367" quat="0.000000 -0.382683 0.000000 0.923880"/>
+            <site name="occ_torso_upper_12" type="cylinder" group="5" size="0.02550 0.01355" pos="-0.06292 0.00000 0.28492" quat="0.923880 -0.000000 -0.382683 0.000000"/>
+            <site name="occ_torso_upper_13" type="box" group="5" size="0.03240 0.03240 0.01650" pos="0.05650 0.00000 0.06800" quat="0.707107 0.000000 0.707107 0.000000"/>
+            <site name="occ_torso_upper_14" type="cylinder" group="5" size="0.02550 0.01355" pos="0.08655 0.00000 0.06800" quat="0.500000 0.500000 0.500000 0.500000"/>
+            <site name="occ_torso_upper_15" type="box" group="5" size="0.03240 0.03240 0.01650" pos="-0.05650 0.00000 0.06800" quat="-0.000000 0.707107 0.000000 -0.707107"/>
+            <site name="occ_torso_upper_16" type="cylinder" group="5" size="0.02550 0.01355" pos="-0.08655 0.00000 0.06800" quat="-0.500000 0.500000 0.500000 -0.500000"/>
+            <site name="occ_torso_upper_17" type="capsule" group="5" size="0.00800 0.08950" pos="0.10200 0.07100 0.10050" quat="1.000000 0.000000 0.000000 0.000000"/>
+            <site name="occ_torso_upper_18" type="capsule" group="5" size="0.00800 0.02259" pos="0.10200 0.06050 0.21000" quat="0.970927 0.239376 0.000000 0.000000"/>
+            <site name="occ_torso_upper_19" type="capsule" group="5" size="0.00800 0.05750" pos="0.10200 0.05000 0.28750" quat="1.000000 0.000000 0.000000 0.000000"/>
+            <site name="occ_torso_upper_20" type="capsule" group="5" size="0.00800 0.08950" pos="0.10200 -0.07100 0.10050" quat="1.000000 0.000000 0.000000 0.000000"/>
+            <site name="occ_torso_upper_21" type="capsule" group="5" size="0.00800 0.02259" pos="0.10200 -0.06050 0.21000" quat="0.970927 -0.239376 0.000000 0.000000"/>
+            <site name="occ_torso_upper_22" type="capsule" group="5" size="0.00800 0.05750" pos="0.10200 -0.05000 0.28750" quat="1.000000 0.000000 0.000000 0.000000"/>
+            <site name="occ_torso_upper_23" type="capsule" group="5" size="0.00800 0.08950" pos="-0.10200 0.07100 0.10050" quat="1.000000 0.000000 0.000000 0.000000"/>
+            <site name="occ_torso_upper_24" type="capsule" group="5" size="0.00800 0.02259" pos="-0.10200 0.06050 0.21000" quat="0.970927 0.239376 0.000000 0.000000"/>
+            <site name="occ_torso_upper_25" type="capsule" group="5" size="0.00800 0.05750" pos="-0.10200 0.05000 0.28750" quat="1.000000 0.000000 0.000000 0.000000"/>
+            <site name="occ_torso_upper_26" type="capsule" group="5" size="0.00800 0.08950" pos="-0.10200 -0.07100 0.10050" quat="1.000000 0.000000 0.000000 0.000000"/>
+            <site name="occ_torso_upper_27" type="capsule" group="5" size="0.00800 0.02259" pos="-0.10200 -0.06050 0.21000" quat="0.970927 -0.239376 0.000000 0.000000"/>
+            <site name="occ_torso_upper_28" type="capsule" group="5" size="0.00800 0.05750" pos="-0.10200 -0.05000 0.28750" quat="1.000000 0.000000 0.000000 0.000000"/>
+            <site name="occ_torso_upper_29" type="capsule" group="5" size="0.00800 0.05000" pos="0.10200 0.00000 0.34500" quat="0.707107 0.707107 0.000000 0.000000"/>
+            <site name="occ_torso_upper_30" type="capsule" group="5" size="0.00800 0.10200" pos="0.00000 -0.05000 0.34500" quat="-0.500000 0.500000 0.500000 -0.500000"/>
+            <site name="occ_torso_upper_31" type="capsule" group="5" size="0.00800 0.05000" pos="-0.10200 0.00000 0.34500" quat="0.707107 -0.707107 0.000000 0.000000"/>
+            <site name="occ_torso_upper_32" type="capsule" group="5" size="0.00800 0.10200" pos="0.00000 0.05000 0.34500" quat="0.500000 0.500000 0.500000 0.500000"/>
             <body name="shoulder_L" pos="0.000000 0.085000 0.165000">
               <joint name="shoulder_L_flexion" type="hinge" axis="0 1 0" range="-2.96706 1.04720" armature="0.208983" frictionloss="1.422"/>
               <inertial pos="0.028617 0.052705 -0.000000" mass="1.293615" fullinertia="0.00231368751 0.0014242464 0.00213785975 -0.000232159862 5.38088154e-16 5.07166618e-16"/>
@@ -282,6 +351,11 @@
               <geom class="col" type="mesh" mesh="shoulder_L_col_plate_face" pos="0 0 0"/>
               <geom class="col" type="mesh" mesh="shoulder_L_col_web" pos="0 0 0"/>
               <geom class="col" type="mesh" mesh="shoulder_L_col_leg" pos="0 0 0"/>
+              <site name="occ_shoulder_L_0" type="cylinder" group="5" size="0.04900 0.03095" pos="0.03195 0.07000 0.00000" quat="-0.500000 0.500000 0.500000 -0.500000"/>
+              <site name="occ_shoulder_L_1" type="box" group="5" size="0.00630 0.03580 0.03590" pos="-0.00020 0.00530 -0.00004" quat="0.702661 0.079171 -0.079171 -0.702661"/>
+              <site name="occ_shoulder_L_2" type="box" group="5" size="0.00398 0.04823 0.04836" pos="0.05468 0.07026 -0.00006" quat="0.000000 -0.000000 0.111964 0.993712"/>
+              <site name="occ_shoulder_L_3" type="box" group="5" size="0.00875 0.04712 0.04850" pos="0.01153 0.01075 -0.00000" quat="-0.000000 0.707107 0.707107 0.000000"/>
+              <site name="occ_shoulder_L_4" type="box" group="5" size="0.00398 0.04850 0.05825" pos="0.05468 0.06025 0.00000" quat="0.707107 0.707107 -0.000000 -0.000000"/>
               <body name="upper_arm_L" pos="0.000000 0.070000 0.000000">
                 <joint name="shoulder_L_abduction" type="hinge" axis="1 0 0" range="-0.20944 3.14159" armature="0.208983" frictionloss="1.422"/>
                 <inertial pos="-0.003617 -0.000000 -0.128592" mass="1.292555" fullinertia="0.00652156176 0.00631253316 0.00141697822 -6.30645759e-21 0.000382352144 7.04494197e-21"/>
@@ -290,14 +364,22 @@
                 <geom class="col" type="mesh" mesh="upper_arm_L_col_plate_out" pos="0 0 0"/>
                 <geom class="col" type="mesh" mesh="upper_arm_L_col_plate_face" pos="0 0 0"/>
                 <geom class="col" type="mesh" mesh="upper_arm_L_col_cheek" pos="0 0 0"/>
+                <site name="occ_upper_arm_L_0" type="cylinder" group="5" size="0.04900 0.03095" pos="0.00000 0.00000 -0.16805" quat="0.000000 1.000000 0.000000 0.000000"/>
+                <site name="occ_upper_arm_L_1" type="box" group="5" size="0.00780 0.03580 0.03590" pos="-0.00680 -0.00020 -0.00004" quat="-0.000000 -0.000000 -0.111964 0.993712"/>
+                <site name="occ_upper_arm_L_2" type="box" group="5" size="0.00397 0.04823 0.04836" pos="-0.00006 -0.00026 -0.14533" quat="0.702661 0.079171 0.702661 -0.079171"/>
+                <site name="occ_upper_arm_L_3" type="box" group="5" size="0.00600 0.04850 0.09265" pos="-0.01400 0.00000 -0.05665" quat="0.000000 0.000000 1.000000 0.000000"/>
                 <body name="humerus_rot_L" pos="0.000000 0.000000 -0.200000">
                   <joint name="shoulder_L_rotation" type="hinge" axis="0 0 1" range="-1.22173 1.57080" armature="0.208983" frictionloss="1.422"/>
-                  <inertial pos="0.000000 0.027671 -0.055711" mass="0.959729" fullinertia="0.0011282333 0.00133802688 0.00095478447 5.3288648e-15 -6.66515352e-15 0.000109381795"/>
+                  <inertial pos="0.000000 0.027671 -0.055711" mass="0.959729" fullinertia="0.0011282333 0.00133802688 0.00095478447 5.32886718e-15 -6.66515763e-15 0.000109381795"/>
                   <geom class="vis" mesh="humerus_rot_L"/>
                   <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.06290 -0.06000 0.00000 0.00100 -0.06000"/>
                   <geom class="col" type="mesh" mesh="humerus_rot_L_col_plate_out" pos="0 0 0"/>
                   <geom class="col" type="mesh" mesh="humerus_rot_L_col_plate_face" pos="0 0 0"/>
                   <geom class="col" type="mesh" mesh="humerus_rot_L_col_cheek" pos="0 0 0"/>
+                  <site name="occ_humerus_rot_L_0" type="cylinder" group="5" size="0.04900 0.03095" pos="0.00000 0.03195 -0.06000" quat="0.707107 0.707107 0.000000 0.000000"/>
+                  <site name="occ_humerus_rot_L_1" type="box" group="5" size="0.00430 0.03580 0.03590" pos="-0.00004 0.00020 -0.00330" quat="0.702661 -0.079171 0.702661 0.079171"/>
+                  <site name="occ_humerus_rot_L_2" type="box" group="5" size="0.00397 0.04823 0.04836" pos="-0.00021 0.00403 -0.05983" quat="-0.233543 -0.667426 0.667426 0.233543"/>
+                  <site name="occ_humerus_rot_L_3" type="box" group="5" size="0.00350 0.04845 0.05352" pos="0.00000 0.00450 -0.05452" quat="-0.000000 0.707107 0.707107 0.000000"/>
                   <body name="fore_arm_L" pos="0.000000 0.000000 -0.060000">
                     <joint name="elbow_L" type="hinge" axis="0 1 0" range="-1.91986 0.00000" armature="0.208983" frictionloss="1.422"/>
                     <inertial pos="0.000000 -0.001587 -0.090522" mass="0.997296" fullinertia="0.00228086956 0.00238728094 0.000749316439 3.02512747e-13 4.04665392e-13 0.000110025167"/>
@@ -306,6 +388,10 @@
                     <geom class="col" type="mesh" mesh="fore_arm_L_col_plate_out" pos="0 0 0"/>
                     <geom class="col" type="mesh" mesh="fore_arm_L_col_plate_face" pos="0 0 0"/>
                     <geom class="col" type="mesh" mesh="fore_arm_L_col_cheek" pos="0 0 0"/>
+                    <site name="occ_fore_arm_L_0" type="cylinder" group="5" size="0.03950 0.03350" pos="0.00000 0.00000 -0.11100" quat="0.000000 1.000000 0.000000 0.000000"/>
+                    <site name="occ_fore_arm_L_1" type="box" group="5" size="0.00430 0.03580 0.03590" pos="-0.00020 -0.00330 -0.00004" quat="0.702661 0.079171 -0.079171 -0.702661"/>
+                    <site name="occ_fore_arm_L_2" type="box" group="5" size="0.00397 0.03878 0.03889" pos="-0.00020 -0.00009 -0.09253" quat="0.598724 0.376204 0.598724 -0.376204"/>
+                    <site name="occ_fore_arm_L_3" type="box" group="5" size="0.00600 0.03900 0.06607" pos="-0.00000 -0.00800 -0.03043" quat="-0.000000 0.707107 0.707107 0.000000"/>
                     <body name="forearm_rot_L" pos="0.000000 0.000000 -0.145000">
                       <joint name="forearm_L_roll" type="hinge" axis="0 0 1" range="-1.48353 1.48353" armature="0.0444964" frictionloss="0.8667"/>
                       <inertial pos="-0.000000 -0.030606 -0.057425" mass="0.826012" fullinertia="0.000773869566 0.000745561178 0.000680685138 3.6120952e-12 1.64234322e-12 -6.26245491e-05"/>
@@ -314,6 +400,10 @@
                       <geom class="col" type="mesh" mesh="forearm_rot_L_col_plate_out" pos="0 0 0"/>
                       <geom class="col" type="mesh" mesh="forearm_rot_L_col_plate_face" pos="0 0 0"/>
                       <geom class="col" type="mesh" mesh="forearm_rot_L_col_cheek" pos="0 0 0"/>
+                      <site name="occ_forearm_rot_L_0" type="cylinder" group="5" size="0.03950 0.03350" pos="0.00000 -0.03400 -0.06000" quat="0.707107 -0.707107 0.000000 0.000000"/>
+                      <site name="occ_forearm_rot_L_1" type="box" group="5" size="0.00430 0.02685 0.02692" pos="-0.00008 0.00013 -0.00380" quat="0.183013 0.683013 0.183013 -0.683013"/>
+                      <site name="occ_forearm_rot_L_2" type="box" group="5" size="0.00398 0.03878 0.03889" pos="0.00015 -0.00202 -0.06016" quat="-0.282766 -0.648107 0.648107 0.282766"/>
+                      <site name="occ_forearm_rot_L_3" type="box" group="5" size="0.00275 0.03887 0.04875" pos="-0.00000 -0.00325 -0.05025" quat="-0.000000 0.707107 0.707107 0.000000"/>
                       <body name="wrist_L" pos="0.000000 0.000000 -0.060000">
                         <joint name="wrist_L_flexion" type="hinge" axis="0 1 0" range="-0.43633 0.43633" armature="0.0444964" frictionloss="0.8667"/>
                         <inertial pos="-0.026422 0.000950 -0.075778" mass="0.942401" fullinertia="0.0012635103 0.00139312615 0.000839842256 -2.40715489e-05 -0.000206938428 -5.9285031e-05"/>
@@ -322,6 +412,10 @@
                         <geom class="col" type="mesh" mesh="wrist_L_col_plate_out" pos="0 0 0"/>
                         <geom class="col" type="mesh" mesh="wrist_L_col_plate_face" pos="0 0 0"/>
                         <geom class="col" type="mesh" mesh="wrist_L_col_web" pos="0 0 0"/>
+                        <site name="occ_wrist_L_0" type="cylinder" group="5" size="0.03950 0.03350" pos="-0.03400 0.00000 -0.08400" quat="0.500000 0.500000 0.500000 0.500000"/>
+                        <site name="occ_wrist_L_1" type="box" group="5" size="0.00430 0.02685 0.02692" pos="-0.00013 0.00380 -0.00008" quat="0.183013 -0.683013 0.683013 -0.183013"/>
+                        <site name="occ_wrist_L_2" type="box" group="5" size="0.00398 0.03878 0.03889" pos="-0.00202 -0.00015 -0.08416" quat="0.000000 -0.000000 0.916562 0.399892"/>
+                        <site name="occ_wrist_L_3" type="box" group="5" size="0.02685 0.03756 0.07519" pos="0.00200 0.00251 -0.04748" quat="0.033121 0.963428 0.265754 -0.009136"/>
                         <body name="wrist_dev_L" pos="0.000000 0.000000 -0.084000">
                           <joint name="wrist_L_deviation" type="hinge" axis="1 0 0" range="-0.52360 0.34907" armature="0.0444964" frictionloss="0.8667"/>
                           <inertial pos="0.004550 0.016334 -0.052018" mass="0.545989" fullinertia="0.000857471086 0.000752149546 0.000328607549 4.2431378e-05 -0.000110441346 0.000181662999"/>
@@ -330,6 +424,10 @@
                           <geom class="col" type="mesh" mesh="wrist_dev_L_col_plate_out" pos="0 0 0"/>
                           <geom class="col" type="mesh" mesh="wrist_dev_L_col_plate_face" pos="0 0 0"/>
                           <geom class="col" type="mesh" mesh="wrist_dev_L_col_web" pos="0 0 0"/>
+                          <site name="occ_wrist_dev_L_0" type="cylinder" group="5" size="0.02750 0.02700" pos="0.00000 0.02900 -0.07200" quat="0.707107 0.707107 0.000000 0.000000"/>
+                          <site name="occ_wrist_dev_L_1" type="box" group="5" size="0.00930 0.02685 0.02692" pos="0.00880 0.00013 -0.00008" quat="0.000000 0.000000 0.965926 -0.258819"/>
+                          <site name="occ_wrist_dev_L_2" type="box" group="5" size="0.00397 0.02735 0.02742" pos="-0.00007 -0.00097 -0.07214" quat="0.376203 -0.598724 0.598724 -0.376203"/>
+                          <site name="occ_wrist_dev_L_3" type="box" group="5" size="0.02572 0.02641 0.06498" pos="0.00817 -0.00122 -0.03507" quat="-0.130347 -0.332753 0.932804 0.046498"/>
                           <body name="hook_L" pos="0.000000 0.000000 -0.072000" quat="0 0 0 1">
                             <joint name="finger_L" type="hinge" axis="0 1 0" range="-1.57080 0.34907" armature="0.00833085" frictionloss="0.8"/>
                             <inertial pos="0.008217 0.005305 -0.068935" mass="0.266566" fullinertia="0.000525112109 0.000506383924 0.000134025729 1.16187504e-05 7.68013864e-05 -6.44168714e-05"/>
@@ -337,6 +435,9 @@
                             <geom class="col" type="box" size="0.00600 0.03250 0.05500" pos="0.00000 0.00000 -0.05500"/>
                             <geom class="col" type="box" size="0.02000 0.03250 0.00600" pos="0.02600 0.00000 -0.10400"/>
                             <geom class="col" type="cylinder" size="0.01800" fromto="0.00000 -0.01500 0.00000 0.00000 0.01500 0.00000"/>
+                            <site name="occ_hook_L_0" type="box" group="5" size="0.00600 0.03250 0.05500" pos="0.00000 0.00000 -0.05500" quat="1.000000 0.000000 0.000000 0.000000"/>
+                            <site name="occ_hook_L_1" type="box" group="5" size="0.02000 0.03250 0.00600" pos="0.02600 0.00000 -0.10400" quat="1.000000 0.000000 0.000000 0.000000"/>
+                            <site name="occ_hook_L_2" type="cylinder" group="5" size="0.01800 0.01500" pos="0.00000 0.00000 0.00000" quat="0.707107 -0.707107 0.000000 0.000000"/>
                             <site name="s_ft_L" type="sphere" pos="0 0 0" size="0.008"/>
                             <site name="s_grip_L" type="box" pos="0.02600 0 -0.05900" size="0.02400 0.03250 0.06300"/>
                           </body>
@@ -356,30 +457,47 @@
               <geom class="col" type="mesh" mesh="shoulder_R_col_plate_face" pos="0 0 0"/>
               <geom class="col" type="mesh" mesh="shoulder_R_col_web" pos="0 0 0"/>
               <geom class="col" type="mesh" mesh="shoulder_R_col_leg" pos="0 0 0"/>
+              <site name="occ_shoulder_R_0" type="cylinder" group="5" size="0.04900 0.03095" pos="0.03195 -0.07000 0.00000" quat="-0.500000 0.500000 0.500000 -0.500000"/>
+              <site name="occ_shoulder_R_1" type="box" group="5" size="0.00630 0.03580 0.03590" pos="-0.00020 -0.00530 -0.00004" quat="0.702661 0.079171 -0.079171 -0.702661"/>
+              <site name="occ_shoulder_R_2" type="box" group="5" size="0.00398 0.04823 0.04836" pos="0.05468 -0.07026 -0.00006" quat="-0.000000 -0.000000 -0.111964 0.993712"/>
+              <site name="occ_shoulder_R_3" type="box" group="5" size="0.00875 0.04712 0.04850" pos="0.01153 -0.01075 -0.00000" quat="-0.000000 0.707107 0.707107 0.000000"/>
+              <site name="occ_shoulder_R_4" type="box" group="5" size="0.00398 0.04850 0.05825" pos="0.05468 -0.06025 0.00000" quat="0.707107 0.707107 -0.000000 -0.000000"/>
               <body name="upper_arm_R" pos="0.000000 -0.070000 0.000000">
                 <joint name="shoulder_R_abduction" type="hinge" axis="1 0 0" range="-3.14159 0.20944" armature="0.208983" frictionloss="1.422"/>
-                <inertial pos="-0.003617 0.000000 -0.128592" mass="1.292555" fullinertia="0.00652156176 0.00631253316 0.00141697822 1.32801147e-19 0.000382352144 1.49878577e-19"/>
+                <inertial pos="-0.003617 0.000000 -0.128592" mass="1.292555" fullinertia="0.00652156176 0.00631253316 0.00141697822 1.32240212e-19 0.000382352144 1.59965271e-19"/>
                 <geom class="vis" mesh="upper_arm_R"/>
                 <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 0.00000 -0.13710 0.00000 0.00000 -0.19900"/>
                 <geom class="col" type="mesh" mesh="upper_arm_R_col_plate_out" pos="0 0 0"/>
                 <geom class="col" type="mesh" mesh="upper_arm_R_col_plate_face" pos="0 0 0"/>
                 <geom class="col" type="mesh" mesh="upper_arm_R_col_cheek" pos="0 0 0"/>
+                <site name="occ_upper_arm_R_0" type="cylinder" group="5" size="0.04900 0.03095" pos="0.00000 0.00000 -0.16805" quat="0.000000 1.000000 0.000000 0.000000"/>
+                <site name="occ_upper_arm_R_1" type="box" group="5" size="0.00780 0.03580 0.03590" pos="-0.00680 0.00020 -0.00004" quat="0.000000 -0.000000 0.111964 0.993712"/>
+                <site name="occ_upper_arm_R_2" type="box" group="5" size="0.00397 0.04823 0.04836" pos="-0.00006 0.00026 -0.14533" quat="0.702661 -0.079171 0.702661 0.079171"/>
+                <site name="occ_upper_arm_R_3" type="box" group="5" size="0.00600 0.04850 0.09265" pos="-0.01400 0.00000 -0.05665" quat="0.000000 0.000000 1.000000 0.000000"/>
                 <body name="humerus_rot_R" pos="0.000000 0.000000 -0.200000">
                   <joint name="shoulder_R_rotation" type="hinge" axis="0 0 1" range="-1.57080 1.22173" armature="0.208983" frictionloss="1.422"/>
-                  <inertial pos="0.000000 -0.027671 -0.055711" mass="0.959729" fullinertia="0.0011282333 0.00133802688 0.00095478447 -5.32886581e-15 -6.66515748e-15 -0.000109381795"/>
+                  <inertial pos="0.000000 -0.027671 -0.055711" mass="0.959729" fullinertia="0.0011282333 0.00133802688 0.00095478447 -5.32886419e-15 -6.66515611e-15 -0.000109381795"/>
                   <geom class="vis" mesh="humerus_rot_R"/>
                   <geom class="col" type="cylinder" size="0.04900" fromto="0.00000 -0.06290 -0.06000 0.00000 -0.00100 -0.06000"/>
                   <geom class="col" type="mesh" mesh="humerus_rot_R_col_plate_out" pos="0 0 0"/>
                   <geom class="col" type="mesh" mesh="humerus_rot_R_col_plate_face" pos="0 0 0"/>
                   <geom class="col" type="mesh" mesh="humerus_rot_R_col_cheek" pos="0 0 0"/>
+                  <site name="occ_humerus_rot_R_0" type="cylinder" group="5" size="0.04900 0.03095" pos="0.00000 -0.03195 -0.06000" quat="0.707107 -0.707107 0.000000 0.000000"/>
+                  <site name="occ_humerus_rot_R_1" type="box" group="5" size="0.00430 0.03580 0.03590" pos="-0.00004 -0.00020 -0.00330" quat="0.702661 0.079171 0.702661 -0.079171"/>
+                  <site name="occ_humerus_rot_R_2" type="box" group="5" size="0.00397 0.04823 0.04836" pos="-0.00021 -0.00403 -0.05983" quat="-0.233543 -0.667426 0.667426 0.233543"/>
+                  <site name="occ_humerus_rot_R_3" type="box" group="5" size="0.00350 0.04845 0.05352" pos="-0.00000 -0.00450 -0.05452" quat="0.000000 0.707107 -0.707107 -0.000000"/>
                   <body name="fore_arm_R" pos="0.000000 0.000000 -0.060000">
                     <joint name="elbow_R" type="hinge" axis="0 1 0" range="-1.91986 0.00000" armature="0.208983" frictionloss="1.422"/>
-                    <inertial pos="0.000000 0.001587 -0.090522" mass="0.997296" fullinertia="0.00228086956 0.00238728094 0.000749316439 -3.02512752e-13 4.04665144e-13 -0.000110025167"/>
+                    <inertial pos="0.000000 0.001587 -0.090522" mass="0.997296" fullinertia="0.00228086956 0.00238728094 0.000749316439 -3.0251275e-13 4.0466515e-13 -0.000110025167"/>
                     <geom class="vis" mesh="fore_arm_R"/>
                     <geom class="col" type="cylinder" size="0.03950" fromto="0.00000 0.00000 -0.07750 0.00000 0.00000 -0.14450"/>
                     <geom class="col" type="mesh" mesh="fore_arm_R_col_plate_out" pos="0 0 0"/>
                     <geom class="col" type="mesh" mesh="fore_arm_R_col_plate_face" pos="0 0 0"/>
                     <geom class="col" type="mesh" mesh="fore_arm_R_col_cheek" pos="0 0 0"/>
+                    <site name="occ_fore_arm_R_0" type="cylinder" group="5" size="0.03950 0.03350" pos="0.00000 0.00000 -0.11100" quat="0.000000 1.000000 0.000000 0.000000"/>
+                    <site name="occ_fore_arm_R_1" type="box" group="5" size="0.00430 0.03580 0.03590" pos="-0.00020 0.00330 -0.00004" quat="0.702661 0.079171 -0.079171 -0.702661"/>
+                    <site name="occ_fore_arm_R_2" type="box" group="5" size="0.00397 0.03878 0.03889" pos="-0.00020 0.00009 -0.09253" quat="0.598724 -0.376204 0.598724 0.376204"/>
+                    <site name="occ_fore_arm_R_3" type="box" group="5" size="0.00600 0.03900 0.06607" pos="0.00000 0.00800 -0.03043" quat="-0.000000 0.707107 0.707107 0.000000"/>
                     <body name="forearm_rot_R" pos="0.000000 0.000000 -0.145000">
                       <joint name="forearm_R_roll" type="hinge" axis="0 0 1" range="-1.48353 1.48353" armature="0.0444964" frictionloss="0.8667"/>
                       <inertial pos="-0.000000 0.030606 -0.057425" mass="0.826012" fullinertia="0.000773869566 0.000745561178 0.000680685138 -3.61209495e-12 1.64234309e-12 6.26245491e-05"/>
@@ -388,6 +506,10 @@
                       <geom class="col" type="mesh" mesh="forearm_rot_R_col_plate_out" pos="0 0 0"/>
                       <geom class="col" type="mesh" mesh="forearm_rot_R_col_plate_face" pos="0 0 0"/>
                       <geom class="col" type="mesh" mesh="forearm_rot_R_col_cheek" pos="0 0 0"/>
+                      <site name="occ_forearm_rot_R_0" type="cylinder" group="5" size="0.03950 0.03350" pos="0.00000 0.03400 -0.06000" quat="0.707107 0.707107 0.000000 0.000000"/>
+                      <site name="occ_forearm_rot_R_1" type="box" group="5" size="0.00430 0.02685 0.02692" pos="-0.00008 0.00013 -0.00380" quat="0.183013 0.683013 0.183013 -0.683013"/>
+                      <site name="occ_forearm_rot_R_2" type="box" group="5" size="0.00398 0.03878 0.03889" pos="0.00015 0.00202 -0.06016" quat="-0.282766 -0.648107 0.648107 0.282766"/>
+                      <site name="occ_forearm_rot_R_3" type="box" group="5" size="0.00275 0.03887 0.04875" pos="0.00000 0.00325 -0.05025" quat="-0.000000 0.707107 0.707107 0.000000"/>
                       <body name="wrist_R" pos="0.000000 0.000000 -0.060000">
                         <joint name="wrist_R_flexion" type="hinge" axis="0 1 0" range="-0.43633 0.43633" armature="0.0444964" frictionloss="0.8667"/>
                         <inertial pos="-0.026422 -0.000950 -0.075778" mass="0.942401" fullinertia="0.0012635103 0.00139312615 0.000839842256 2.40715489e-05 -0.000206938428 5.9285031e-05"/>
@@ -396,6 +518,10 @@
                         <geom class="col" type="mesh" mesh="wrist_R_col_plate_out" pos="0 0 0"/>
                         <geom class="col" type="mesh" mesh="wrist_R_col_plate_face" pos="0 0 0"/>
                         <geom class="col" type="mesh" mesh="wrist_R_col_web" pos="0 0 0"/>
+                        <site name="occ_wrist_R_0" type="cylinder" group="5" size="0.03950 0.03350" pos="-0.03400 0.00000 -0.08400" quat="0.500000 0.500000 0.500000 0.500000"/>
+                        <site name="occ_wrist_R_1" type="box" group="5" size="0.00430 0.02685 0.02692" pos="-0.00013 -0.00380 -0.00008" quat="0.183013 -0.683013 0.683013 -0.183013"/>
+                        <site name="occ_wrist_R_2" type="box" group="5" size="0.00398 0.03878 0.03889" pos="-0.00202 -0.00015 -0.08416" quat="0.000000 -0.000000 0.916562 0.399892"/>
+                        <site name="occ_wrist_R_3" type="box" group="5" size="0.02685 0.03756 0.07519" pos="0.00200 -0.00251 -0.04748" quat="-0.009136 0.265754 0.963428 0.033121"/>
                         <body name="wrist_dev_R" pos="0.000000 0.000000 -0.084000">
                           <joint name="wrist_R_deviation" type="hinge" axis="1 0 0" range="-0.34907 0.52360" armature="0.0444964" frictionloss="0.8667"/>
                           <inertial pos="0.004550 -0.016334 -0.052018" mass="0.545989" fullinertia="0.000857471086 0.000752149546 0.000328607549 -4.2431378e-05 -0.000110441346 -0.000181662999"/>
@@ -404,6 +530,10 @@
                           <geom class="col" type="mesh" mesh="wrist_dev_R_col_plate_out" pos="0 0 0"/>
                           <geom class="col" type="mesh" mesh="wrist_dev_R_col_plate_face" pos="0 0 0"/>
                           <geom class="col" type="mesh" mesh="wrist_dev_R_col_web" pos="0 0 0"/>
+                          <site name="occ_wrist_dev_R_0" type="cylinder" group="5" size="0.02750 0.02700" pos="0.00000 -0.02900 -0.07200" quat="0.707107 -0.707107 0.000000 0.000000"/>
+                          <site name="occ_wrist_dev_R_1" type="box" group="5" size="0.00930 0.02685 0.02692" pos="0.00880 -0.00013 -0.00008" quat="0.000000 -0.000000 0.965926 0.258819"/>
+                          <site name="occ_wrist_dev_R_2" type="box" group="5" size="0.00397 0.02735 0.02742" pos="0.00007 0.00097 -0.07214" quat="-0.376203 -0.598724 0.598724 0.376203"/>
+                          <site name="occ_wrist_dev_R_3" type="box" group="5" size="0.02572 0.02641 0.06498" pos="0.00817 0.00122 -0.03507" quat="0.046498 0.932804 -0.332753 -0.130347"/>
                           <body name="hook_R" pos="0.000000 0.000000 -0.072000" quat="0 0 0 1">
                             <joint name="finger_R" type="hinge" axis="0 1 0" range="-1.57080 0.34907" armature="0.00833085" frictionloss="0.8"/>
                             <inertial pos="0.008217 -0.005305 -0.068935" mass="0.266566" fullinertia="0.000525112109 0.000506383924 0.000134025729 -1.16187504e-05 7.68013864e-05 6.44168714e-05"/>
@@ -411,6 +541,9 @@
                             <geom class="col" type="box" size="0.00600 0.03250 0.05500" pos="0.00000 0.00000 -0.05500"/>
                             <geom class="col" type="box" size="0.02000 0.03250 0.00600" pos="0.02600 0.00000 -0.10400"/>
                             <geom class="col" type="cylinder" size="0.01800" fromto="0.00000 0.01500 0.00000 0.00000 -0.01500 0.00000"/>
+                            <site name="occ_hook_R_0" type="box" group="5" size="0.00600 0.03250 0.05500" pos="0.00000 0.00000 -0.05500" quat="1.000000 0.000000 0.000000 0.000000"/>
+                            <site name="occ_hook_R_1" type="box" group="5" size="0.02000 0.03250 0.00600" pos="0.02600 0.00000 -0.10400" quat="1.000000 0.000000 0.000000 0.000000"/>
+                            <site name="occ_hook_R_2" type="cylinder" group="5" size="0.01800 0.01500" pos="0.00000 0.00000 0.00000" quat="0.707107 0.707107 0.000000 0.000000"/>
                             <site name="s_ft_R" type="sphere" pos="0 0 0" size="0.008"/>
                             <site name="s_grip_R" type="box" pos="0.02600 0 -0.05900" size="0.02400 0.03250 0.06300"/>
                           </body>
@@ -545,7 +678,7 @@
   <keyframe>
     <!-- Both hooks latched on rung_front_line_0 (z = 1.00). -->
     <key name="hang_on_rung"
-         qpos="0.431780 0.000379 -0.093808 0.993647 0.000066 -0.112539 -0.000006 -0.000003 -2.797114 -0.000073 0.000180 -0.006550 -0.086958 -0.018658 0.002329 0.013055 -2.797117 0.000125 -0.000165 -0.006547 0.086991 -0.018719 -0.001439 0.013091"
+         qpos="0.431765 -0.000106 -0.094244 0.993727 -0.000000 -0.111835 0.000000 0.000001 -2.797885 -0.000101 0.000138 -0.007417 -0.087056 -0.020900 0.001228 0.014737 -2.797884 0.000101 -0.000138 -0.007416 0.087055 -0.020902 -0.001227 0.014741"
          ctrl="0.000000 -2.792527 0.000000 0.000000 0.000000 -0.087266 0.000000 0.000000 0.000000 -2.792527 0.000000 0.000000 0.000000 0.087266 0.000000 0.000000 0.000000"/>
   </keyframe>
 </mujoco>

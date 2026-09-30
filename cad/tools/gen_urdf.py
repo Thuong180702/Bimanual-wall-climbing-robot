@@ -21,7 +21,7 @@ import trimesh
 from lib.build import BUILDERS, CHILD_OF, fuse, mount_plane
 from lib.collide import col_parts, link_collision
 from lib.motors import MOTORS
-from lib.spec import FIXED, JOINTS, MOTOR_OF, MOUNT_ROT, PICK
+from lib.spec import FIXED, JOINTS, LIDARS, MID360, MOTOR_OF, MOUNT_ROT, PICK
 from massprops import link_props
 
 MM = 0.001
@@ -30,13 +30,22 @@ MM = 0.001
 # VISUAL only - the exact geometry lives in cad/STEP/robot.step.
 TOL, ANG = 0.6, 0.6
 RPM = math.pi / 30.0
-STEPS = {"AK80-64": "ak80_64", "AK60-39": "ak60_39", "AK45-36": "ak45_36"}
+STEPS = {"AK80-64": "ak80_64", "AK60-39": "ak60_39", "AK45-36": "ak45_36", "Mid-360": "mid360"}
 PURCHASED = os.path.abspath(os.path.join(HERE, "..", "STEP", "purchased"))
 _cache = {}
 
 
 def motor_solid(key):
     """The vendor part already put in the canonical joint frame, in mm."""
+    if key == "Mid-360" and key not in _cache:
+        # Livox's STEP tessellates to 54k triangles a unit, and four of them took the
+        # torso's STL past MuJoCo's 200k. This is only looked at: its envelope - the
+        # body, the window and the M12 plug - as the STEP measures, in the sensor frame
+        (bx, by, bz), (w0, w1), r = MID360["base"], MID360["window"], MID360["window_r"]
+        _cache[key] = bd.Compound(children=[
+            bd.Pos(0, 0, bz * 500) * bd.Box(bx * 1000, by * 1000, bz * 1000),
+            bd.Pos(0, 0, (w0 + w1) * 500) * bd.Cylinder(r * 1000, (w1 - w0) * 1000),
+            bd.Pos(36.35, 0, 12.0) * bd.Box(7.9, 16.0, 16.0)])
     if key not in _cache:
         s = bd.import_step(os.path.join(PURCHASED, STEPS[key] + ".step"))
         # The AK60-39 file models every screw: 51 solids, 2428 faces, and a
@@ -67,6 +76,10 @@ def link_visual(link):
         kids.append(bd.Location(bd.Plane(
             origin=tuple(v * 1000 for v in m.origin),
             x_dir=m.x_dir, z_dir=m.z_dir)) * motor_solid(MOTOR_OF[cj[0]]))
+    for host, o, z, x in LIDARS.values():
+        if host == link:
+            kids.append(bd.Location(bd.Plane(origin=tuple(v * 1000 for v in o), x_dir=x, z_dir=z))
+                        * motor_solid("Mid-360"))
     # a compound, not a boolean union: this mesh is only ever looked at, and
     # fusing a 2400-face vendor solid into a bracket buys nothing.
     return bd.Compound(children=kids)
@@ -146,8 +159,15 @@ def main():
               '      <material name="aluminium"/>',
               '    </visual>']
         for kind, size, pos, zdir, xhint in link_collision(link):
-            r, p_, y_ = rpy(zdir, xhint)
-            if kind == "cylinder":
+            r, p_, y_ = rpy(zdir, xhint) if kind != "capsule" else (0.0, 0.0, 0.0)
+            if kind == "capsule":
+                # URDF has no capsule: the tube's straight run, its round ends dropped
+                (p0, p1), rad = pos, size[0]
+                zdir = tuple(b - a for a, b in zip(p0, p1))
+                r, p_, y_ = rpy(zdir, None)
+                g = '<cylinder radius="%.6f" length="%.6f"/>' % (rad, math.dist(p0, p1))
+                pos = tuple((a + b) / 2 for a, b in zip(p0, p1))
+            elif kind == "cylinder":
                 g = '<cylinder radius="%.6f" length="%.6f"/>' % size
                 pos = tuple(pos)
             elif kind == "box":

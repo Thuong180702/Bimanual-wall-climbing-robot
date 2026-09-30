@@ -228,6 +228,57 @@ PAYLOAD = [("battery_48V_6Ah", 1.60, (0.0, 0.0, 0.070)),
            ("compute_and_can", 0.55, (0.0, 0.0, 0.140)),
            ("dcdc_and_wiring", 0.35, (0.0, 0.0, 0.040))]
 
+# ------------------------------------------------------------------ lidars
+# Four Livox Mid-360 (livoxtech.com/mid-360/specs; the STEP is Livox's own):
+# 65 x 65 x 60 mm, 265 g, 10 Hz, 200 000 points/s, range precision 3 cm (1 sigma)
+# at 0.2 m, 2 cm at 10 m. The field of view is 360 deg ABOUT ITS OWN AXIS by -7..52
+# deg of elevation, so there is a 38 deg blind cone along the axis, and nothing
+# inside 0.1 m is seen. It mounts by its bottom face only: 4 x M3, 5 mm deep, on
+# 48 x 36 mm, with a dowel hole and a slot on the centre line (measured off the
+# STEP). Livox asks for >= 10 mm of air round it and for a >= 3 mm metal plate
+# with >= 10 000 mm^2 of it in the air, which is why every pad below sits on a
+# plate that size rather than on a bare bracket.
+MID360 = dict(mass=0.265, size=(0.065, 0.065, 0.0601), fov=(-7.0, 52.0), blind=0.10,
+              rate_hz=10.0, range_sig=(0.03, 0.02), holes=0.024, holes_y=0.018,
+              dowel=(0.0, 0.016), slot=(0.0, -0.023), window=(0.033, 0.0601), window_r=0.0255,
+              base=(0.0648, 0.0648, 0.033),   # the body under the window (+ the M12 plug to x 40.3)
+              origin_z=0.047)          # optical origin above the mounting face, estimated
+                                       # from the window (Livox gives only its IMU's
+                                       # offset from it, 44 mm)
+LIDAR_PAD = (0.072, 0.006)             # the pad each one bolts to: side, thickness
+_C45 = math.sqrt(0.5)
+# Sensor frames in their link's frame: (link, the mounting face's centre, the
+# sensor's axis, toward its connector). Chosen by ray-casting the rung plane and
+# the room from the secured hang (2026-09-30), against a first draft with 40 deg
+# wedges on the head and both backs (73 % of the reach box seen, 79 % of the room)
+# and a flat head with two sunk backs (50 %, 87 %): this one sees 75 % and 92 %, and
+# 83 % and 90 % inside the tube cage below (solid rails in its place: 67 %).
+# A lidar standing flat on the head sees only a band round itself - the wall is
+# 6-11 cm in front and the rungs above fall in the 38 deg blind cone - so the head
+# carries two, on a roof, one 45 deg toward the wall and one 45 deg away. Nothing
+# stands proud of the chest or the back: the chest is 11-113 mm from the wall
+# while climbing, so the chest lidar and the back one are sunk into the empty bay
+# under the shoulder actuators, back to back, only their windows outside, and
+# a cage of tube stands proud of all four (lidar.cage).
+LIDARS = {
+    "lidar_head_front": ("torso_upper", (0.030, 0.0, 0.252), (_C45, 0.0, _C45), (_C45, 0.0, -_C45)),
+    "lidar_head_back": ("torso_upper", (-0.030, 0.0, 0.252), (-_C45, 0.0, _C45), (-_C45, 0.0, -_C45)),
+    "lidar_chest": ("torso_upper", (0.040, 0.0, 0.068), (1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),
+    "lidar_back": ("torso_upper", (-0.040, 0.0, 0.068), (-1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),
+}
+# A cage of bent 6061 tube guards the four: one bar per corner of the torso, and a
+# ring over the head joining their tops. Each bar leaves the front (back) panel's
+# bottom band, turns up, runs `standoff` proud of the panel (its outer surface 10 mm
+# ahead of the most either lidar stands out), jogs inward from y to head_y between
+# the two heights of `jog`, and rises to the ring. Inward because the raised upper
+# arms pass the head: at +-71 mm above the lid a guard touched them in 1130 of 3000
+# poses near the hang, at +-50 in none. One bar, not a chest guard and a head guard:
+# two would each turn back into the panel at the lid and leave a dip there that a
+# rung could settle into, against the head lidar's lower edge. A strut ties each bar
+# to the panel's top band at z strut.
+GUARD = dict(tube_d=0.016, tube_t=0.002, standoff=0.040, bend_r=0.020, y=0.071, head_y=0.050,
+             foot_z=0.011, jog=(0.190, 0.230), strut_z=0.2095, ring_z=0.345)
+
 # Where along its own axis an actuator's OUTPUT FLANGE sits, measured from the
 # joint origin in the body_dir direction, metres. The joint axis is a line, so
 # sliding the actuator along it changes nothing kinematically - it is free

@@ -21,17 +21,31 @@ at 88 % of peak torque doing it.
 The HOOKS are the exception: their whole job is the throat between the palm
 and the lip, and a convex hull fills it in. They keep the two explicit boxes
 the controller and the RL work were built on, verbatim.
-"""
-import re
 
+So is the lidar CAGE: a bent tube's hull is a slab, and the ring's a lid over the
+head. Each tube is capsules along its centre line (lidar.guard_segments), exact
+but at the bends. The four Mid-360s are a box and a cylinder each, as their STEP
+measures. What holds them inside the torso - the hats under the chest and the back
+lidar - meets nothing, and the head's roof (plate, pads, gussets) is one hull.
+"""
+import functools, re
+
+from . import lidar
 from .build import BUILDERS, CHILD_OF, mount_plane
-from .spec import BODY_DIR, HOOK, IFACE, MOTOR_OF
+from .spec import BODY_DIR, GUARD, HOOK, IFACE, LIDARS, MID360, MOTOR_OF
 
 MM = 0.001
 
 
 def link_collision(link):
     """[(kind, size, pos, z_dir, x_dir)] in the link frame, metres."""
+    return [g for _, g in named_collision(link)]
+
+
+@functools.lru_cache(maxsize=None)
+def named_collision(link):
+    """link_collision with a name for the geoms other tools find by it (None for
+    the rest): '<lidar>_body' / '_window', and each guard tube's own"""
     out = []
     for cj in CHILD_OF.get(link, []):
         key = MOTOR_OF[cj[0]]
@@ -53,10 +67,33 @@ def link_collision(link):
     else:
         for name, _ in col_parts(link):
             out.append(("mesh", (name,), (0.0, 0.0, 0.0), (0, 0, 1), (1, 0, 0)))
+    out = [(None, g) for g in out]
+    for name, (host, o, z, x) in LIDARS.items():
+        if host != link:
+            continue
+        (bx, by, bz), (w0, w1), r = MID360["base"], MID360["window"], MID360["window_r"]
+        at = lambda h: tuple(o[i] + z[i] * h for i in range(3))
+        out.append((name + "_body", ("box", (bx, by, bz), at(bz / 2), z, x)))
+        out.append((name + "_window", ("cylinder", (r, w1 - w0), at((w0 + w1) / 2), z, None)))
+    if link == "torso_upper":
+        for name, p0, p1 in lidar.guard_segments():
+            out.append((name, ("capsule", (GUARD["tube_d"] / 2,), (p0, p1), None, None)))
     return out
 
 
+@functools.lru_cache(maxsize=None)
 def col_parts(link):
-    """[(mesh name, solid in metres)], one per CAD part of a non-hook link"""
-    return [("%s_col_%s" % (link, re.sub(r"\W+", "_", k)), v)
-            for k, v in BUILDERS[link]().items() if v is not None]
+    """[(mesh name, solid in metres)], one per CAD part of a non-hook link - but the
+    lidar mounts: the cage is capsules (link_collision), the hats inside the torso
+    nothing, and the head's roof one part"""
+    parts, roof = [], []
+    for k, v in BUILDERS[link]().items():
+        if v is None or k.startswith("guard_") or k.startswith(("lidar_chest", "lidar_back")):
+            continue
+        if k.startswith("lidar_head"):
+            roof.append(v)
+            continue
+        parts.append(("%s_col_%s" % (link, re.sub(r"\W+", "_", k)), v))
+    if roof:
+        parts.append(("%s_col_lidar_head_roof" % link, sum(roof[1:], roof[0])))
+    return parts
