@@ -1,0 +1,47 @@
+# FAST-LIO2 for the four simulated Mid-360 on the upper torso, read as one merged cloud.
+# From FAST_LIO's own config/mid360.yaml and launch/mapping_mid360.launch; what differs
+# says why. Loaded at the root of the parameter server (FAST-LIO reads global names).
+common:
+    lid_topic:  "/livox/lidar"
+    imu_topic:  "/livox/imu"
+    time_sync_en: false
+    time_offset_lidar_to_imu: 0.0
+
+preprocess:
+    lidar_type: 1                # Livox CustomMsg
+    scan_line: 4                 # a point's `line` says which of the four lidars it came from
+    blind: 0.05                  # the cloud is in the IMU's frame, the torso's middle, so its
+                                 # 0.5 m would cut rungs in reach; the robot's own returns are
+                                 # removed before it (rl/slam_test.py, the self-filter)
+
+mapping:
+    acc_cov: 0.1
+    gyr_cov: 0.1
+    b_acc_cov: 0.0001
+    b_gyr_cov: 0.0001
+    fov_degree:    360
+    det_range:     40.0          # the Mid-360's range at 10 % reflectivity
+    extrinsic_est_en:  false
+    extrinsic_T: [ 0.0, 0.0, 0.0 ]       # every point is already in the IMU's frame: the
+    extrinsic_R: [ 1, 0, 0,              # four lidars' extrinsics are the CAD's
+                   0, 1, 0,
+                   0, 0, 1]
+
+publish:
+    path_en:  false
+    scan_publish_en:  true
+    dense_publish_en: true       # every point, in the map frame: what the rung map is built from
+    scan_bodyframe_pub_en: false
+
+pcd_save:
+    pcd_save_en: false
+    interval: -1
+
+# mapping_mid360.launch's, but the voxels: 0.5 m is for outdoors, and a rung is 30 mm
+feature_extract_enable: false
+point_filter_num: 1
+max_iteration: 3
+filter_size_surf: 0.1
+filter_size_map: 0.1
+cube_side_length: 1000.0
+runtime_pos_log_enable: false

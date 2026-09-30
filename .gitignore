@@ -19,3 +19,6 @@ cad/vendor/
 #   python cad/tools/gen_urdf.py && python urdf/_gen_scene.py
 cad/STEP/
 cad/tmp/
+
+# the Mid-360 scan pattern (rl/slam_test.py fetches it), not ours to redistribute
+slam/vendor/
