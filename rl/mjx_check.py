@@ -13,7 +13,7 @@ each gets its own check, because a failure in one is invisible to the others:
 
   task      the port. ClimbTask runs on C MuJoCo; at every control step its state
             is handed to the JAX task (`mjx.put_data`) with the same substep
-            books and the same SLAM noise, and every observation, reward, book and
+            books and the same noise draws (sensors, SLAM, map), and every observation, reward, book and
             termination must come out equal. float64, so equal means ~1e-9.
   physics   the engine. The same simplified robot in C MuJoCo and in MJX (float32,
             a few solver iterations): the secured hang, a still hang, a side pull
@@ -41,13 +41,13 @@ RUN = os.path.join(os.path.dirname(__file__), 'fixtures', 'win17')
 
 
 def _task(k, xml=None, seed=0):
-    """a C ClimbTask whose SLAM noise comes from `seed`. Every check here is a function
+    """a C ClimbTask whose noise comes from `seed`. Every check here is a function
     of the code: unseeded, a policy's gait -- and what the model check counts along
     it -- came out different on every run (lesson 1's wrist on the rung: 2 % one run,
     9 % the next)."""
     from .climb_task import ClimbTask
     t = ClimbTask(k, visual=False, xml=xml)
-    t.env._slam_rng = np.random.default_rng(seed)
+    t.rng = np.random.default_rng(seed)
     return t
 
 
@@ -99,7 +99,7 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
     from mujoco import mjx
     from .climb_task import ClimbTask
     from .mjx_scene import c_path
-    from .mjx_task import MjxClimb, LESSON_KEYS, REASONS
+    from .mjx_task import MjxClimb, LESSON_KEYS, REASONS, N_RUNG
 
     print(f"task: the JAX task on {jax.devices()[0].device_kind}, float64 -- compiling first")
     task = MjxClimb()
@@ -119,18 +119,13 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
         li = LESSON_KEYS.index(k)
         t = _task(k, c_path(k))
         rec = {}
-        slam, sense = t.env.slam, t._sense
-
-        def slam_rec():
-            p, R = slam()
-            rec['noise'] = p - t.env.data.xpos[t.env.base]
-            return p, R
+        sense = t._sense
 
         def sense_rec():
             rec['w'] = t._w_sum.copy()
             return sense()
 
-        t.env.slam, t._sense = slam_rec, sense_rec
+        t._sense = sense_rec
         mc = t.env.model
         T = None
 
@@ -139,9 +134,9 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
             o, _ = t.reset()
             T = task.tables._replace(tau_idle=task.tables.tau_idle.at[li].set(t.tau_idle),
                                      fight_idle=task.tables.fight_idle.at[li].set(t.fight_idle))
+            ep = dict(t.ep_z, map=np.pad(t.ep_z['map'], ((0, N_RUNG - len(t.segs)), (0, 0))))
             st, oj = start(T, li, mjx.put_data(mc, t.env.data), jp.asarray(t.ctrl),
-                           jp.asarray(t.env._no_grip_t), jax.random.PRNGKey(0),
-                           jp.asarray(rec['noise']))
+                           jp.asarray(t.env._no_grip_t), jax.random.PRNGKey(0), ep, t.z)
             assert close('obs', oj, o, 1e-5), f"lesson {k}: reset observation differs"
             return st, o
 
@@ -169,11 +164,12 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
             st = st._replace(d=mjx.put_data(mc, t.env.data), ctrl=jp.asarray(t.ctrl),
                              no_grip_t=jp.asarray(t.env._no_grip_t))
             st, oj, rj, tej, trj, ij = update(T, st, jp.asarray(a), t._flight,
-                                             jp.asarray(rec['w']), jp.asarray(rec['noise']))
+                                             jp.asarray(rec['w']), t.z)
             n += 1
             why = REASONS[int(ij['reason'])]
             ok = [close('obs', oj, o, 1e-5), close('reward', rj, r),
                   close('hold points', np.asarray(st.hold_pt), [t.hold[s][1] for s in 'LR']),
+                  np.array_equal(np.asarray(st.seen)[:len(t.segs)], t.seen),
                   close('attitude', np.asarray(st.Rf), t._Rf),
                   close('bank', ij['bank'], info['bank']), close('slide', ij['slide'], info['slide']),
                   close('credit', ij['credit'], info['credit']),

@@ -4,7 +4,14 @@
     step(action) -> obs, reward, terminated, truncated, info
 
 Observation is HARDWARE-LEGAL only -- encoders, IMU (raw), F/T, grip pads, own
-setpoints, plus the goal expressed relative to the estimated hand poses. The pose
+setpoints, plus the goal expressed relative to the estimated hand poses -- and every
+sensor in it reads as badly as a real one: white noise and a per-episode offset
+(SEN_SIG, SEN_BIAS), a SLAM that drifts, comes with each 10 Hz lidar frame, lands
+SLAM_LAG late and is believed along a rung only where a wall faces that way
+(`along_seen`: FAST-LIO2 cannot see along a flat wall), and a wall map that holds only
+what the four Mid-360 have seen past the
+robot's own body (rl.lidar), off by MAP_* rung by rung. `ClimbTask(noise=False)` turns
+the noise off; the frame rate, the lag and what the lidars can see stay. The pose
 estimate is the same anchor-rooted Estimator the classical controller uses: the
 world is known through the hold the robot last latched, exactly what the wall map
 plus encoders give on hardware. Ground truth (data.xpos, env.latched) is used only
@@ -16,10 +23,12 @@ fingers included.
 
     python -m rl.climb_task   # smoke check: every lesson hangs stable, API runs
 """
+from fractions import Fraction
 import numpy as np, mujoco
 from controller.kinematics import Estimator, JOINTS, THROAT_PT, triad, rotvec
-from .lessons import LESSONS, xml_path, rung_segments, spec_of
+from .lessons import LESSONS, xml_path, rung_segments, spec_of, canon_axis
 from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET, GRIP_CLIFF
+from . import lidar
 
 FRAME_SKIP = 20          # sim steps per control step: 0.002 s x 20 = 25 Hz
 CONTROL_DT = FRAME_SKIP * 0.002   # s; scene.xml's timestep, asserted in ClimbTask
@@ -31,6 +40,41 @@ SLAM_TAU = 1.0           # s: how slowly the anchor's map point follows the SLAM
                          # 48 mm on lesson 1.2) and, alone, stopped a fresh policy from
                          # learning lesson -1 (bisect A: 0 % for 1M steps; C at 1.0 s:
                          # passed at 0.3M). Mechanism unknown; see `_sense` and the README
+
+# --- what the real sensors add to the truth. None of it reaches the reward, which
+# reads the truth. ponytail: datasheet-order guesses, not one measured on this robot or
+# its lidar stack -- calibrate each on the hardware before trusting a sim-to-real number.
+SLAM_SIG = 0.02          # m, one sigma per axis: how far the lidar SLAM's base position is off
+SLAM_DRIFT_TAU = 5.0     # s it stays off by about the same: a SLAM drifts, it does not
+                         # jitter, so SLAM_TAU's filter cannot average its error away
+SCAN = Fraction(round(CONTROL_DT * 1e6) * lidar.SCAN_HZ, 10 ** 6)   # lidar frames per control
+                         # step: 2/5, a Mid-360 frame every 2 or 3 senses (`scan_due`)
+SLAM_LAG = 2             # control steps a fix is old when it lands (80 ms): the four frames
+                         # merged and registered on the onboard computer, 30-60 ms for
+                         # FAST-LIO2-class odometry on an embedded CPU, plus the driver, rounded
+                         # up. It is held against the estimate of the moment it describes
+SLAM_RHO = float(np.exp(-1.0 / (lidar.SCAN_HZ * SLAM_DRIFT_TAU)))   # frame-to-frame correlation
+SLAM_GAIN = 1.0 / (lidar.SCAN_HZ * SLAM_TAU)   # how far each fix pulls the anchor
+assert 1 <= SLAM_LAG <= SCAN.denominator // SCAN.numerator, \
+    "a fix must be held against an estimate that already has the one before it"
+FACING = 0.5             # |cos| between a wall's normal and a rung's axis for that wall to
+                         # tell the SLAM where along the rung it is (`along_seen`)
+MAP_SIG = 0.01           # m: a rung's axis in the lidar map, off across the axis. Not the
+                         # points' own noise -- 2-3 cm a point (Mid-360, 1 sigma) fitted over
+                         # the hundreds a rung gets in a second is 1-2 mm -- but the frames'
+                         # registration into one map, and the four lidars' extrinsics
+MAP_ROT_SIG = 0.0175     # rad (1 deg): its direction -- 5 mm at each end of a 0.35 m rung
+MAP_END_SIG = 0.01       # m: each END along the axis: the angular precision (0.15 deg, 3 mm
+                         # at 1 m) and the points' spacing along it. Where an end is HIDDEN
+                         # is rl.lidar's business: the map ends where the seen part does
+SEN_SHAPE = dict(q=(17,), dq=(17,), tau=(17,), acc=(3,), gyro=(3,), mag=(3,),
+                 f=(2, 3), t=(2, 3), pad=(2,))
+SEN_SIG = dict(q=0.002, dq=0.05, tau=0.3, acc=0.05, gyro=0.005, mag=0.005,   # white, a reading
+               f=0.5, t=0.02, pad=1.0)   # rad, rad/s, N.m, m/s^2, rad/s, field (0.5), N, N.m, N
+SEN_BIAS = dict(q=0.003, acc=0.1, gyro=0.005, mag=0.02, f=2.0, t=0.1)   # one per episode:
+                         # encoder zero, IMU offsets, the motors' hard iron, F/T drift
+STEP_NOISE = dict(slam=(3,), w=(3,), sen=SEN_SHAPE)   # standard normals drawn every sense
+
 AHRS_TAU = 2.0           # s: how slowly the torso attitude leans on the accelerometer.
                          # The bare triad (accel + mag, no state) is what the classical
                          # controller uses, and while the body swings it is wrong by
@@ -64,6 +108,85 @@ N_NEAR = 3               # nearest rungs reported per hand. Without these the po
                          # memorise each fixed layout. Three is what a hand chooses
                          # between; the map supplies them, so this is hardware-legal.
 FAR = np.array([9.0, 9.0, 9.0])   # padding for a scene with fewer than N_NEAR rungs
+
+
+def scan_due(k):
+    """does a lidar frame land at sense k (0: the reset's)? Integer arithmetic, so
+    rl.mjx_task calls it on jax arrays"""
+    return (k * SCAN.numerator) // SCAN.denominator != ((k - 1) * SCAN.numerator) // SCAN.denominator
+
+
+def along_seen(a, normals):
+    """Can the lidar SLAM tell where the robot is ALONG a rung of axis `a`? Only if a wall
+    faces that way. A flat wall and the horizontal rungs on it constrain every direction
+    across the rungs and none along them: measured with FAST-LIO2 on simulated Mid-360s
+    (rl.slam_test), a single wall drifts 0.2-2.5 m rms along the rung in 10 s, and a
+    corner holds 5 mm. So the estimator takes the SLAM's word along a rung only when a
+    wall's normal is within 60 deg of it (FACING), and otherwise its own kinematics'.
+    Arithmetic only (rl.mjx_task)."""
+    return any(abs(n @ a) > FACING for n in normals)
+
+
+def wall_normals(m):
+    """the unit normal of every wall of a model (geoms named wall_*): a box's thin axis,
+    a plane's own z"""
+    out = []
+    for g in range(m.ngeom):
+        if not (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or '').startswith('wall_'):
+            continue
+        R = np.zeros(9)
+        mujoco.mju_quat2Mat(R, m.geom_quat[g])
+        k = 2 if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_PLANE else int(np.argmin(m.geom_size[g]))
+        out.append(R.reshape(3, 3)[:, k].copy())
+    return out
+
+
+def episode_noise(n_rung):
+    """the shapes of the standard normals drawn once an episode"""
+    return dict(map=(n_rung, 8), slam=(3,), bias={k: SEN_SHAPE[k] for k in SEN_BIAS})
+
+
+def sensed(true, z, bias):
+    """what the sensors read: the truth, SEN_SIG x `z` of white noise and SEN_BIAS x
+    `bias` of this episode's offset. Arithmetic only, so rl.mjx_task calls it on jax
+    arrays."""
+    return {k: v + SEN_SIG[k] * z[k] + (SEN_BIAS[k] * bias[k] if k in SEN_BIAS else 0.0)
+            for k, v in true.items()}
+
+
+def sensed_rates(w_sum, z, bias):
+    """the gyro summed over a control step's FRAME_SKIP readings, each off by the bias
+    and by its own white noise"""
+    return w_sum + FRAME_SKIP * SEN_BIAS['gyro'] * bias + FRAME_SKIP ** 0.5 * SEN_SIG['gyro'] * z
+
+
+def slam_drift(e, z):
+    """the SLAM's position error one frame later: SLAM_SIG in size, SLAM_DRIFT_TAU long"""
+    return SLAM_RHO * e + SLAM_SIG * (1.0 - SLAM_RHO ** 2) ** 0.5 * z
+
+
+def noisy_map(segs, goals, z, ext=None):
+    """the wall map as the lidar fitted it: of each rung [(centre, unit axis, half
+    length)] the span it has seen, `ext` = (lo, hi) along its axis from its centre
+    (rl.lidar.extent; None: all of it), moved across its axis by MAP_SIG, turned about
+    the rung's centre by MAP_ROT_SIG, and each end moved along it by MAP_END_SIG; a
+    goal moves with the rung it sits on, seen or not -- it is given, not seen. `z`:
+    (n, 8) standard normals, a row per rung -> (segs, goals)"""
+    out = []
+    for i, ((c, a, h), zi) in enumerate(zip(segs, z)):
+        R = _rotm(MAP_ROT_SIG * zi[3:6])
+        n = MAP_SIG * zi[:3]
+        lo, hi = MAP_END_SIG * zi[6], MAP_END_SIG * zi[7]
+        a2 = canon_axis(R @ a)
+        u0, u1 = (-h, h) if ext is None else (ext[0][i], ext[1][i])
+        rigid = c + (n - (n @ a) * a) + 0.5 * (lo + hi) * a2
+        out.append((R, rigid, rigid + 0.5 * (u0 + u1) * (R @ a), a2,
+                    max(0.5 * (u1 - u0) + 0.5 * (hi - lo), 0.0)))
+    g2 = []
+    for g in goals:
+        i = int(np.argmin([np.linalg.norm(g - (c + np.clip((g - c) @ a, -h, h) * a)) for c, a, h in segs]))
+        g2.append(out[i][1] + out[i][0] @ (g - segs[i][0]))
+    return [o[2:] for o in out], g2
 
 
 def _rung_points(segs):
@@ -383,11 +506,14 @@ GRIP_STOP = np.radians(-37.0)   # finger setpoint limit: 3 deg inside GRIP_BAND'
 
 
 class ClimbTask:
-    def __init__(self, lesson=1, visual=True, xml=None, mirror=False):
+    def __init__(self, lesson=1, visual=True, xml=None, mirror=False, noise=True):
         """`xml`: another scene of the same lesson -- `rl.mjx_scene.c_path`'s simplified
         robot, for the cross-checks against MJX. `mirror`: the lesson toward the
-        robot's right (rl.lessons.mirrored)"""
+        robot's right (rl.lessons.mirrored). `noise=False`: sensors, SLAM and map exact
+        (the SLAM's rate and lag stay)"""
         self.lesson = lesson
+        self.noise = noise
+        self.rng = np.random.default_rng()
         self.spec = spec_of(lesson, mirror)
         self.env = ClimbingEnv(xml=xml or xml_path(lesson, mirror), success_z=1e9,
                                timeout_s=self.spec['timeout'],
@@ -446,40 +572,96 @@ class ClimbTask:
         self.tau_idle = None               # N.m, set by the first reset: the secured hang
         self.fight_idle = None             # N, its internal force (`_internal`), likewise
         self._ft = {s: self.env.model.site('s_ft_' + s).id for s in 'LR'}
+        # what the lidars look at: the rungs as they are (rl.lidar), and the walls
+        self.rig = lidar.Rig(m)
+        self.walls_n = wall_normals(m)
+        v = list(self.segs.values())
+        self._rungs = (np.array([c for c, _, _ in v]), np.array([a for _, a, _ in v]),
+                       np.array([h for _, _, h in v]),
+                       np.array([m.geom_size[m.geom(nm).id][0] for nm in self.segs]),
+                       np.ones(len(v), bool))
         self.obs_dim = len(self.reset()[0])
 
     # ---- hardware-legal sensing -------------------------------------------
+    def _in_band(self, side):
+        """the finger in GRIP_BAND, as its encoder reads"""
+        return bool(GRIP_BAND[0] <= self.sen['q'][JOINTS.index('finger_' + side)] <= GRIP_BAND[1])
+
     def _confirmed(self, side):
         """same latch evidence the classical controller trusts: pad + finger + load"""
-        h = self.env.hand(side)
-        ang = self.env.sensor('enc_finger_' + side)[0]
-        return bool(h['pad'] > 20.0 and GRIP_BAND[0] <= ang <= GRIP_BAND[1]
-                    and np.linalg.norm(h['force']) > 12.0)
+        i = 'LR'.index(side)
+        return bool(self.sen['pad'][i] > 20.0 and self._in_band(side)
+                    and np.linalg.norm(self.sen['f'][i]) > 12.0)
 
     def _touching(self, side):
         """is the hook still on its rung, loaded or not? Pad contact and the finger
         in the band. `_confirmed` asks for HOLD_LOAD-scale force, which a hook that
         has handed its weight to the other one no longer has -- but it has not gone
         anywhere, and its hold is still the map's best anchor."""
-        return bool(self.env.hand(side)['pad'] > 2.0 and self._gripping(side))
+        return bool(self.sen['pad']['LR'.index(side)] > 2.0 and self._in_band(side))
+
+    def _normals(self, shapes):
+        """standard normals in `shapes` (a dict, nested), zeros for noise=False"""
+        return {k: self._normals(v) if isinstance(v, dict)
+                else self.rng.standard_normal(v) if self.noise else np.zeros(v)
+                for k, v in shapes.items()}
+
+    def _hung(self, side):
+        """(rung name, point on its map axis) the keyframe hangs this hook on -- an
+        initial condition you know on hardware too, because you hung it there"""
+        nm, gap = self._seat(side)
+        assert gap < RUNG_TOL, "keyframe hooks are not on a rung"
+        c, a, h = self.map[nm]
+        return nm, c + np.clip((self._throat_true(side) - c) @ a, -h, h) * a
+
+    def _look(self):
+        """a lidar frame: what the four see from here joins the map, which spans each
+        rung from the first seen cell to the last (rl.lidar)"""
+        d = self.env.data
+        self.seen |= lidar.visible(np, self.rig, d.site_xpos, d.site_xmat, *self._rungs)
+        m, self.map_goals = noisy_map(list(self.segs.values()), self.goals, self.ep_z['map'],
+                                      lidar.extent(np, self.seen, self._rungs[2]))
+        self.map = dict(zip(self.segs, m))
+        self.map_seen = {nm for nm, sn in zip(self.segs, self.seen) if sn.any()}
 
     def _nearest_rung(self, p):
-        """(rung name, point on its axis) if p is within RUNG_TOL of one, else None"""
+        """(rung name, point on its axis) if p is within RUNG_TOL of a rung the map has,
+        else None"""
         best = None
-        for nm, (c, a, h) in self.segs.items():
+        for nm, (c, a, h) in self.map.items():
+            if nm not in self.map_seen:
+                continue
             q = c + np.clip((p - c) @ a, -h, h) * a
             d = float(np.linalg.norm(p - q))
             if best is None or d < best[0]:
                 best = (d, nm, q)
-        return (best[1], best[2]) if best[0] < RUNG_TOL else None
+        return (best[1], best[2]) if best and best[0] < RUNG_TOL else None
 
     def _sense(self):
-        """read sensors, update the estimate, and keep the hold/anchor books"""
+        """read sensors, update the estimate, and keep the hold/anchor books.
+
+        `self.true` is what the sensors would read if they were perfect -- the reward's
+        -- and `self.sen` what they do read, `sensed`: everything below and the
+        observation see only that."""
+        if scan_due(self._k):
+            self._look()
         enc = self.env.encoders()
-        self.q = np.array([enc[j][0] for j in JOINTS])
-        self.dq = np.array([enc[j][1] for j in JOINTS])
-        self.tau = np.array([enc[j][2] for j in JOINTS])
-        self.imu_s = self.env.imu(raw_only=True)
+        imu = self.env.imu(raw_only=True)
+        hand = [self.env.hand(s) for s in 'LR']
+        self.true = dict(q=np.array([enc[j][0] for j in JOINTS]),
+                         dq=np.array([enc[j][1] for j in JOINTS]),
+                         tau=np.array([enc[j][2] for j in JOINTS]),
+                         acc=imu['accel'], gyro=imu['gyro'], mag=imu['mag'],
+                         f=np.stack([h['force'] for h in hand]),
+                         t=np.stack([h['torque'] for h in hand]),
+                         pad=np.array([h['pad'] for h in hand]))
+        z = self.z = self._normals(STEP_NOISE)
+        bias = self.ep_z['bias']
+        self.sen = sensed(self.true, z['sen'], bias)
+        self.q, self.dq, self.tau = self.sen['q'], self.sen['dq'], self.sen['tau']
+        self.imu_s = dict(accel=self.sen['acc'], gyro=self.sen['gyro'], mag=self.sen['mag'])
+        if self._k == 0:                  # at rest the triad is right, as far as it reads
+            self._Rf = triad(self.imu_s['accel'], self.imu_s['mag'])
         # Attitude: the gyro carries it across the step, the IMU triad pins the
         # drift. The triad alone reads the body's own swing as tilt -- 26.5 deg rms,
         # the free hand 91-130 mm off; filtered it reads 1.1 deg on a still hang and
@@ -491,11 +673,10 @@ class ClimbTask:
         # changes each sufficient: this and SLAM_TAU 0.3), against 0.3-0.4M with
         # this filter. Not the observation's scale (a variance floor in VecNormalize
         # did not help), mechanism unknown -- see the README. So this is what the
-        # policy trains under; the SLAM attitude is `self.env.slam()[1]`, unused.
+        # policy trains under, and the SLAM's attitude is not modelled.
         dt = FRAME_SKIP * self.dt
-        self._Rf = self._Rf @ _rotm(self._w_sum * (dt / FRAME_SKIP))
+        self._Rf = self._Rf @ _rotm(sensed_rates(self._w_sum, z['w'], bias['gyro']) * (dt / FRAME_SKIP))
         self._w_sum[:] = 0.0
-        p_slam, _ = self.env.slam()
         R_tri = triad(self.imu_s['accel'], self.imu_s['mag'])
         self._Rf = self._Rf @ _rotm((dt / AHRS_TAU) * rotvec(self._Rf.T @ R_tri))
         self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1],
@@ -511,12 +692,20 @@ class ClimbTask:
         # free hand WORSE (p50 36 -> 46 mm, p90 80 -> 94 on the mac20 policy) -- a
         # translation at the base cannot stand in for the attitude's error at the
         # hands, and off the axis that is most of the discrepancy.
-        dp = p_slam - self.est.body_pos(self.est.base)
-        nm, pt = self.hold[self.anchor]
-        ax = self.segs[nm][1]
-        self.hold[self.anchor] = (nm, pt + (dt / SLAM_TAU) * float(dp @ ax) * ax)
-        self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1],
-                        R_torso=self._Rf)
+        #
+        # A fix comes with every lidar frame and describes the body SLAM_LAG steps
+        # ago, so it is held against the estimate of that moment (`_buf`): against
+        # the current one, a body swinging along the rung would read as creep.
+        base = self.env.data.xpos[self.env.base].copy()
+        if self._k == 0:
+            self._buf = [(base, self.est.body_pos(self.est.base))] * SLAM_LAG
+        dp = self._slam_fix()
+        if dp is not None:
+            nm, pt = self.hold[self.anchor]
+            ax = self.map[nm][1]
+            self.hold[self.anchor] = (nm, pt + SLAM_GAIN * float(dp @ ax) * ax)
+            self.est.update(self.q, self.imu_s, self.anchor, self.hold[self.anchor][1],
+                            R_torso=self._Rf)
         # The anchor's hold is otherwise left alone while it holds: re-projecting a
         # hand's own estimate onto its own rung learns nothing. The OTHER hand's hold,
         # while both are seated, comes from arm reach -- exact along the rung,
@@ -549,6 +738,20 @@ class ClimbTask:
             cA = True
         self._both_conf = both
         self._anchor_fresh = cA
+        self._buf = self._buf[1:] + [(base, self.est.body_pos(self.est.base))]
+        self._k += 1
+
+    def _slam_fix(self):
+        """the base's position as the SLAM last reported it, minus the estimate of the
+        moment that report describes, when one lands this sense; else None. Here the
+        SLAM is its error model (`slam_drift`); rl.slam_test puts FAST-LIO in its place."""
+        if not scan_due(self._k):
+            return None
+        self._slam_err = slam_drift(self._slam_err, self.z['slam'])
+        if not along_seen(self.map[self.hold[self.anchor][0]][1], self.walls_n):
+            return None                      # a flat wall: it cannot say (`along_seen`)
+        then, est_then = self._buf[0]
+        return then + self._slam_err - est_then
 
     def _reach_point(self, anchor_pt, L, guess):
         """(rung name, point) for a seated hand exactly L from the anchor's hold.
@@ -568,7 +771,9 @@ class ClimbTask:
         broken rung's gap was never where the policy saw it.
         """
         best = None
-        for nm, (c, a, h) in self.segs.items():
+        for nm, (c, a, h) in self.map.items():
+            if nm not in self.map_seen:
+                continue
             w = c - np.asarray(anchor_pt)
             b = float(w @ a)
             disc = b * b - (float(w @ w) - L * L)
@@ -596,18 +801,20 @@ class ClimbTask:
         also in the observation), negative once past that end.
 
         Estimated, not ground truth: `p` is the estimator's throat and the rung
-        geometry is the wall map, which vision/SLAM supplies on hardware.
+        geometry is the lidar's wall map, as far off as one (`noisy_map`) and holding
+        only what the lidars have seen. A rung not seen yet is not there.
         """
         cand = []
-        for c, a, h in self.segs.values():
+        for nm, (c, a, h) in self.map.items():
             h = max(h - SEAT_IN, 0.0)              # the span a hook can actually sit on
             s = float((p - c) @ a)
             q = c + np.clip(s, -h, h) * a
-            cand.append((float(np.linalg.norm(p - q)), q - p, a, s, h))
-        cand.sort(key=lambda v: v[0])
+            cand.append((float(np.linalg.norm(p - q)) if nm in self.map_seen else np.inf,
+                         q - p, a, s, h))
+        cand.sort(key=lambda v: v[0])              # stable: none seen, the first rung's ends
         out = []
         for i in range(N_NEAR):
-            if i < len(cand):
+            if i < len(cand) and np.isfinite(cand[i][0]):
                 out += [cand[i][1], cand[i][2]]
             else:
                 out += [FAR, np.zeros(3)]
@@ -616,9 +823,9 @@ class ClimbTask:
         return np.concatenate(out)
 
     def _obs(self):
-        hl, hr = self.env.hand('L'), self.env.hand('R')
-        goal = np.concatenate([self.goals[0] - self.est.throat('L'),
-                               self.goals[1] - self.est.throat('R')])
+        s = self.sen
+        goal = np.concatenate([self.map_goals[0] - self.est.throat('L'),
+                               self.map_goals[1] - self.est.throat('R')])
         near = np.concatenate([self._near_rungs(self.est.throat(s)) for s in 'LR'])
         # where the OTHER hand is, from each hand's point of view. It is derivable
         # from the encoders, but only by doing forward kinematics, which is a lot to
@@ -632,10 +839,8 @@ class ClimbTask:
         # float64 at all, so an f64 observation makes `--device mps` fail outright.
         # It is also the SB3/gym convention and halves the rollout buffer.
         return np.concatenate([
-            self.q, self.dq, self.tau, self.ctrl,
-            self.imu_s['accel'], self.imu_s['gyro'], self.imu_s['mag'],
-            hl['force'], hl['torque'], [hl['pad']],
-            hr['force'], hr['torque'], [hr['pad']],
+            s['q'], s['dq'], s['tau'], self.ctrl, s['acc'], s['gyro'], s['mag'],
+            s['f'][0], s['t'][0], s['pad'][:1], s['f'][1], s['t'][1], s['pad'][1:],
             goal, near, other, conf]).astype(np.float32)
 
     # ---- training-time oracle (reward / success only) ----------------------
@@ -931,19 +1136,21 @@ class ClimbTask:
             for j in fi:
                 self.ctrl[j] = GRIP_SET * (i + 1) / n
             self.env.step(self.ctrl)
-        # initial holds: the keyframe hangs both hooks on the start rung -- an
-        # initial condition you know on hardware too, because you hung it there
-        self.hold = {s: self._nearest_rung(self._throat_true(s)) for s in 'LR'}
-        assert all(self.hold.values()), "keyframe hooks are not on a rung"
+        # this episode's map noise, sensor offsets and SLAM error, and the map: what
+        # the lidars see from the hang (the robot has hung there a while)
+        self.ep_z = self._normals(episode_noise(len(self.segs)))
+        self.seen = np.zeros((len(self.segs), lidar.K), bool)
+        self._look()
+        self._slam_err = SLAM_SIG * self.ep_z['slam']
+        self._k = 0                          # senses this episode (`_sense`)
+        self.hold = {s: self._hung(s) for s in 'LR'}
         self.anchor = 'L'
         self._both_conf = False
         self._anchor_fresh = True
-        imu = self.env.imu(raw_only=True)
-        self._Rf = triad(imu['accel'], imu['mag'])   # at rest the triad is right
         self._w_sum[:] = 0.0
         self._sense()
         if self.tau_idle is None:            # deterministic: keyframe + the same secure()
-            self.tau_idle = float(np.abs(self.tau).sum())
+            self.tau_idle = float(np.abs(self.true['tau']).sum())
             self.fight_idle = self._internal()
         self.prev_d, self.prev_live = self._hand_dists(), self._live()
         self.credit = np.zeros(2)            # relative approach earned since the last hold
@@ -1064,14 +1271,14 @@ class ClimbTask:
         bank = float(self.credit[took].sum())
         self.credit[took] = 0.0
         sep_err = self._sep_error(con)
-        effort = max(0.0, float(np.abs(self.tau).sum()) - self.tau_idle)
+        effort = max(0.0, float(np.abs(self.true['tau']).sum()) - self.tau_idle)
         fight = max(0.0, self._internal() - self.fight_idle)
         r = (K_BANK * bank + K_GRAB * float(first.sum())
              + K_REACH * float((self.prev_live - live).sum())
              - K_DANGLE * parked - K_STALE * stale - K_SEP * sep_err
              - K_EFFORT * effort - K_FIGHT * fight - K_TIME - K_FLIGHT * flight
              - K_SLIDE * slide
-             - K_ACT * float(a @ a) - K_VEL * float(self.dq @ self.dq))
+             - K_ACT * float(a @ a) - K_VEL * float(self.true['dq'] @ self.true['dq']))
         self.held, self.prev_d, self.prev_live = held, d, live
         info = {'dist': float(d.sum()), 'live': float(live.sum()), 'lesson': self.lesson,
                 'steps': self.n_steps,
@@ -1437,7 +1644,7 @@ def main():
 
     # The attitude filter must beat the bare triad while the body moves, and must
     # not drift while it hangs still. Random actions swing the body hard.
-    t = ClimbTask(1)
+    t = ClimbTask(1, noise=False)             # the filter, not the IMU's offsets
     t.reset()
     torso = mujoco.mj_name2id(t.env.model, mujoco.mjtObj.mjOBJ_BODY, 'torso_upper')
     rng = np.random.default_rng(5)
@@ -1457,8 +1664,10 @@ def main():
 
     # Odometry by reach: the point on a rung exactly L from the anchor's hold, with
     # the IMU guess deciding only which side. Exact where the guess is 148 mm off.
-    t = ClimbTask(2)
+    t = ClimbTask(2, noise=False)            # the map exact: the geometry is the test
     t.reset()
+    t.seen[:] = True                         # ...all of it: from the hang the lidars miss
+    t._look()                                # seg1's near 2 cm, behind the left upper arm
     c, a, h = t.segs['rung_start']
     pA = c - 0.10 * a                          # the anchor, on the start rung
     T = c + 0.15 * a                           # the truth: 0.25 m further along it
@@ -1492,45 +1701,130 @@ def main():
     obs = []
     for xml in (None, p):
         t = ClimbTask(7, xml=xml)
-        t.env._slam_rng = np.random.default_rng(0)
+        t.rng = np.random.default_rng(0)
         obs.append(t.reset()[0])
     dev = float(np.abs(obs[0] - obs[1]).max())
     assert rev != src and dev < 1e-6, f"the same rungs written end for end change the observation by {dev:.2e}"
     print(f"axis test: lesson 7 with every rung written end for end observes the same ({dev:.1e})")
 
-    # SLAM keeps the anchor honest. The loaded hook creeps along the rung under a
-    # side load and the arm cannot see it: hang, then pull the body along the rung
-    # for 150 steps (the slide test's scenario and force, the hooks drag 25-50 mm).
-    from urdf.climbing_env import SLAM_SIG
-    t = ClimbTask(1)
-    t.reset()
-    t.env._slam_rng = np.random.default_rng(0)   # the test must not be a coin toss
+    # SLAM keeps the anchor honest -- where it can. The loaded hook creeps along the rung
+    # under a side load and the arm cannot see it: hang, then pull the body along the
+    # rung for 150 steps (the slide test's scenario and force, the hooks drag 25-50 mm).
+    # In the corner (lesson 7) a wall faces along the rung and the SLAM says where the
+    # body is along it, and the anchor follows the creep; on a flat wall (lesson 1) it
+    # cannot say (`along_seen`), and the anchor stays where it was, stale by the creep.
+    # With the sensors exact, so this is the mechanism; the sensor test has the noise.
     z = np.zeros(17)
-    ax = t.segs['rung_start'][1]
-    stale = lambda: float((t._throat_true(t.anchor) - t.hold[t.anchor][1]) @ ax)
-    for _ in range(50):
-        t.step(z)
-    wander = []
-    for _ in range(100):
-        t.step(z)
-        wander.append(abs(stale()))
-    p0 = t._throat_true(t.anchor).copy()
-    for _ in range(150):
-        t.env.data.xfrc_applied[t.env.base, :3] = 0.23 * t.weight * ax
-        t.step(z)
-    t.env.data.xfrc_applied[t.env.base, :3] = 0.0
-    crept = float((t._throat_true(t.anchor) - p0) @ ax)
-    # (the wander is mostly the filtered attitude's ~1 deg on the lever from the
-    # anchor to the base, plus ~3 mm of averaged SLAM noise. That lever was 0.5 m;
-    # the real-actuator robot's arm is 116 mm longer and its torso 104 mm taller,
-    # and over SLAM seeds 0-9 the wander reads 15-24 mm, mean 20 -- where the old
-    # 20 mm bound sat for the old robot's ~12)
-    assert max(wander) < 0.030, f"hanging still, the anchor wandered {max(wander)*1e3:.0f} mm"
+
+    def pull(k):
+        t = ClimbTask(k, noise=False)
+        t.reset()
+        ax = t.segs['rung_start'][1]
+        stale = lambda: float((t._throat_true(t.anchor) - t.hold[t.anchor][1]) @ ax)
+        for _ in range(50):
+            t.step(z)
+        wander = []
+        for _ in range(100):
+            t.step(z)
+            wander.append(abs(stale()))
+        p0 = t._throat_true(t.anchor).copy()
+        for _ in range(150):
+            t.env.data.xfrc_applied[t.env.base, :3] = 0.23 * t.weight * ax
+            t.step(z)
+        t.env.data.xfrc_applied[t.env.base, :3] = 0.0
+        return t, ax, stale, max(wander), float((t._throat_true(t.anchor) - p0) @ ax)
+
+    t, ax, stale, wander, crept = pull(1)
+    flat = stale()
+    assert abs(crept) > 0.015, f"the pull crept the hook only {crept*1e3:.0f} mm; the test proves nothing"
+    assert abs(flat - crept) < 0.4 * abs(crept), \
+        f"on a flat wall the anchor moved with the creep ({flat*1e3:+.0f} of {crept*1e3:+.0f} mm): who told it?"
+    t, ax, stale, wander, crept = pull(7)
+    # (the wander is the filtered attitude's ~1 deg on the lever from the anchor to
+    # the base. That lever was 0.5 m; the real-actuator robot's arm is 116 mm longer
+    # and its torso 104 mm taller, and with white SLAM noise on top the wander read
+    # 15-24 mm over seeds 0-9 -- where the old 20 mm bound sat for the old robot's ~12)
+    assert wander < 0.030, f"hanging still, the anchor wandered {wander*1e3:.0f} mm"
     assert abs(crept) > 0.015, f"the pull crept the hook only {crept*1e3:.0f} mm; the test proves nothing"
     assert abs(stale()) < 0.020, f"after {crept*1e3:+.0f} mm of creep the anchor is {stale()*1e3:+.0f} mm stale"
-    print(f"slam test: hanging still the anchor wanders {max(wander)*1e3:.1f} mm under {SLAM_SIG*1e3:.0f} mm "
-          f"of SLAM noise; a {0.23 * t.weight:.0f} N pull creeps the loaded hook {crept*1e3:+.0f} mm along the rung and the "
-          f"anchor follows to within {stale()*1e3:+.0f} mm")
+    print(f"slam test: in the corner, hanging still the anchor wanders {wander*1e3:.1f} mm on an exact "
+          f"SLAM {SLAM_LAG * CONTROL_DT * 1e3:.0f} ms late, and a {0.23 * t.weight:.0f} N pull creeps the "
+          f"loaded hook {crept*1e3:+.0f} mm along the rung and the anchor follows to within "
+          f"{stale()*1e3:+.0f} mm; on a flat wall the SLAM cannot see along the rung and the anchor "
+          f"is left {flat*1e3:+.0f} mm stale")
+
+    # The sensors read what a real robot's would, and only the robot reads them. Off,
+    # the readings are the truth to the bit and the map is the part of each rung the
+    # lidars have seen, on its axis (the goals, carried along with their rungs, to
+    # rounding); the SLAM's error is SLAM_SIG in size and as correlated frame to frame
+    # as SLAM_DRIFT_TAU says; on, hanging still, the anchor goes wherever that drift
+    # takes it along the rung -- no filter averages a drift away, which is the point of
+    # modelling one.
+    assert all(np.array_equal(t.sen[k], v) for k, v in t.true.items())
+    for n, (c, a, h) in t.segs.items():
+        mc, ma, mh = t.map[n]
+        assert (np.array_equal(ma, a) and np.linalg.norm(np.cross(mc - c, a)) < 1e-12
+                and abs((mc - c) @ a) + mh <= h + 1e-12 and n in t.map_seen), n
+    assert np.allclose(t.map_goals, t.goals, rtol=0, atol=1e-12)
+    rng = np.random.default_rng(0)
+    e = [SLAM_SIG * rng.standard_normal(3)]
+    for _ in range(20000):
+        e.append(slam_drift(e[-1], rng.standard_normal(3)))
+    e = np.array(e)
+    rho = np.mean([np.corrcoef(e[:-1, i], e[1:, i])[0, 1] for i in range(3)])
+    assert abs(e.std() / SLAM_SIG - 1.0) < 0.1 and abs(rho - SLAM_RHO) < 0.02, (e.std(), rho)
+    t = ClimbTask(7)                           # a corner: the SLAM sees along the rung
+    t.rng = np.random.default_rng(0)
+    t.reset()
+    stale = lambda: float((t._throat_true(t.anchor) - t.hold[t.anchor][1]) @ ax)
+    off, slam = [], []
+    for _ in range(300):                       # 12 s
+        t.step(z)
+        off.append(stale())
+        slam.append(float(t._slam_err @ ax))
+    # (the anchor reads off by minus the drift, plus the lever of the attitude's error,
+    # which the IMU's offsets move: over seeds 0-2 the correlation is -0.45..-0.68)
+    follow = float(np.corrcoef(off, slam)[0, 1])
+    assert follow < -0.3 and max(map(abs, off)) < 0.1, (follow, max(map(abs, off)))
+    print(f"sensor test: exact when off; SLAM error {e.std()*1e3:.1f} mm, fix-to-fix correlation {rho:.3f} "
+          f"({SLAM_RHO:.3f}); on, hanging still 12 s, the anchor is up to {max(map(abs, off))*1e3:.0f} mm off "
+          f"along the rung, following the drift (correlation {follow:+.2f})")
+
+    # The map holds what the four Mid-360 can see (rl.lidar). Straight along a lidar's
+    # axis is its 38 deg blind cone and nearer than 0.1 m its blind zone, whatever is
+    # there; from the hang every lesson's start rung is in the map; and a map only
+    # grows -- a rung seen once stays, and one hidden behind the arms joins it once
+    # the arms move.
+    t = ClimbTask(6, noise=False)
+    t.reset()
+    d, X = t.env.data, t.env.data.site_xmat.reshape(-1, 3, 3)
+    import copy
+    for s_ in t.rig.lidar:
+        one = copy.copy(t.rig)
+        one.lidar = np.array([s_])                 # this lidar alone
+        o, A = d.site_xpos[s_], X[s_][:, 2]
+        side = np.cross(A, [0.0, 0.0, 1.0] if abs(A[2]) < 0.9 else [1.0, 0.0, 0.0])
+        side /= np.linalg.norm(side)
+        for p_ in (o + 3.0 * A, o + 0.07 * (A + side) / np.linalg.norm(A + side)):
+            v = lidar.visible(np, one, d.site_xpos, d.site_xmat, p_[None], side[None],
+                              np.array([0.01]), np.array([0.015]), np.array([True]))
+            assert not v.any(), (t.env.model.site(s_).name, p_)
+    start = {k: ClimbTask(k, noise=False) for k in sorted(LESSONS)}
+    for k, tk in start.items():
+        tk.reset()
+        assert tk._seat('L')[0] in tk.map_seen, f"lesson {k}: the start rung is not in the map"
+    first, rng = t.seen.copy(), np.random.default_rng(1)
+    for _ in range(150):
+        before = t.seen.copy()
+        _, _, te, tr, _ = t.step(rng.uniform(-0.6, 0.6, 17))
+        assert (t.seen >= before).all(), "the map forgot a cell"
+        if te or tr:
+            break
+    cov = lambda sn: ", ".join(f"{nm[5:]} {100 * v.mean():.0f} %" for nm, v in zip(t.segs, sn))
+    assert t.seen.sum() > first.sum(), "150 steps of flailing showed the lidars nothing new"
+    print(f"lidar test: blind along each axis and inside 0.1 m; every lesson starts with its "
+          f"start rung mapped; lesson 6 from the hang: {cov(first)} -- after 6 s of flailing "
+          f"{cov(t.seen)}")
 
     # Progress is measured at the rung. The win9 dive: the left hook off the end of
     # its segment, level with it (y 0.39), then hanging 0.47 m below the far segment
@@ -1769,7 +2063,7 @@ def main():
                 + K_SEP * info['sep_err'] + K_EFFORT * info['effort']
                 + K_FIGHT * info['fight'] + K_TIME + K_FLIGHT * info['flight']
                 + K_SLIDE * info['slide']
-                + K_ACT * float(a @ a) + K_VEL * float(t.dq @ t.dq))
+                + K_ACT * float(a @ a) + K_VEL * float(t.true['dq'] @ t.true['dq']))
         acc -= K_GRAB * info['first']    # a bounded bonus, two per episode, not a potential
         paid += info['bank']
         slid += info['slide']

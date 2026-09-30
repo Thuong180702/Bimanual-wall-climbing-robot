@@ -5,8 +5,10 @@
 
 A line-for-line port of `climb_task.ClimbTask` -- the same 145 observations (the
 anchor-rooted estimator, the SLAM-tracked anchor, reach odometry, the nearest
-rungs), the same reward books, the same success test and the same terminations
--- on `rl.mjx_scene`'s simplified robot. Every constant is read from climb_task,
+rungs), read through the same sensor, SLAM and map noise (`climb_task.sensed`,
+`slam_drift`, `noisy_map`) and the same lidars (`rl.lidar`, the same lines on jax
+arrays: the map holds what they have seen), the same reward books, the same success
+test and the same terminations -- on `rl.mjx_scene`'s simplified robot. Every constant is read from climb_task,
 so a reward change there is a reward change here. The comments that say WHY a rule
 is what it is live there, next to the numpy version; this file only says where the
 port had to differ.
@@ -20,7 +22,7 @@ What had to change, and nothing else:
     rows after the lessons' that `Batch.set_bank` refills without a recompile.
   * a reset is a copy. ClimbTask.reset hangs the robot from the keyframe and closes
     the fingers over 0.4 s, which is deterministic, so that is done once per lesson
-    at build time (`_secure`) and a reset only copies it and senses (SLAM noise is
+    at build time (`_secure`) and a reset only copies it and senses (the noise is
     drawn fresh).
   * branches are selects: `jp.where` both ways instead of `if`.
   * a finished env resets inside the same jitted step, onto a lesson drawn from the
@@ -44,8 +46,8 @@ jax.config.update('jax_default_matmul_precision', 'highest')
 import mujoco
 from mujoco import mjx
 from controller.kinematics import JOINTS, THROAT_PT, MAG_WORLD
-from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET, SLAM_SIG
-from . import climb_task as ct
+from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET
+from . import climb_task as ct, lidar
 from .lessons import LESSONS, canon_axis
 from .mjx_scene import N_RUNG, PARK, lesson_layout, model as scene_model, slots
 
@@ -103,6 +105,12 @@ def _rotvec(R):
     return ax * jp.where(speed > jp.pi, speed - 2.0 * jp.pi, speed)
 
 
+def _quat_z(q):
+    """the z axis of a unit quaternion's rotation: a plane's normal"""
+    w, x, y, z = q
+    return jp.stack([2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)])
+
+
 def _frame(a, b):
     x = a / jp.sqrt(a @ a)
     z = jp.cross(x, b)
@@ -130,6 +138,17 @@ class State(NamedTuple):
     both_conf: jax.Array
     anchor_fresh: jax.Array
     est_thr: jax.Array         # (2, 3) estimated throats, what the observation reads
+    map_c: jax.Array           # (N_RUNG, 3) the lidar's map of this wall (climb_task.noisy_map):
+    map_a: jax.Array           # centre, axis, half extent
+    map_h: jax.Array
+    map_goals: jax.Array       # (2, 3) the goals on it
+    map_z: jax.Array           # (N_RUNG, 8) its errors, drawn at the reset
+    seen: jax.Array            # (N_RUNG, lidar.K) the cells of each rung the lidars have seen
+    bias: dict                 # this episode's sensor offsets (climb_task.SEN_BIAS)
+    slam_err: jax.Array        # (3,) the SLAM's drifting error
+    k: jax.Array               # senses this episode
+    buf_true: jax.Array        # (SLAM_LAG, 3) the base, and its estimate, the last
+    buf_est: jax.Array         # SLAM_LAG senses: what a late SLAM fix is held against
     # the reward's books (climb_task.reset / step)
     prev_d: jax.Array
     prev_live: jax.Array
@@ -215,7 +234,9 @@ class MjxClimb:
         self.hook_geoms = np.array([sorted(g for g in on_rung if m.geom_bodyid[g] == h)
                                     for h in self.hook])
         self.wall_geom = m.geom('slot_wall').id
+        (self.front_n,) = ct.wall_normals(m)            # the front wall; the slot is its own
         self.weight = float(m.body_subtreemass[self.base] * -m.opt.gravity[2])
+        self.rig = lidar.Rig(m)
         d = mjx.make_data(self.mx)
         con = d._impl.contact
         assert (con.dim == 3).all(), "every pair is condim 3 (rl.mjx_scene._mix)"
@@ -404,6 +425,46 @@ class MjxClimb:
         i = order[0]
         return jp.concatenate([out, jp.stack([hs[i] - s[i], hs[i] + s[i]])])
 
+    def _noisy_map(self, w, z, ext):
+        """climb_task.noisy_map on a wall's rows and the spans seen of them (`ext`,
+        rl.lidar.extent) -> (centres, axes, half extents, goals)"""
+        a = w.rung_a
+        R = jax.vmap(_rotm)(ct.MAP_ROT_SIG * z[:, 3:6])
+        a2 = jp.einsum('rij,rj->ri', R, a)
+        big = jp.take_along_axis(a2, jp.argmax(jp.abs(a2), axis=1)[:, None], axis=1)
+        a2 = jp.where(big < 0.0, -a2, a2)                                   # canon_axis
+        n = ct.MAP_SIG * z[:, :3]
+        lo, hi = ct.MAP_END_SIG * z[:, 6], ct.MAP_END_SIG * z[:, 7]
+        rigid = w.rung_c + (n - (n * a).sum(-1, keepdims=True) * a) + (0.5 * (lo + hi))[:, None] * a2
+        u0, u1 = ext
+        c2 = rigid + (0.5 * (u0 + u1))[:, None] * jp.einsum('rij,rj->ri', R, a)
+        h2 = jp.maximum(0.5 * (u1 - u0) + 0.5 * (hi - lo), 0.0)
+        own = [jp.argmin(jp.where(w.rung_valid, self._seg_point(g, w.rung_c, a, w.rung_h)[1], jp.inf))
+               for g in w.goals]
+        g2 = jp.stack([rigid[i] + R[i] @ (g - w.rung_c[i]) for i, g in zip(own, w.goals)])
+        return c2, a2, h2, g2
+
+    def _look(self, st, d, seen):
+        """climb_task._look: this frame's cells join `seen`, and the map is redrawn
+        from it -> (seen, centres, half extents)"""
+        w = st.wall
+        seen = seen | lidar.visible(jp, self.rig, d.site_xpos, d.site_xmat, w.rung_c, w.rung_a,
+                                    w.rung_h, w.slot_size[:, 0], w.rung_valid)
+        mc, _, mh, _ = self._noisy_map(w, st.map_z, lidar.extent(jp, seen, w.rung_h))
+        return seen, mc, mh
+
+    @staticmethod
+    def _map(st):
+        """this episode's wall as the robot's map has it: only the rungs it has seen"""
+        return st.wall._replace(rung_c=st.map_c, rung_a=st.map_a, rung_h=st.map_h, goals=st.map_goals,
+                                rung_valid=st.wall.rung_valid & st.seen.any(-1))
+
+    @staticmethod
+    def _normals(key, shapes):
+        """standard normals in `shapes` (a dict, nested: climb_task.STEP_NOISE, episode_noise)"""
+        leaves, tree = jax.tree_util.tree_flatten(shapes, is_leaf=lambda x: isinstance(x, tuple))
+        return tree.unflatten([jax.random.normal(k, s) for k, s in zip(jax.random.split(key, len(leaves)), leaves)])
+
     def _dists(self, w, thr):
         """(climb_task._hand_dists, climb_task._live) for both hands: the bank's from
         the NEAREST rung's point (climb_task._route), the live one along the routes
@@ -454,21 +515,38 @@ class MjxClimb:
         p = pos - R @ thr[side]
         return thr @ R.T + p, R @ base + p
 
-    def _sense(self, T, st, d, w_sum, noise):
-        """climb_task._sense. `w_sum`: the gyro summed over the step's substeps;
-        `noise`: the SLAM's position error this step."""
-        sen = self._sensors(d)
+    def _sense(self, T, st, d, w_sum, z):
+        """climb_task._sense -> (state, what the sensors would read if perfect -- the
+        reward's --, what they do read). `w_sum`: the gyro summed over the step's
+        substeps; `z`: this sense's draws (climb_task.STEP_NOISE)."""
+        fix = ct.scan_due(st.k)                    # a lidar frame, and the SLAM fix it carries
+        seen, mc, mh = self._look(st, d, st.seen)
+        st = st._replace(seen=jp.where(fix, seen, st.seen), map_c=jp.where(fix, mc, st.map_c),
+                         map_h=jp.where(fix, mh, st.map_h))
+        true = self._sensors(d)
+        sen = ct.sensed(true, z['sen'], st.bias)
         dt = ct.FRAME_SKIP * self.dt
-        Rf = st.Rf @ _rotm(w_sum * self.dt)
-        p_slam = d.xpos[self.base] + noise
+        first = st.k == 0
+        Rf = jp.where(first, _triad(sen['acc'], sen['mag']), st.Rf)
+        Rf = Rf @ _rotm(ct.sensed_rates(w_sum, z['w'], st.bias['gyro']) * self.dt)
         R_tri = _triad(sen['acc'], sen['mag'])
         Rf = Rf @ _rotm((dt / ct.AHRS_TAU) * _rotvec(Rf.T @ R_tri))
         tree = self._tree(d, sen['q'])
-        a, w = st.anchor, st.wall
+        a, w = st.anchor, self._map(st)
         hold_idx, hold_pt = st.hold_idx, st.hold_pt
-        _, base = self._place(tree, Rf, a, hold_pt[a])
+        _, base_est = self._place(tree, Rf, a, hold_pt[a])
+        base = d.xpos[self.base]
+        buf_true = jp.where(first, jp.tile(base, (ct.SLAM_LAG, 1)), st.buf_true)
+        buf_est = jp.where(first, jp.tile(base_est, (ct.SLAM_LAG, 1)), st.buf_est)
+        slam_err = jp.where(fix, ct.slam_drift(st.slam_err, z['slam']), st.slam_err)
         ax = w.rung_a[hold_idx[a]]
-        hold_pt = hold_pt.at[a].add((dt / ct.SLAM_TAU) * ((p_slam - base) @ ax) * ax)
+        dp = buf_true[0] + slam_err - buf_est[0]
+        # climb_task.along_seen: a wall facing along the rung -- the front one, or the
+        # extra one when this wall has it (a parked slot faces up, far below)
+        wq = st.wall
+        along = (jp.abs(jp.asarray(self.front_n) @ ax) > ct.FACING) | (
+            (wq.wall_pos[2] > -PARK / 2) & (jp.abs(_quat_z(wq.wall_quat) @ ax) > ct.FACING))
+        hold_pt = hold_pt.at[a].add(jp.where(fix & along, ct.SLAM_GAIN * (dp @ ax), 0.0) * ax)
         thr, _ = self._place(tree, Rf, a, hold_pt[a])
         o = 1 - a
         conf, touch = self._confirmed(sen), self._touching(sen)
@@ -485,18 +563,23 @@ class MjxClimb:
         anchor = jp.where(switch, o, a)
         thr2, _ = self._place(tree, Rf, o, hold_pt[o])
         thr = jp.where(switch, thr2, thr)
+        _, base_est = self._place(tree, Rf, anchor, hold_pt[anchor])
         return st._replace(Rf=Rf, anchor=anchor, hold_idx=hold_idx, hold_pt=hold_pt,
-                           both_conf=both, anchor_fresh=cA | switch, est_thr=thr), sen
+                           both_conf=both, anchor_fresh=cA | switch, est_thr=thr,
+                           slam_err=slam_err, k=st.k + 1,
+                           buf_true=jp.concatenate([buf_true[1:], base[None]]),
+                           buf_est=jp.concatenate([buf_est[1:], base_est[None]])), true, sen
 
     def _obs(self, T, st, sen):
-        """climb_task._obs"""
-        g = st.wall.goals
+        """climb_task._obs, from what the sensors read (`sen`) and the map"""
+        m = self._map(st)
+        g = m.goals
         thr = st.est_thr
         return jp.concatenate([
             sen['q'], sen['dq'], sen['tau'], st.ctrl, sen['acc'], sen['gyro'], sen['mag'],
             sen['f'][0], sen['t'][0], sen['pad'][:1], sen['f'][1], sen['t'][1], sen['pad'][1:],
             (g - thr).reshape(-1),
-            self._near_rungs(st.wall, thr[0]), self._near_rungs(st.wall, thr[1]),
+            self._near_rungs(m, thr[0]), self._near_rungs(m, thr[1]),
             thr[1] - thr[0], thr[0] - thr[1],
             self._confirmed(sen).astype(thr.dtype)]).astype(jp.float32)
 
@@ -505,35 +588,42 @@ class MjxClimb:
         """climb_task.reset, from the lesson's secured hang -> (state, obs)"""
         r0 = T.walls.d0_row[lesson]
         d = jax.tree_util.tree_map(lambda x: x[r0], T.d0)
-        key, k = jax.random.split(key)
+        key, k1, k2 = jax.random.split(key, 3)
         return self.start(T, lesson, d, T.ctrl0[r0], T.ngt0[r0], key,
-                          SLAM_SIG * jax.random.normal(k, (3,)))
+                          self._normals(k1, ct.episode_noise(N_RUNG)), self._normals(k2, ct.STEP_NOISE))
 
-    def start(self, T, lesson, d, ctrl, ngt, key, noise):
-        """the rest of climb_task.reset once the fingers are shut: the holds, the
-        attitude, the first sense (`noise`: its SLAM error) and the books"""
+    def start(self, T, lesson, d, ctrl, ngt, key, ep, z):
+        """the rest of climb_task.reset once the fingers are shut: the map, the holds,
+        the first sense and the books. `ep`: the episode's draws
+        (climb_task.episode_noise(N_RUNG)); `z`: the first sense's"""
         w = self.wall(T, lesson)
-        sen = self._sensors(d)
         thr = self._throat_true(d)
-        holds = [self._nearest_rung(w, thr[s]) for s in (0, 1)]
+        seen = lidar.visible(jp, self.rig, d.site_xpos, d.site_xmat, w.rung_c, w.rung_a, w.rung_h,
+                             w.slot_size[:, 0], w.rung_valid)       # what it sees from the hang
+        mc, ma, mh, mg = self._noisy_map(w, ep['map'], lidar.extent(jp, seen, w.rung_h))
+        idx = jp.stack([self._nearest_rung(w, thr[s])[1] for s in (0, 1)])   # climb_task._hung
+        u = jp.clip(((thr - mc[idx]) * ma[idx]).sum(-1), -mh[idx], mh[idx])
         con, on = self._contact(d)
         z2 = jp.zeros(2)
         st = State(d=d, lesson=lesson, ctrl=ctrl, key=key, no_grip_t=ngt,
-                   Rf=_triad(sen['acc'], sen['mag']), anchor=jp.array(0),
-                   hold_idx=jp.stack([h[1] for h in holds]),
-                   hold_pt=jp.stack([h[2] for h in holds]),
+                   Rf=jp.eye(3), anchor=jp.array(0), hold_idx=idx,
+                   hold_pt=mc[idx] + u[:, None] * ma[idx],
                    both_conf=jp.array(False), anchor_fresh=jp.array(True), est_thr=thr,
+                   map_c=mc, map_a=ma, map_h=mh, map_goals=mg, map_z=ep['map'], seen=seen,
+                   bias=ep['bias'],
+                   slam_err=ct.SLAM_SIG * ep['slam'], k=jp.array(0),
+                   buf_true=jp.zeros((ct.SLAM_LAG, 3)), buf_est=jp.zeros((ct.SLAM_LAG, 3)),
                    prev_d=z2, prev_live=z2, credit=z2, held=jp.zeros(2, bool),
                    prev_thr=thr, prev_loaded=con > ct.HOLD_LOAD, let_go=jp.zeros(2, bool),
                    grabs=jp.zeros(2, jp.int32), cross_axis=jp.zeros(3), cross_sign=jp.array(1.0),
                    off_t=z2, held_t=z2, slide_rung=jp.full(2, -1), slide_ref=z2, slide_net=z2,
                    n_steps=jp.array(0), wall=w)
-        st, sen = self._sense(T, st, d, jp.zeros(3), noise)
+        st, true, sen = self._sense(T, st, d, jp.zeros(3), z)
         dd, live = self._dists(w, thr)
         _, seat_d, _ = self._seg_point(thr[0], w.rung_c, w.rung_a, w.rung_h)
         axis = w.rung_a[jp.argmin(jp.where(w.rung_valid, seat_d, jp.inf))]
         sign = jp.sign((thr[0] - thr[1]) @ axis)
-        st = st._replace(prev_d=dd, prev_live=live, held=self._holding(w, con, on, thr, sen),
+        st = st._replace(prev_d=dd, prev_live=live, held=self._holding(w, con, on, thr, true),
                          cross_axis=axis, cross_sign=jp.where(sign == 0, 1.0, sign))
         return st, self._obs(T, st, sen)
 
@@ -566,17 +656,17 @@ class MjxClimb:
             length=ct.FRAME_SKIP)
         return st._replace(d=d, ctrl=ctrl, no_grip_t=ngt), flight, w, capped
 
-    def update(self, T, st, action, flight, w_sum, noise):
+    def update(self, T, st, action, flight, w_sum, z):
         """everything climb_task.step does after the physics -> (state, obs, reward,
         terminated, truncated, info). Separate from `physics` so `rl.mjx_check` can
         feed it C MuJoCo's own states and compare it with ClimbTask exactly."""
         a = jp.clip(action, -1.0, 1.0)
         d, lesson, w = st.d, st.lesson, st.wall
-        st, sen = self._sense(T, st, d, w_sum, noise)
+        st, true, sen = self._sense(T, st, d, w_sum, z)
         touch, on = self._contact(d)
         thr = self._throat_true(d)
         dd, live = self._dists(w, thr)
-        free, held = touch <= 0.0, self._holding(w, touch, on, thr, sen)
+        free, held = touch <= 0.0, self._holding(w, touch, on, thr, true)
         dp = thr - st.prev_thr
         loaded = touch > ct.HOLD_LOAD
         first_on = jp.argmax(on, axis=1)
@@ -620,14 +710,14 @@ class MjxClimb:
         sa = w.rung_a[jp.argmax(shared)]
         sep, o = (thr[0] - thr[1]) @ sa, self._order(w, st, sa)
         sep_err = jp.where(shared.any(), jp.maximum(0.0, ct.MIN_SEP - jp.where(o != 0, o * sep, jp.abs(sep))), 0.0)
-        effort = jp.maximum(0.0, jp.abs(sen['tau']).sum() - T.tau_idle[w.d0_row])
-        fight = jp.maximum(0.0, self._internal(d, sen) - T.fight_idle[w.d0_row])
+        effort = jp.maximum(0.0, jp.abs(true['tau']).sum() - T.tau_idle[w.d0_row])
+        fight = jp.maximum(0.0, self._internal(d, true) - T.fight_idle[w.d0_row])
         r = (ct.K_BANK * bank + ct.K_GRAB * first.sum()
              + ct.K_REACH * (st.prev_live - live).sum()
              - ct.K_DANGLE * parked - ct.K_STALE * stale - ct.K_SEP * sep_err
              - ct.K_EFFORT * effort - ct.K_FIGHT * fight - ct.K_TIME - ct.K_FLIGHT * flight
              - ct.K_SLIDE * slide
-             - ct.K_ACT * (a @ a) - ct.K_VEL * (sen['dq'] @ sen['dq']))
+             - ct.K_ACT * (a @ a) - ct.K_VEL * (true['dq'] @ true['dq']))
         st = st._replace(held=held, prev_d=dd, prev_live=live, prev_thr=thr, prev_loaded=loaded,
                          let_go=let_go, grabs=grabs, credit=acc, off_t=off_t,
                          held_t=held_t, slide_rung=slide_rung, slide_ref=slide_ref,
@@ -664,7 +754,7 @@ class MjxClimb:
         st, flight, w, capped = self.physics(T, st, action)
         key, k = jax.random.split(st.key)
         st, obs, r, term, trunc, info = self.update(T, st._replace(key=key), action, flight, w,
-                                                    SLAM_SIG * jax.random.normal(k, (3,)))
+                                                    self._normals(k, ct.STEP_NOISE))
         # substeps in which the solver's MAX_CONTACTS were all in use (rl.mjx_scene)
         return st, obs, r, term, trunc, dict(info, capped=capped)
 

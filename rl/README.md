@@ -339,17 +339,18 @@ valid. Only `urdf/lessons/*` get the pad.
   pitch-first one flares with positive abduction on the left, and the lessons
   take `scene.xml`'s range (−12…180°) as it is.
 - **Obs are hardware-legal** (encoders, raw IMU, F/T, pads, own setpoints, goal
-  relative to the anchor-rooted estimate, and the 3 nearest rungs per hand).
-  **Reward and success use ground truth** — a training-time oracle, per the model
-  README. Nothing in obs needs SLAM: the wall map is known in advance, as it would
-  be from a perception module.
+  relative to the anchor-rooted estimate, and the 3 nearest rungs per hand), and
+  read as badly as the real sensors would: noise and offsets on every sensor, a
+  lidar SLAM that drifts and arrives late, a lidar-fitted wall map — see *The
+  sensors read like real ones*. **Reward and success use ground truth** — a
+  training-time oracle, per the model README.
 - **The policy can see the nearby rungs.** Without them it knows where the goal is
   and nothing about what lies between, so lesson 2 (gaps) and 6 (staggered) are
   guesswork and one shared policy could only memorise each fixed layout. Three
   rungs per hand is what a hand chooses between; the map supplies them.
 - **Action** = setpoint deltas on all 17 position servos at 25 Hz, ±1.5 rad/s.
   Smoothness comes from the action-rate and joint-velocity penalties.
-- **No SLAM / full autonomy layer.** Goals come from the map; the planner layer
+- **No autonomy layer.** Goals come from the map; the planner layer
   (which hold next) stays classical (`controller/holds.py`) and can feed goals to
   a trained policy later.
 
@@ -561,7 +562,7 @@ from it. What had to change is structural:
   drawn from them — no recompile when a lesson unlocks.
 - **A reset is a copy.** `ClimbTask.reset` hangs the robot from the keyframe and
   closes the fingers for 0.4 s, deterministically, so that runs once per lesson at
-  start-up and a reset copies it (the SLAM noise is still drawn fresh).
+  start-up and a reset copies it (the noise is still drawn fresh).
 
 **The robot is simplified, and the simplification is held to the full robot at the
 same states** (`python -m rl.mjx_check model`: win17's gait on lessons 1, 1.85 and 2, and
@@ -995,6 +996,124 @@ and every jump adds more. `K_SLIDE` and `K_FLIGHT` exist so that the gait the po
 is paid for is the one the sensors can track — one hand holds still while the other
 moves, which is also the one that was asked for.
 
+## The sensors read like real ones (Sept 30 2026)
+
+Since 2026-09-30 every number the observation is computed from reads the way a real
+sensor would. The reward still reads the truth (`ClimbTask.true` against `.sen`), and
+`ClimbTask(noise=False)` switches the noise off. `rl.mjx_task` draws the same noise,
+and `python -m rl.mjx_check task` feeds it C's draws and matches it to 1e-15.
+
+| what | model | constants in `rl/climb_task.py` |
+|---|---|---|
+| encoders, IMU, F/T, pads | white noise on each reading, plus one offset per episode (encoder zero, IMU offsets, the motors' hard iron on the magnetometer, F/T drift) | `SEN_SIG`, `SEN_BIAS` |
+| gyro in the attitude filter | the same, summed over the 20 substeps | `sensed_rates` |
+| lidar SLAM | the error **drifts** (20 mm, correlated over 5 s). A fix comes with every lidar frame, 10 Hz: every 2 or 3 control steps (`scan_due`). It is 2 steps (80 ms) old, so it is compared with the estimate of the moment it describes. It is taken **only where a wall faces along the rung**: on a flat wall the SLAM cannot see along it (below) | `SLAM_SIG`, `SLAM_DRIFT_TAU`, `SCAN`, `SLAM_LAG`, `SLAM_GAIN`, `FACING` |
+| wall map | per rung, per episode: the axis 10 mm off sideways and 1° off in direction, each end 10 mm off along it. Goals move with their rung | `MAP_SIG`, `MAP_ROT_SIG`, `MAP_END_SIG` |
+| what the lidars see | see below: a rung is in the map once seen, as far along as seen | `rl/lidar.py` |
+
+The values are datasheet-order guesses; none was measured on this robot or its lidar
+stack. Until this change the SLAM error was white: independent on every step, so
+`SLAM_TAU`'s filter averaged its 20 mm down to about 3 mm. A drift does not average
+out. Hanging still, the anchor now follows it (correlation −0.45 in the sensor test).
+
+What the noise does to `win17`, which was trained on exact sensors and an exact map.
+Full robot, 12 episodes per cell:
+
+| lesson | exact | all noise | all noise except the map's tilt |
+|---|---|---|---|
+| −1 | 12/12 | 0–3/12 | 12/12 |
+| 1 | 12/12 | 0/12 | 11/12 |
+| 1.5 | 12/12 | 0/12 | 7/12 |
+
+With one group switched on at a time, on lesson 1: map 0/12, SLAM 11, encoder angles 10,
+velocities 11, torques 10, IMU 10, F/T 12, pads 10. Within the map, 10 mm of sideways
+offset costs nothing and 20 mm on the ends costs 1/12, but **0.3° of tilt drops it to
+1/12**. Every rung `win17` trained on ran along one world axis, so the x and z
+components of the rung axes in its observation never varied. VecNormalize holds their
+std at its floor, 1e-4. A 0.3° tilt moves one of those components by 0.005, which
+normalises to 50σ and is clipped to 10, and six inputs saturate. This is not a
+question of noise level: a real rung 0.3° off level would do the same. A policy
+trained with `MAP_ROT_SIG` sees those components vary (std about 0.017), and the
+problem goes away.
+
+So **do not resume a checkpoint trained before this into the noisy task.** Its
+VecNormalize has seen 35M samples, and a running variance only climbs as fast as new
+samples outweigh the old ones. After 1M more steps those components' std is still about
+0.003, and a 1° tilt still reads 6σ. Start fresh.
+
+### The map holds what the four Mid-360 have seen
+
+Since the lidars went on the robot (`urdf/README.md`, "The lidars") the map is built
+the way the real one is. Every lidar frame, each rung's 32 cells are ray-cast from the
+four optical origins (`rl/lidar.py`, the same lines on numpy and jax). A cell is seen
+when it is 38–97° off one lidar's axis (the datasheet's −7…+52° of elevation), 0.1–40 m
+away, and nothing is in the way: the robot's own arms, hooks, cage and lidars (the
+`occ_*` sites the CAD writes into `scene.xml`), or another rung. The map keeps every
+cell it has seen and spans each rung from the first to the last. A rung not seen yet
+is not in `_near_rungs`, `_nearest_rung` or `_reach_point` at all. A hidden end reads
+as an end: the lidar cannot tell them apart. `noise=False` switches off the noise, not
+this; the reset's map is what the lidars see from the hang.
+
+From the secured hang, every lesson's start rung is in the map; the parts that are not
+are behind the raised arms and the cage's bars. Seen at the start:
+
+| lesson | rungs (share of cells seen) |
+|---|---|
+| 1 | start 88 % (the spans under the hooks and upper arms; the ends are seen) |
+| 1.5 | start 75 %, seg1 88 %, seg2 100 % |
+| 2 | start 75 %, seg1 94 % (its near 2 cm behind the left upper arm), seg2 100 % |
+| 3 | start 88 %, up1 72 % (its end 0.23 m short), up2 81 % |
+| 4 | start 81 %, step1 66 % (one end 0.33 m short), step2 100 %, step3 100 % |
+| 6 | start 88 %, stag1 69 %, stag2 97 %, **stag3 6 %**, top1 100 %, top2 100 % |
+
+`python -m rl.climb_task`'s lidar test: 6 s of flailing on lesson 6 takes every rung to
+100 %. Cost: 1–5 ms of numpy per frame, 2 frames in 5 control steps.
+
+The old map was the whole wall, known from the first step. A policy trained on it has
+never met a missing rung or an end that moves once it is seen. Start fresh here too.
+
+### The SLAM is trusted only where it can see (`along_seen`)
+
+`python -m rl.slam_test` (see `slam/README.md`) runs the real thing: the four Mid-360
+simulated point by point, FAST-LIO2 in Docker, and the rung map built from its points.
+On a flat wall, FAST-LIO cannot tell where the robot is along the wall. Every match on
+the wall and on the horizontal rungs constrains the directions across them and none
+along them. It drifted 0.2–2.5 m rms along the rung in 10 s on lessons 1, 2, 4, 6 and 8.
+In the corner (lesson 7), where a wall faces along the rung, it held 4–5 mm.
+
+That direction is the only one the estimator asks the SLAM for: the loaded hook's creep
+along its rung. So the SLAM fix is now taken only when a wall's normal is within 60° of
+the anchor's rung (`FACING`). On a flat wall the estimator keeps its own kinematics, and
+the creep goes unseen. That is what the robot will meet on any flat facade.
+`python -m rl.climb_task`'s slam test pulls the hook 25 mm along the rung twice:
+- in the corner, the anchor follows it to within 4 mm;
+- on the flat wall, it is left 24 mm stale.
+
+`rl.mjx_task` does the same from the wall table, the front wall and the extra wall
+slot, and `rl.mjx_check task` matches it to 1e-15.
+
+The rig registers FAST-LIO's frames the same way. Where FAST-LIO cannot see — along a
+flat wall, and up and down with no floor or ceiling — the frame goes where the
+estimator has the body, not where FAST-LIO drifted it. Measured over 10 s of swinging:
+
+| lesson | FAST-LIO along the rung | the pose the map is built with | rungs mapped | across | tilt |
+|---|---:|---:|---|---:|---:|
+| 1 | 871 mm rms | 39 mm | 1/1 | 11 mm | 0.1° |
+| 2 | 179 | 60 | 3/3 | 12–16 | 0.2° |
+| 6 | 598 | 55 | 4/6 | 13–19 | 0.4–1.6° |
+| 7 (corner) | **4** | 4 | 2/2 | 10–13 | 0.2° |
+| 8 | 676 | 69 | 2/2 | 20–21 | 0.3° |
+
+Against the training model:
+- **Across the axis:** 10–20 mm against `MAP_SIG` 10 mm.
+- **Tilt:** within `MAP_ROT_SIG` 1°.
+- **Ends:** off by up to 11 cm against the truth. Most of that moves the whole rung along
+  the wall by the estimator's own error at the moment it was mapped, which the robot
+  reads its map through as well. The number to calibrate `MAP_*` with is the error of
+  what the policy reads, the rung relative to the estimated throat, against the truth.
+  `rl.slam_test` does not measure that yet: ponytail, the next step before trusting a
+  sim-to-real number.
+
 ## `win9`: everything before lesson 1.5 passes, and the reach paid for hanging below the rung
 
 5.3M steps with the draw weights and the start-of-step credit: −2 80 %, −1 92 %,
@@ -1187,9 +1306,10 @@ left hand forward and dangle the right, lesson −2's behaviour. The variance fl
 (1 cm; a feature whose std the estimator's accuracy had shrunk to 0.6 mm was
 being normalised to the ±10 clip) was the first hypothesis and is not it, though
 it stays, since E was the fastest early curriculum of any run. The mechanism is
-open. The training estimator is C's; the SLAM attitude remains available in
-`ClimbingEnv.slam()` and is the thing to try once a policy has passed the gap
-lessons, the way mac20 took it at 10M.
+open. The training estimator is C's. The SLAM attitude is the thing to try once a
+policy has passed the gap lessons, the way mac20 took it at 10M; it left the sensor
+model when the SLAM got its drift, rate and lag (2026-09-30), and comes back as a
+rotation error beside `slam_drift` in `rl/climb_task.py`.
 
 With the sampling fixed, the curriculum finally runs: `mac26` (2M steps, 8 envs)
 went −2 → **lesson 2** — 1.1 at 98 %, 1.2 at 98 %, 1.35 at 92 %, **1.5 at 78 %**
