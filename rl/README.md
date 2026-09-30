@@ -231,14 +231,13 @@ Why not the two alternatives:
   onto a hand, seating a hook in a ±25 mm window — and each would learn it again
   from scratch. It also leaves the seams untrained: the posture a traverse ends in
   is not in the climb specialist's training distribution.
-- **A meta-policy calling nine sub-policies** (hierarchical RL) would replace
-  something that already works — `controller/holds.py` picks the next hold with A\*
-  over the wall map, deterministically, today. Learning that choice is harder than
-  the problem it solves.
+- **A meta-policy calling nine sub-policies** (hierarchical RL) would learn what a
+  search already does: which hold next is A\* over the wall map, deterministic.
+  Learning that choice is harder than the problem it solves.
 
 - **One policy over all lessons** needs no dispatcher, because the goal is already
   in the observation: it is *goal-conditioned*, not lesson-conditioned, and at
-  deploy time the classical planner supplies the goal exactly as a lesson spec does.
+  deploy time a planner supplies the goal exactly as a lesson spec does.
 
 **Lessons are mixed, never sequential.** Fine-tuning lesson 1 → 2 → … → 9 in order
 is the obvious reading of "curriculum" and it is the one thing to avoid: training on
@@ -285,7 +284,7 @@ has gone back, and everything the run prints is appended to `out/<name>/train.lo
 ## The grip pad — why the lesson scenes differ from `scene.xml`
 
 The hook is a slot round a smooth cylinder, so nothing holds it along the rung axis:
-`controller/test_climb.py` phase 7 measures ~107 mm of travel under 40 N. The first
+the bare hook travels ~107 mm under 40 N (`rl.lessons.slide_test`). The first
 two PPO runs both solved lesson 1 by exploiting that instead of climbing — the hooks
 never left the rung (throat-to-rung gap never exceeded 43 mm on a 50 mm throat) and
 the robot simply shoved itself 1.1 m sideways.
@@ -328,8 +327,8 @@ Most of the win is the stiffness, not the rubber: µ 1.0 with the stiff contact
 already gives +35 mm. µ 3.0 would give +15 mm instead of +20, but 2.0 is the safer
 claim for rubber on metal and costs 5 mm.
 
-`scene.xml` keeps the bare hook so the classical controller's measured numbers stay
-valid. Only `urdf/lessons/*` get the pad.
+`scene.xml` keeps the bare hook the CAD draws. Only `urdf/lessons/*` -- what the
+policy trains and is judged on -- get the pad.
 
 ## Design decisions
 
@@ -350,9 +349,9 @@ valid. Only `urdf/lessons/*` get the pad.
   rungs per hand is what a hand chooses between; the map supplies them.
 - **Action** = setpoint deltas on all 17 position servos at 25 Hz, ±1.5 rad/s.
   Smoothness comes from the action-rate and joint-velocity penalties.
-- **No autonomy layer.** Goals come from the map; the planner layer
-  (which hold next) stays classical (`controller/holds.py`) and can feed goals to
-  a trained policy later.
+- **No autonomy layer.** Goals come from the map. Which hold next is a search over
+  it, outside the policy; the classical controller's A\* did it (git history), and
+  nothing picks goals for a trained policy yet.
 
 ## Training on this Mac — measured, not assumed
 
@@ -1104,15 +1103,33 @@ estimator has the body, not where FAST-LIO drifted it. Measured over 10 s of swi
 | 7 (corner) | **4** | 4 | 2/2 | 10–13 | 0.2° |
 | 8 | 676 | 69 | 2/2 | 20–21 | 0.3° |
 
-Against the training model:
-- **Across the axis:** 10–20 mm against `MAP_SIG` 10 mm.
-- **Tilt:** within `MAP_ROT_SIG` 1°.
-- **Ends:** off by up to 11 cm against the truth. Most of that moves the whole rung along
-  the wall by the estimator's own error at the moment it was mapped, which the robot
-  reads its map through as well. The number to calibrate `MAP_*` with is the error of
-  what the policy reads, the rung relative to the estimated throat, against the truth.
-  `rl.slam_test` does not measure that yet: ponytail, the next step before trusting a
-  sim-to-real number.
+Those are the map against the world, and the ends there are up to 11 cm off. Most of
+that moves a whole rung along the wall by the estimator's own error at the moment it
+was mapped, and the robot reads its map through that same estimate.
+
+**What the policy reads is what counts.** For each hand, the offset from its estimated
+throat to the nearest mapped seat, and its distance to that rung's nearer end, against
+the same two from the true throat to the true rung. `rl.slam_test --compare` measures
+it on FAST-LIO and on the training model, with the same actions (10 s of swinging):
+
+| lesson | offset to the nearest rung, FAST-LIO / training | along the rung | nearer end |
+|---|---:|---:|---:|
+| 1 | 15 / 19 mm rms | 0 / 0 | 16 / 61 |
+| 2 | 22 / 30 | 12 / 23 | 48 / 61 |
+| 6 | 17–22 / 32–33 | 1–2 / 0 | 28–83 / 58–64 |
+| 7 | 40–42 / 19–20 | 1–3 / 0–2 | 60–68 / 28–30 |
+
+The training model is in the same range, so `MAP_*` stay as they are. Two differences
+remain:
+- **The corner reads 2x worse on FAST-LIO.** Up and down come from the estimator's
+  kinematics there.
+- **The real map sometimes misses a far rung.** Lesson 6 missed 2 of 6 in one run of
+  two, and lesson 7 missed its side rung in 2 of 3. FAST-LIO does not repeat itself
+  run to run, and a rung smeared up and down by the registration falls under the
+  detector's 5σ. The training model maps every rung a ray has reached.
+
+Before the rig bridged the gap a hand hides (`SlamTask._bridge`), every held rung read
+as two, with an end at each hand. The nearer end was then 120–250 mm off.
 
 ## `win9`: everything before lesson 1.5 passes, and the reach paid for hanging below the rung
 

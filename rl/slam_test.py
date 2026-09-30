@@ -41,7 +41,7 @@ background to subtract -- connected and long; its axis is the points' mean depth
 import argparse, hashlib, io, os, socket, struct, subprocess, time, urllib.request
 import numpy as np, mujoco
 from scipy import ndimage
-from . import climb_task as ct
+from . import climb_task as ct, lidar
 from .climb_task import ClimbTask
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -568,9 +568,47 @@ class SlamTask(ClimbTask):
             if not self._walls or self.frames[1] % 10 == 0:
                 self._walls = planes(P, w, np.random.default_rng(0))
             toward = self.results[0]['imu'][0] if self.results else ta     # where it was hung
-            self._update(rungs(P, w, self._walls, toward))
+            self._update(self._bridge(rungs(P, w, self._walls, toward)))
             self._dirty = False
         self.map_goals = [self._snap(g) for g in self.goals]
+
+    def _bridge(self, segs, longest=0.4):
+        """One piece for two in line whose gap the robot's own body hides: a hand on a
+        rung hides the span under it from every lidar, and the detector ends a rung
+        where the points stop, so without this every held rung read as two with an
+        end at each hand -- the policy read the nearer end 120-250 mm off, the training
+        model 40-60. A gap the lidars can see is left a gap, seen empty or not: that is
+        rl.lidar's rule, where a rung spans from its first seen cell to its last. The
+        robot knows its own shape from its encoders; ponytail: the true pose stands in
+        for that here, and the gap is judged where the robot is now, not over time."""
+        segs, d = list(segs), self.env.data
+        done = False
+        while not done:
+            done = True
+            for i in range(len(segs)):
+                for k in range(len(segs)):
+                    if i == k:
+                        continue
+                    (c1, a1, h1), (c2, a2, h2) = segs[i], segs[k]
+                    off = c2 - c1
+                    t = off @ a1
+                    gap = abs(t) - h1 - h2
+                    if (t <= 0 or abs(a1 @ a2) < np.cos(np.radians(5))
+                            or np.linalg.norm(off - t * a1) > 0.03 or not 0.0 < gap < longest):
+                        continue
+                    g0 = c1 + a1 * (h1 + gap / 2)          # the gap, as a rung of its own
+                    seen = lidar.visible(np, self.rig, d.site_xpos, d.site_xmat, g0[None], a1[None],
+                                         np.array([gap / 2]), np.array([R_RUNG]), np.array([True]))
+                    if seen.any():
+                        continue
+                    lo_, hi_ = -h1, t + h2
+                    segs[i] = (c1 + a1 * (lo_ + hi_) / 2, a1, (hi_ - lo_) / 2)
+                    del segs[k]
+                    done = False
+                    break
+                if not done:
+                    break
+        return segs
 
     def _update(self, dets):
         """keep each rung's name from one map to the next: a hold refers to it by name"""
@@ -653,21 +691,68 @@ def map_errors(t):
     return out, [k for k in t.map if k not in used]
 
 
-def episode(lesson, act, steps, slam, seed=0, noise=True, posts=False):
-    t = SlamTask(lesson, slam=slam, noise=noise, posts=posts)
+def reading(t):
+    """What the policy reads about the rungs, against what it would read if every sensor
+    were exact -- per hand: the offset from its throat to the nearest seat on the
+    nearest mapped rung (rl.climb_task._near_rungs: estimate and map) against the one
+    from the true throat to the true nearest rung, and the distance to that rung's
+    nearer end. -> [(offset error (3,), along-rung component, end error, wrong rung)]"""
+    out = []
+    for sd in 'LR':
+        p_est, p = t.est.throat(sd), t._throat_true(sd)
+
+        def near(segs, x):
+            best = None
+            for c, a, h in segs:
+                hs = max(h - ct.SEAT_IN, 0.0)
+                u = float((x - c) @ a)
+                q = c + np.clip(u, -hs, hs) * a
+                if best is None or np.linalg.norm(x - q) < best[0]:
+                    best = (np.linalg.norm(x - q), q, a, hs - abs(u))
+            return best
+        mapped = near([t.map[k] for k in t.map if k in t.map_seen], p_est)
+        true = near(list(t.segs.values()), p)
+        if mapped is None:
+            out.append((np.full(3, np.nan), np.nan, np.nan, True))
+            continue
+        e = (mapped[1] - p_est) - (true[1] - p)
+        wrong = np.linalg.norm((mapped[1] - p_est) - (true[1] - p)) > 0.10
+        out.append((e, float(e @ true[2]), mapped[3] - true[3], wrong))
+    return out
+
+
+def episode(lesson, act, steps, slam, seed=0, noise=True, posts=False, task=None):
+    """`task`: a ClimbTask class to run instead of SlamTask on the same actions -- the
+    training model, for `--compare`"""
+    t = SlamTask(lesson, slam=slam, noise=noise, posts=posts) if task is None else \
+        task(lesson, visual=False, noise=noise)
     t.rng = np.random.default_rng(seed)
     t0 = time.time()
     o, _ = t.reset()
-    info, n = {}, 0
+    info, n, reads = {}, 0, []
     for i in range(steps):
         o, r, te, tr, info = t.step(act(o, i))
+        reads += reading(t)
         n += 1
         if te or tr:
             break
     err = lambda tr: np.array([(s - b) for _, s, b in tr]) if tr else np.zeros((0, 3))
+    slam_task = task is None
     return dict(t=t, steps=n, wall=time.time() - t0, reason=info.get('reason', ''),
-                slam_err=err(t.track), fused_err=err(t.track_fused), maps=map_errors(t),
-                frames=tuple(t.frames))
+                slam_err=err(t.track) if slam_task else None,
+                fused_err=err(t.track_fused) if slam_task else None,
+                maps=map_errors(t), frames=tuple(t.frames) if slam_task else None, reads=reads)
+
+
+def report_reading(tag, reads):
+    E = np.array([r[0] for r in reads if not r[3]])
+    along = np.array([r[1] for r in reads if not r[3]])
+    end = np.array([r[2] for r in reads if not r[3]])
+    wrong = np.mean([r[3] for r in reads])
+    rms = lambda v: float(np.sqrt(np.nanmean(np.square(v)))) * 1e3
+    print(f"  what the policy reads, {tag}: the nearest rung's offset off by {rms(np.linalg.norm(E, axis=1)):.0f} "
+          f"mm rms (p90 {np.nanpercentile(np.linalg.norm(E, axis=1), 90) * 1e3:.0f}), along the rung "
+          f"{rms(along):.0f}, the nearer end {rms(end):.0f}; the wrong rung in {100 * wrong:.1f} % of readings")
 
 
 def report(k, e):
@@ -709,6 +794,8 @@ def main():
     ap.add_argument('--exact', action='store_true', help='the sensors without their noise')
     ap.add_argument('--still', action='store_true', help='hang still: what the SLAM does with no motion')
     ap.add_argument('--posts', action='store_true', help="a post at each rung end, for the lidars to see")
+    ap.add_argument('--compare', action='store_true',
+                    help='also run the training model (ClimbTask) on the same actions, and compare what the policy reads')
     a = ap.parse_args()
     from .lessons import lesson_key
     slam = Slam()
@@ -731,7 +818,14 @@ def main():
     for k in a.lesson:
         k = lesson_key(k)
         for s in range(a.episodes):
-            report(k, episode(k, act, a.steps, slam, seed=s, noise=not a.exact, posts=a.posts))
+            acts = []                        # the same actions for both, recorded once
+            rec = lambda o, i: acts[i] if i < len(acts) else acts.append(act(o, i)) or acts[i]
+            e = episode(k, rec, a.steps, slam, seed=s, noise=not a.exact, posts=a.posts)
+            report(k, e)
+            report_reading('FAST-LIO and the rung map from its points', e['reads'])
+            if a.compare:
+                e2 = episode(k, rec, a.steps, slam, seed=s, noise=not a.exact, task=ClimbTask)
+                report_reading('the training model (climb_task)', e2['reads'])
 
 
 if __name__ == '__main__':

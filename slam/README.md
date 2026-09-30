@@ -10,7 +10,9 @@ docker build -t climber-slam slam/                        # once, ~10 min: FAST-
 python -m rl.slam_test --lesson 1 2 7 --steps 250         # arms swinging: SLAM and map errors
 python -m rl.slam_test --lesson 1 --still                 # hanging still
 python -m rl.slam_test --lesson 1 --posts                 # a post at each rung end, lidar-only
-python -m rl.slam_test --lesson 2 --run runs/NAME         # a checkpoint climbing on it
+python -m rl.slam_test --lesson 1 2 6 7 --compare         # what the policy reads: FAST-LIO
+                                                          # against the training model
+python -m rl.slam_test --lesson 2 --run out/NAME          # a checkpoint climbing on it
 ```
 
 `rl.slam_test` starts the container itself and reuses it:
@@ -67,7 +69,11 @@ in four steps:
    axis is behind the points' centroid by 2r/π, away from where the points were seen
    from, because a lidar sees the near half.
 
-A rung a hand hides the middle of is two pieces: a lidar cannot tell that from a gap.
+A rung a hand hides the middle of comes out as two pieces. They are made one again
+when the lidars cannot see the gap between them from where the robot is now
+(`SlamTask._bridge`). The robot knows its own shape, so the span its own hand hides
+is not evidence of a gap. A gap they can see stays a gap, which is `rl.lidar`'s rule:
+a rung spans from its first seen cell to its last.
 
 Checked against a perfect SLAM (the truth in FAST-LIO's place), lessons 1, 2, 4, 6, 7
 and 8 after 2.4 s of swinging:
