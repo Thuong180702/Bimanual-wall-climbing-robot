@@ -20,7 +20,7 @@ at 88 % of peak torque doing it.
 
 The HOOKS are the exception: their whole job is the throat between the palm
 and the lip, and a convex hull fills it in. They keep the two explicit boxes
-the controller and the RL work were built on, verbatim.
+the RL work was built on, verbatim.
 
 So is the lidar CAGE: a bent tube's hull is a slab, and the ring's a lid over the
 head. Each tube is capsules along its centre line (lidar.guard_segments), exact

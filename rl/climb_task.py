@@ -25,7 +25,7 @@ fingers included.
 """
 from fractions import Fraction
 import numpy as np, mujoco
-from controller.kinematics import Estimator, JOINTS, THROAT_PT, triad, rotvec
+from .estimator import Estimator, JOINTS, THROAT_PT, triad, rotvec
 from .lessons import LESSONS, xml_path, rung_segments, spec_of, canon_axis
 from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET, GRIP_CLIFF
 from . import lidar
@@ -76,8 +76,8 @@ SEN_BIAS = dict(q=0.003, acc=0.1, gyro=0.005, mag=0.02, f=2.0, t=0.1)   # one pe
 STEP_NOISE = dict(slam=(3,), w=(3,), sen=SEN_SHAPE)   # standard normals drawn every sense
 
 AHRS_TAU = 2.0           # s: how slowly the torso attitude leans on the accelerometer.
-                         # The bare triad (accel + mag, no state) is what the classical
-                         # controller uses, and while the body swings it is wrong by
+                         # The bare triad (accel + mag, no state), while the body
+                         # swings, is wrong by
                          # 26.5 deg rms -- the accelerometer reads the swing as tilt --
                          # which put the free hand 91-130 mm from where it was. The
                          # gyro integrated across the control step and corrected

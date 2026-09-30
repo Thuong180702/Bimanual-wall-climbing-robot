@@ -4,26 +4,13 @@
     python -m rl.render --lesson 6         # just one, bigger
 
 No image dependency: PNGs are written by piping a raw frame to ffmpeg, the same
-trick `controller/record.py` uses for video.
+trick `Video` uses for mp4.
 """
 import argparse, os, subprocess
 import numpy as np, mujoco
 from .lessons import LESSONS, xml_path, lesson_key, lesson_tag
 
 OUT = 'out/scenes'
-
-
-def _need_ffmpeg():
-    """ffmpeg writes the frames; it is a separate program, not a pip
-    package, and Windows has none by default."""
-    import shutil
-    if shutil.which("ffmpeg") is None:
-        raise SystemExit(
-            "ffmpeg not found on PATH -- it writes the frames.\n"
-            "  macOS:   brew install ffmpeg\n"
-            "  Windows: winget install Gyan.FFmpeg  (then reopen the shell)\n"
-            "  Linux:   apt install ffmpeg\n"
-            "Training and evaluation do not need it.")
 
 
 def png(path, img):
@@ -115,12 +102,65 @@ def sheet(imgs, cols=3, pad=6, bg=28):
     return out
 
 
+def _need_ffmpeg():
+    """ffmpeg writes the frames; it is a separate program, not a pip
+    package, and Windows has none by default."""
+    import shutil
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit(
+            "ffmpeg not found on PATH -- it writes the frames.\n"
+            "  macOS:   brew install ffmpeg\n"
+            "  Windows: winget install Gyan.FFmpeg  (then reopen the shell)\n"
+            "  Linux:   apt install ffmpeg\n"
+            "Training and evaluation do not need it.")
+
+
+class Video:
+    """Frames in, mp4 out. `speed` is simulated seconds played per second of video."""
+
+    def __init__(self, path, model, w=960, h=540, fps=30, speed=6.0, azimuth=315.0):
+        # The robot hangs in a 0.75 m corridor between the front and back walls, so every
+        # camera outside it is looking at the back of a slab. Render the walls nearly
+        # transparent instead of trying to find an angle that does not exist.
+        for g in range(model.ngeom):
+            nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or ''
+            if nm.startswith('wall_'):
+                model.geom_rgba[g] = [0.45, 0.47, 0.50, 0.10]
+        model.vis.headlight.ambient[:] = 0.45
+        model.vis.headlight.diffuse[:] = 0.75
+        self.r = mujoco.Renderer(model, height=h, width=w)
+        self.cam = mujoco.MjvCamera()
+        self.cam.distance, self.cam.azimuth, self.cam.elevation = 1.9, azimuth, -10.0
+        self.every = max(1, int(round(speed / (fps * model.opt.timestep))))
+        self.n = 0
+        _need_ffmpeg()
+        self.p = subprocess.Popen(
+            ['ffmpeg', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{w}x{h}',
+             '-r', str(fps), '-i', '-', '-an', '-vcodec', 'libx264', '-crf', '23',
+             '-pix_fmt', 'yuv420p', path],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def tick(self, data, lookat=None):
+        self.n += 1
+        if self.n % self.every:
+            return
+        if lookat is not None:
+            self.cam.lookat[:] = lookat
+        self.r.update_scene(data, self.cam)
+        self.p.stdin.write(np.ascontiguousarray(self.r.render()).tobytes())
+
+    def close(self):
+        self.p.stdin.close()
+        self.p.wait()
+        self.r.close()
+
+
 def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
           deterministic=True, azimuth=200.0, distance=1.9, ckpt='', mirror=False):
     """Roll a saved policy out on a lesson and write it to mp4.
 
-    Reuses `controller.record.Video`, which already fades the walls and pipes raw
-    frames to ffmpeg. Its `every` is speed/(fps*timestep), so passing
+    `Video` fades the walls and pipes raw frames to ffmpeg. Its `every` is
+    speed/(fps*timestep), so passing
     speed = fps*timestep makes it write on every call -- one frame per call here,
     which is one per control step.
 
@@ -133,7 +173,6 @@ def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
     import mujoco as mj
     from stable_baselines3 import PPO
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-    from controller.record import Video
     from .train_ppo import MultiLesson
     from climbing_env import GRIP_BAND
 

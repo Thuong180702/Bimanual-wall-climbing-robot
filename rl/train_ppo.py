@@ -51,9 +51,9 @@ from scratch off its own reward. It also leaves the seams untrained: the posture
 traverse ends in is not in the climb specialist's training distribution.
 
 *A meta-policy that calls nine sub-policies* is hierarchical RL, and it would be
-replacing something that already works. `controller/holds.py` picks the next hold
-with A* over the wall map, deterministically, today. Learning that choice is a much
-harder problem than the one it solves.
+learning something a search already does: which hold next is A* over the wall map,
+deterministic (the classical controller did it; git history). Learning that choice
+is a much harder problem than the one it solves.
 
 *One policy over all lessons* shares the common skill and needs no dispatcher,
 because the goal is already in the observation -- it is goal-conditioned, not
@@ -76,7 +76,7 @@ try:
 except ImportError as e:
     raise SystemExit(f"missing training deps ({e}); pip install gymnasium stable-baselines3")
 
-from controller import SCENE
+from . import SCENE
 from . import default_envs, hardware
 from .climb_task import CONTROL_DT, ClimbTask
 from .lessons import LESSONS, lesson_key

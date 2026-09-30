@@ -45,7 +45,7 @@ import jax, jax.numpy as jp
 jax.config.update('jax_default_matmul_precision', 'highest')
 import mujoco
 from mujoco import mjx
-from controller.kinematics import JOINTS, THROAT_PT, MAG_WORLD
+from .estimator import JOINTS, THROAT_PT, MAG_WORLD
 from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET
 from . import climb_task as ct, lidar
 from .lessons import LESSONS, canon_axis
@@ -62,7 +62,7 @@ FINGERS = [JOINTS.index('finger_L'), JOINTS.index('finger_R')]
 MINVAL = 1e-15           # mujoco's mjMINVAL, for rotvec's zero-angle case
 
 
-# --- small rotation helpers, as climb_task / controller.kinematics compute them ------
+# --- small rotation helpers, as climb_task / rl.estimator compute them -------------
 def _skew(v):
     z = jp.zeros_like(v[0])
     return jp.stack([jp.stack([z, -v[2], v[1]]), jp.stack([v[2], z, -v[0]]),
@@ -97,7 +97,7 @@ def _mat2quat(R):
 
 
 def _rotvec(R):
-    """controller.kinematics.rotvec: mju_mat2Quat then mju_quat2Vel(dt=1)"""
+    """rl.estimator.rotvec: mju_mat2Quat then mju_quat2Vel(dt=1)"""
     q = _mat2quat(R)
     n = jp.sqrt(q[1:] @ q[1:])
     ax = jp.where(n < MINVAL, jp.array([1.0, 0.0, 0.0]), q[1:] / jp.where(n < MINVAL, 1.0, n))
@@ -119,7 +119,7 @@ def _frame(a, b):
 
 
 def _triad(up, mag):
-    """controller.kinematics.triad"""
+    """rl.estimator.triad"""
     return _frame(jp.array([0.0, 0.0, 1.0]), jp.asarray(MAG_WORLD)) @ _frame(up, mag).T
 
 

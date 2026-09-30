@@ -36,7 +36,7 @@ mujoco.mj_resetDataKeyframe(m, d, 0)   # "hang_on_rung"
 ```
 
 `nbody=20, nq=24, nv=23, nu=17, nsensor=86` - the same interface as before, so
-`climbing_env.py`, the controller and the RL task load against it unchanged.
+`climbing_env.py` and the RL task load against it unchanged.
 Loading is not working, though: the first version of this model loaded cleanly
 with its hooks on back to front and its raised arms jammed into the torso — see
 the two sections after "What moved".

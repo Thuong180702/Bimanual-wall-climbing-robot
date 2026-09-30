@@ -17,7 +17,7 @@ import hashlib
 import os
 import re
 import numpy as np
-from controller import SCENE, URDF
+from . import SCENE, URDF
 
 OUT = os.path.join(URDF, 'lessons')
 
@@ -29,7 +29,7 @@ WALL_SIDE = '    <geom name="wall_side"  type="box" material="wall" pos="0.125 -
 
 # --- the grip pad: what makes the hook hold along its rung --------------------
 # The hook is a slot round a smooth cylinder, so along the rung axis nothing holds
-# it: `controller/test_climb.py` phase 7 measures 40 N moving it ~100 mm, and PPO
+# it: 40 N sideways moved it ~100 mm (measured, `slide_test` below), and PPO
 # solved lesson 1 by exploiting exactly that instead of climbing. The fix belongs on
 # the HAND, not the wall -- a climber chalks up and wears rubber, they do not groove
 # the rock -- and a real climber can still slip, so the aim is to make the slide
@@ -444,16 +444,17 @@ def rung_segments(model):
     return out
 
 
+GRIP_HARD = np.radians(-38)   # a load-bearing hand gripping down to the edge of the
+                              # measured band while the other one is off the wall
+
+
 def slide_test(path, force=40.0):
     """phase 7's measurement: hook_R's travel along its rung under a sideways pull.
 
-    Deliberately not built on `controller.moves`: this has to run on a lesson scene,
-    whose rung names the controller's HANG table does not know. Grip sequence matches
-    phase 7 -- both fingers shut, then R grips hard while L lets go.
+    Both fingers shut, then R grips hard (GRIP_HARD) while L lets go.
     """
     import mujoco
     from climbing_env import ClimbingEnv, GRIP_SET
-    from controller.moves import GRIP_HARD
     e = ClimbingEnv(xml=path, free_fall_s=1e9, timeout_s=1e9, success_z=1e9)
     e.reset()
     ctrl = e.data.ctrl.copy()

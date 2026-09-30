@@ -1,5 +1,5 @@
-# Simulation + controller. Enough on its own to run controller/ and rl.lessons,
-# rl.climb_task and rl.bench's simulator half.
+# Simulation. Enough on its own to run rl.lessons, rl.climb_task and rl.bench's
+# simulator half.
 mujoco==3.12.0
 numpy>=2.0
 
@@ -27,5 +27,9 @@ stable-baselines3>=2.4
 mujoco-mjx==3.12.0
 jax>=0.7
 
-# Not required: `ffmpeg` (a program, not a package) is used only by rl.render and
-# controller.record to write PNGs and mp4s. Training and evaluation never call it.
+# The SLAM test rig (rl.slam_test): the rung map from FAST-LIO2's points. FAST-LIO2
+# itself runs in Docker (slam/Dockerfile), not from here.
+scipy>=1.13
+
+# Not required: `ffmpeg` (a program, not a package) is used only by rl.render to
+# write PNGs and mp4s. Training and evaluation never call it.

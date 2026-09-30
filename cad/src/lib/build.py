@@ -505,8 +505,8 @@ def wrist_dev_L():
 #   and they share a spine. The difference is that the far end is a hook, not
 #   a flange, so the child leg keeps going and turns into the blade.
 #
-#   The palm, the lip and their 65 mm width are the numbers the controller and
-#   the RL work were built on - urdf/climbing_robot.urdf carries them as two
+#   The palm, the lip and their 65 mm width are the numbers the RL work was
+#   built on - urdf/climbing_robot.urdf carries them as two
 #   collision boxes - so they are copied, not redesigned. What is drawn here
 #   is how they attach.
 #

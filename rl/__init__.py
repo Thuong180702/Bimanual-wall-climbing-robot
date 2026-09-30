@@ -11,7 +11,13 @@
     python -m rl.plot --name <name>   # a run's figures, from the logs it keeps
     python -m rl.curve --name <name>  # the learning curve: every snapshot on the benchmark
 """
-import os
+import os, sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+URDF = os.path.join(ROOT, 'urdf')
+SCENE = os.path.join(URDF, 'scene.xml')
+if URDF not in sys.path:            # climbing_env.py lives next to scene.xml
+    sys.path.insert(0, URDF)
 
 
 def default_envs():

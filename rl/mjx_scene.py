@@ -99,7 +99,7 @@ also lives. `rl.mjx_check` does that.
 """
 import hashlib, os
 import numpy as np, mujoco
-from controller import SCENE
+from . import SCENE
 from .lessons import LESSONS, OUT, PAD, canon_axis, lesson_tag, xml_path
 
 N_RUNG = max(len(v['rungs']) for v in LESSONS.values())     # 6: lesson 6
@@ -379,7 +379,7 @@ def lesson_layout(lesson):
             thin = int(np.argmin(sz))
             n = np.zeros(3)
             # the robot's side of the wall: the rungs stand proud of the face they
-            # belong to (controller.kinematics.wall_planes reads it the same way)
+            # belong to
             near = min((r[1] for r in rungs), key=lambda p: np.linalg.norm(p - c))
             n[thin] = np.sign(near[thin] - c[thin]) or 1.0
             walls.append((m.geom(g).name, c + n * sz[thin], n))
