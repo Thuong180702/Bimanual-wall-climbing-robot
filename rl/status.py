@@ -10,7 +10,8 @@ reporting on.
 import argparse, json, os, time
 from datetime import datetime
 
-WINDOW = 40          # must match train_ppo.WINDOW; duplicated to keep this import-free
+WINDOW = 40          # train_ppo.WINDOW, for a state.json that does not say its own window;
+                     # duplicated to keep this import-free
 
 
 def read(name):
@@ -56,7 +57,7 @@ def show(name, names):
             print(f"{'':>14}family {f}: " + ", ".join(f"{k} {v:g}" for k, v in t.items()))
     print(f"\n  {'family' if tops else 'lesson':>22} {'success':>9} {'episodes':>9}")
     for k in st['active']:
-        h = hist.get(k, [])[-WINDOW:]
+        h = hist.get(k, [])[-st.get('window', WINDOW):]
         rate = f"{sum(h)/len(h):.0%}" if h else "-"
         print(f"  {f'{k} {names.get(k, k)}' if tops else names.get(k, k):>22} {rate:>9} {len(h):>9}")
 

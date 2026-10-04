@@ -34,6 +34,8 @@
 #     HOURS=24 TOTAL=3000000000 ENVS=4096 SEED=0 EPISODES=50 MAX_FAILS=3 SCORE=1 WALLS=adr
 #     STALL=1800 (s without a PPO update before a trainer counts as hung)
 #     CKPT=<steps> (checkpoint interval; the trainer's own default, 1M, if unset)
+#     NET=64,64 (the policy and value nets' hidden sizes, a fresh run only; a run
+#                carried on keeps its checkpoint's shape; unset: the trainer's 256,256)
 # ENVS is halved by the preflight, down to 1024, until a batch fits the card, and the
 # run keeps the size it found (out/<name>/envs) unless ENVS is given again.
 # A second call with the same name carries the same run on (its preflight skipped),
@@ -131,7 +133,7 @@ EOF
     echo "$ENVS" > "$RUN/envs"
     rm -rf out/_preflight
     say "preflight 5/5: a short training run that saves and resumes (its log: $RUN/preflight.txt)"
-    { step $PY -m rl.train_ppo --name _preflight --backend mjx --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 \
+    { step $PY -m rl.train_ppo --name _preflight --backend mjx --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} \
       && step $PY -m rl.train_ppo --name _preflight --backend mjx --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
         >> "$RUN/preflight.txt" 2>&1 \
         || { say "a short training run did not save and resume: $RUN/preflight.txt"; exit 1; }
@@ -154,10 +156,11 @@ while :; do
     need=$(( TOTAL - have ))
     [ "$need" -gt 0 ] || { say "step budget reached: $have"; break; }
     resume=; [ -f "$RUN/state.json" ] && resume=--resume
+    net=; [ -z "$resume" ] && [ -n "${NET:-}" ] && net="--net $NET"
     say "train: $have steps so far, $need to go, $(( left / 60 )) min left, $ENVS envs"
     t0=$(date +%s)
     $PY -m rl.train_ppo --name "$NAME" --backend mjx --envs "$ENVS" --seed "$SEED" \
-                        --walls "$WALLS" --steps "$need" $resume ${CKPT:+--ckpt-every "$CKPT"} &
+                        --walls "$WALLS" --steps "$need" $resume $net ${CKPT:+--ckpt-every "$CKPT"} &
     pid=$! why=
     # Watched: at the deadline it is told to stop (SIGTERM: it saves, then exits), and so
     # it is when no PPO update has reached progress.jsonl for STALL s -- a trainer hung

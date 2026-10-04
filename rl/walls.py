@@ -63,6 +63,25 @@ FAMILIES = {
 }
 
 
+# family -> the families whose skills it is made of. A family enters the pool only once
+# each of these has passed (train_ppo.Walls), so an upgrade never comes before what it
+# upgrades, and a family stuck at 0 % holds back its upgrades and nothing else -- gpu1's
+# family 3 kept 4-9 locked for 90M steps, and only 5 and 6 climb up. Fixed with the
+# families, before any training; numbered order is a valid order, so with nothing stuck
+# the families enter 1, 2, ..., 9 exactly as before.
+NEEDS = {1: (),
+         2: (1,),        # gaps in the row: a traverse that changes rungs
+         3: (1,),        # rows above: a traverse's re-grip, reached upward
+         4: (2,),        # down a staircase: each step is another rung across a gap
+         5: (3, 4),      # over a break: up a row, along it, down again
+         6: (2, 3),      # tiers of short rungs: up, and across the gaps between them
+         7: (1,),        # the corner: from the front row onto the side rung, level
+         8: (1,),        # the wall behind: onto the back rung, level
+         9: (2,)}        # a gap past the static reach: crossed by swinging
+assert set(NEEDS) == set(FAMILIES) and all(p < f for f, ps in NEEDS.items() for p in ps), \
+    "every family's needs come before it in the numbered order"
+
+
 # where each benchmark lesson sits in its family (rl.lessons draws them): every value
 # must lie inside the family's last range, so the benchmark is a wall training can draw
 BENCHMARK = {1: dict(shift=1.10), 2: dict(gaps=2, width=0.25), 3: dict(rows=2, spacing=0.45),

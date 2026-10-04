@@ -137,6 +137,22 @@ LR_MAX = 3e-4        # the ETH legged-robot work -- never above 3e-4, the rate t
                      # 0.6-1.1. Halving it is what the guard's LR_DECAY used to do on
                      # its own: with an adaptive rate, a halved rate is pulled back up
                      # within a few updates, and only the target sticks.
+WALL_WINDOW = 200    # WINDOW and UNLOCK_MIN on the generated walls (Walls), and the probes
+                     # an ADR vote counts. 40 was sized for 12 CPU envs. 4096 envs end
+                     # hundreds of a family's episodes between two updates and the gate
+                     # is asked after every one, so a 40-episode window is a sample
+                     # drawn again and again: a family truly at 60 % passes it at 70 %
+                     # 13 % of the time and one at 65 % 31 % -- the 70 % gate was a
+                     # 55-65 % one. Over 200: 0.2 % and 8 %. It costs no time: a vote
+                     # waits a cohort's lag (6.2M steps on MJX) for its probes anyway.
+STUCK_STEPS = 50_000_000   # a family in the pool this long that has never once passed
+                     # stops holding the next one back (Walls). gpu1's family 3 sat at
+                     # 0 % for 90M steps with 4-9 locked behind it; families that could
+                     # be learnt passed the gate 6-12M steps after they entered (1 and
+                     # 2, the first moments the cohort lag let them be counted). A family
+                     # that HAS passed blocks again whenever it slips: that is
+                     # consolidation, not a jam. The stuck one stays in the pool and
+                     # keeps the steps its failures draw (`weights`).
 BANK = 1024          # generated walls drawn at the start of every rollout (rl.walls); each
                      # env takes one at every reset, so a 4096-env batch meets ~1000 new
                      # walls an update and never the same bank twice
@@ -153,6 +169,14 @@ MJX_ENVS = 4096      # envs in one GPU batch, 33 KB of state each (130 MB). pony
 # run from scratch had (approx_kl 0.0007-0.005 against 0.012-0.017), with the rate
 # already at its 3e-4 cap -- lesson -2 would have cost hundreds of millions of steps.
 MJX_PPO = dict(n_steps=32, minibatches=8, n_epochs=10)
+# ...and its nets: 256x256 for both, a fresh run's default on MJX (--net overrides, a
+# resume keeps its checkpoint's). Nine families in SB3's 64x64 is the standing suspect
+# for the forgetting the guard keeps catching, rsl_rl's locomotion policies on such
+# batches are 512-256-128, and on the GPU the net's cost is lost in the physics. The CPU
+# path keeps 64x64: the 2026-10-04 canary on its 3k-sample updates had 256x256 hold what
+# it learnt better (-2 100 %, -1 82 % against 85 %, 48 %) and reach lesson 0 later
+# (0 % at 1.5M against 88 %). ponytail: unmeasured on a GPU -- NET=64,64 is the other arm
+MJX_NET = [256, 256]
 
 
 # out/<name>/metrics.jsonl: what a run did, one JSON object a line, for audits and
@@ -386,12 +410,17 @@ class Curriculum(BaseCallback):
     about any of them, so a rate over all of them is the policy's however long each
     ran. The unlock, the draw weights, the score, the guard and ADR all read it.
     """
+    window, unlock_min = WINDOW, UNLOCK_MIN
+    stuck = None                         # STUCK_STEPS (Walls): see `stalled`
+    needs = {}                           # lesson -> the lessons it builds on (Walls: rl.walls.NEEDS)
 
-    def __init__(self, pool, active=None, history=None, enabled=True, lag=None):
+    def __init__(self, pool, active=None, history=None, enabled=True, lag=None,
+                 cleared=None, entered=None):
         super().__init__()
         self.pool = list(pool)
         self.active = list(active or ([self.pool[0]] if enabled else self.pool))
         self.hist = {lesson_key(k): list(v) for k, v in (history or {}).items()}
+        self._books(cleared, entered)
         self.lens = {}                   # episode lengths per lesson, for the draw weights
         self.ends = collections.Counter()   # (lesson, end reason) since the last checkpoint
         self.enabled = enabled
@@ -400,9 +429,29 @@ class Curriculum(BaseCallback):
         self.lag = (episode_steps(max(LESSONS[k]['timeout'] for k in self.pool))
                     if lag is None else lag)
 
+    def _books(self, cleared, entered):
+        """which lessons have passed the gate at least once, and the step each entered
+        the pool at. A checkpoint from before these were kept: every lesson but the
+        newest had passed (the gate let the next one in), and the clock starts now"""
+        self.cleared = ({lesson_key(k) for k in cleared} if cleared is not None
+                        else set(self.active[:-1]))
+        self.entered = {lesson_key(k): v for k, v in (entered or {}).items()}
+
     def rate(self, lesson):
-        h = self.hist.get(lesson, [])[-WINDOW:]
+        h = self.hist.get(lesson, [])[-self.window:]
         return (len(h), sum(h) / len(h) if h else 0.0)
+
+    def stalled(self, lesson):
+        """in the pool `stuck` steps and never once passed. It stays in the pool, with the
+        steps its failures draw, and its upgrades (`needs`) stay locked until it passes;
+        it only stops holding back lessons that do not build on it (Walls; STUCK_STEPS)"""
+        if self.stuck is None or lesson in self.cleared:
+            return False
+        return self.num_timesteps - self.entered.setdefault(lesson, self.num_timesteps) >= self.stuck
+
+    def guarded(self):
+        """the lessons the guard holds a best checkpoint to: all of the pool"""
+        return list(self.active)
 
     def warming(self):
         """is the newest lesson still failing? -- for the log line only; the draw
@@ -415,7 +464,7 @@ class Curriculum(BaseCallback):
         if newest in passed:
             return False
         n, r = self.rate(newest)
-        if n >= UNLOCK_MIN and r >= WARM_RATE:
+        if n >= self.unlock_min and r >= WARM_RATE:
             passed.add(newest)
             self._passed = passed
             return False
@@ -451,7 +500,7 @@ class Curriculum(BaseCallback):
         for lesson in self.active:
             n, r = self.rate(lesson)
             need.append(max(1.0 - r, MIN_SHARE) if n else 1.0)
-            v = [x for x in self.lens.get(lesson, [])[-WINDOW:] if x > 0]
+            v = [x for x in self.lens.get(lesson, [])[-self.window:] if x > 0]
             lens.append(sum(v) / len(v) if v else None)
         known = [x for x in lens if x is not None]
         fill = sum(known) / len(known) if known else 1.0
@@ -461,39 +510,40 @@ class Curriculum(BaseCallback):
     def score(self):
         """SUM of the success rates over the active lessons (Checkpoint.score says why)"""
         rates = [self.rate(k) for k in self.active]
-        if any(n < UNLOCK_MIN for n, _ in rates):
+        if any(n < self.unlock_min for n, _ in rates):
             return None
         return sum(r for _, r in rates)
 
     def held(self, lessons):
         """the same sum over `lessons` -- the best checkpoint's -- scored now"""
         rates = [self.rate(k) for k in lessons]
-        if not rates or any(n < UNLOCK_MIN for n, _ in rates):
+        if not rates or any(n < self.unlock_min for n, _ in rates):
             return None
         return sum(r for _, r in rates)
 
     def state(self):
         return {'active': self.active,
-                'history': {str(k): v[-WINDOW:] for k, v in self.hist.items()}}
+                'history': {str(k): v[-self.window:] for k, v in self.hist.items()},
+                'cleared': sorted(self.cleared), 'entered': {str(k): v for k, v in self.entered.items()}}
 
     def restore(self, state):
         """back to a saved active set and history: the curriculum half of a rollback"""
         self.active = [k for k in map(lesson_key, state['active']) if k in self.pool] \
             or self.active
         self.hist = {lesson_key(k): list(v) for k, v in state['history'].items()}
+        self._books(state.get('cleared'), state.get('entered'))
         self.pending.clear()
         self.since = self.clock          # episodes the dropped policy began do not count
         self._warm = self.warming()
         self.training_env.env_method('set_active', self.active, self.weights())
 
-    @staticmethod
-    def _push(books, lesson, x):
+    def _push(self, books, lesson, x):
         """append, keeping only the tail `rate` and `weights` read: a GPU batch ends
         millions of episodes a day, and these lists used to keep every one"""
         h = books.setdefault(lesson, [])
         h.append(x)
-        if len(h) > 2 * WINDOW:
-            del h[:-WINDOW]
+        if len(h) > 2 * self.window:
+            del h[:-self.window]
 
     def _count(self, ep):
         """one episode into the books `rate` and `weights` read, in start order"""
@@ -525,27 +575,36 @@ class Curriculum(BaseCallback):
         elif any(done for done in self.locals['dones']):
             # the lengths moved: keep the step shares honest (cheap; a list of floats)
             self.training_env.env_method('set_active', self.active, self.weights())
+        # every lesson in the pool, not only the newest: see UNLOCK_AT
+        rates = {k: self.rate(k) for k in self.active}
+        ok = {k: m >= self.unlock_min and q >= UNLOCK_AT for k, (m, q) in rates.items()}
+        self.cleared |= {k for k, v in ok.items() if v}
         locked = [k for k in self.pool if k not in self.active]
         if not locked:
             return True
-        # every lesson in the pool, not only the newest: see UNLOCK_AT
-        rates = [self.rate(k) for k in self.active]
-        n, r = rates[-1]
-        if all(m >= UNLOCK_MIN and q >= UNLOCK_AT for m, q in rates):
-            # the next lesson is the first one in the pool that is not yet active,
-            # NOT `pool[len(active)]`: inserting a lesson into the middle of the pool
-            # on a resume (1.85 between 1.7 and 2, say) leaves the restored active set
-            # out of step with pool positions, and the index form then re-appends a
-            # lesson that is already active while the new one is never trained at all
-            self.active.append(locked[0])
+        # the next lesson is the first one in the pool that is not yet active and whose
+        # needs have all passed -- NOT `pool[len(active)]`: inserting a lesson into the
+        # middle of the pool on a resume (1.85 between 1.7 and 2, say) leaves the restored
+        # active set out of step with pool positions, and the index form then re-appends
+        # a lesson that is already active while the new one is never trained at all
+        nxt = next((k for k in locked if set(self.needs.get(k, ())) <= self.cleared), None)
+        stalled = [k for k in self.active if not ok[k] and self.stalled(k)]
+        if nxt is not None and all(ok[k] or k in stalled for k in self.active):
+            self.active.append(nxt)
             self.hist.setdefault(self.active[-1], [])
+            self.entered[self.active[-1]] = int(self.num_timesteps)
             self._warm = self.warming()
             self.training_env.env_method('set_active', self.active, self.weights())
             record('unlock', timesteps=int(self.num_timesteps), lesson=self.active[-1],
-                   pool=self.active, rates={str(k): self.rate(k) for k in self.active[:-1]})
-            print(f"\n[curriculum] every lesson at {UNLOCK_AT:.0%}+, the newest "
-                  f"({self.active[-2]}) at {r:.0%} over {n} "
-                  f"episodes -> unlocking lesson {self.active[-1]} "
+                   pool=self.active, stalled=stalled,
+                   rates={str(k): self.rate(k) for k in self.active[:-1]})
+            n, r = rates[self.active[-2]]
+            why = (f"{stalled} not passed in {self.stuck:,} steps: still trained, its upgrades "
+                   f"still locked; the rest at {UNLOCK_AT:.0%}+, and {nxt} needs only "
+                   f"{list(self.needs.get(nxt, ()))}" if stalled else
+                   f"every lesson at {UNLOCK_AT:.0%}+, the newest ({self.active[-2]}) at {r:.0%} "
+                   f"over {n} episodes")
+            print(f"\n[curriculum] {why} -> unlocking lesson {self.active[-1]} "
                   f"({LESSONS[self.active[-1]]['name']}); pool now {self.active}, "
                   f"the pool's steps go where the failures are\n")
         return True
@@ -556,24 +615,32 @@ class Walls(Curriculum):
 
     Nine families of walls, one per benchmark lesson 1..9 and fixed before any training,
     enter in the benchmark's order by the parent class's own rule -- every family in
-    the pool passed at UNLOCK_AT over its last WINDOW walls, at least UNLOCK_MIN of them
-    -- and share the steps by it (`weights`: where the failures are). Inside a family
+    the pool passed at UNLOCK_AT over its last WALL_WINDOW walls, and each family only
+    once the families it is made of (rl.walls.NEEDS) have passed -- and share the steps
+    by it (`weights`: where the failures are). A family that has not passed once in
+    STUCK_STEPS stays in the pool and keeps its upgrades locked, and stops holding back
+    the families that do not build on it. Inside a family
     every parameter's top moves by automatic domain randomization: half of the walls
-    put one parameter exactly at its top (rl.walls.draw), and each WINDOW of those
+    put one parameter exactly at its top (rl.walls.draw), and each WALL_WINDOW of those
     passed at UNLOCK_AT or better moves that top a step toward its last value, at
     WARM_RATE or worse a step back. A probe counts only at the top it was drawn at, so
     walls still out when a top moves do not vote on the new one. The score -- the best
-    checkpoint, the guard -- is how far the tops have come, 0..1 a family.
+    checkpoint -- is how far the tops have come, 0..1 a family; the guard adds what the
+    families the best had passed still hold of the gate (`held`).
 
     enabled=False is the no-curriculum ablation: every family, every top at its last
     value from the first step -- plain domain randomization over the same walls.
     """
+    window = unlock_min = WALL_WINDOW
+    stuck = STUCK_STEPS
 
-    def __init__(self, active=None, history=None, walls=None, enabled=True, seed=0, lag=None):
+    def __init__(self, active=None, history=None, walls=None, enabled=True, seed=0, lag=None,
+                 cleared=None, entered=None):
         from . import walls as W
         self.W = W
+        self.needs = W.NEEDS
         super().__init__(list(W.FAMILIES), active, history, enabled,
-                         episode_steps(W.TIMEOUT) if lag is None else lag)
+                         episode_steps(W.TIMEOUT) if lag is None else lag, cleared, entered)
         self._load(walls)
         self.rng = np.random.default_rng(seed)
         self.checker = None
@@ -613,8 +680,24 @@ class Walls(Curriculum):
         s = super().score()
         return self.progress() + 0.01 * (s or 0.0) / len(self.W.FAMILIES)
 
+    def guarded(self):
+        """the families the guard holds a best to: those that have passed the gate. A
+        frontier family is still being learnt, and its rate says nothing about forgetting"""
+        return [f for f in self.active if f in self.cleared]
+
     def held(self, lessons):
-        return self.progress()
+        """ADR's progress, plus how much of the gate each of `lessons` (the best's passed
+        families) still holds: 1 at UNLOCK_AT or over, 0 at 0 %. Progress alone cannot see
+        a family forgotten inside ADR's dead band -- probes passed 20-70 % move no top --
+        so a family that fell from 95 % to 30 % and stayed there never brought the run
+        back. Rates over UNLOCK_AT are capped: ADR raising a top lowers them by design.
+        One family forgotten outright is a whole family's worth (GUARD_DROP), as losing
+        its range is"""
+        out = self.progress()
+        for f in lessons:
+            n, r = self.rate(f)
+            out += min(r, UNLOCK_AT) / UNLOCK_AT if n >= self.unlock_min else 1.0
+        return out
 
     def draw_bank(self, env):
         """a fresh bank of BANK walls into `env`: families by the pool's weights, their
@@ -643,7 +726,7 @@ class Walls(Curriculum):
             if abs(ep['probe_val'] - self.tops[f][name]) <= 1e-6:   # not a top moved since
                 h = self.probes.setdefault(f'{f}:{name}', [])
                 h.append(ep['reason'] == 'success')
-                if len(h) >= WINDOW:
+                if len(h) >= self.window:
                     rate = sum(h) / len(h)
                     h.clear()
                     self._move(f, name, rate)
@@ -734,7 +817,8 @@ class Checkpoint(BaseCallback):
     """
 
     def __init__(self, run_dir, curriculum, every=100_000, best=None, best_active=None,
-                 rollbacks=0, kl_target=None, backend='cpu', walls='lessons', snap_every=0):
+                 rollbacks=0, kl_target=None, backend='cpu', walls='lessons', snap_every=0,
+                 best_held=None):
         super().__init__()
         self.dir, self.cur, self.every, self.backend = run_dir, curriculum, every, backend
         self.walls, self.snap_every, self.snapped = walls, snap_every, None
@@ -742,6 +826,10 @@ class Checkpoint(BaseCallback):
         self.kl_target = kl_target or KL_START
         # the lessons the best checkpoint was scored over; `held` scores them now
         self.best_active = [lesson_key(k) for k in (best_active or [])]
+        # what `held` read at the best: the guard's bar. On the lesson ladder it is the
+        # best's score itself; on generated walls the score is ADR's progress and the
+        # guard reads the passed families' success as well (Walls.held)
+        self.best_held = best_held if best_held is not None else self.best
         self.low_since, self.due, self.rollbacks = None, False, rollbacks
 
     def score(self):
@@ -771,7 +859,7 @@ class Checkpoint(BaseCallback):
         enough to go back? The rollback itself waits for the next rollout to start
         (`_on_rollout_start`), so no update ever mixes the two policies' data."""
         h = self.held()
-        if h is None or h >= self.best - GUARD_DROP:
+        if h is None or h > self.best_held - GUARD_DROP:
             self.low_since = None
             return ""
         if self.low_since is None:
@@ -779,7 +867,7 @@ class Checkpoint(BaseCallback):
         low = self.model.num_timesteps - self.low_since
         if low >= self.patience():
             self.due = True
-        return f" | forgetting: {h:.2f} vs best {self.best:.2f} for {low:,} steps"
+        return f" | forgetting: {h:.2f} vs best {self.best_held:.2f} for {low:,} steps"
 
     def patience(self):
         """GUARD_UPDATES in steps, at this run's rollout size"""
@@ -811,10 +899,10 @@ class Checkpoint(BaseCallback):
         self.kl_target = max(self.kl_target * LR_DECAY, KL_MIN)
         self.rollbacks += 1
         self.low_since, self.due = None, False
-        record('rollback', timesteps=int(m.num_timesteps), held=h, best=self.best,
+        record('rollback', timesteps=int(m.num_timesteps), held=h, best=self.best_held,
                pool=self.cur.active, lr=[was, m.learning_rate], kl_target=[was_kl, self.kl_target],
                rollbacks=self.rollbacks)
-        print(f"\n[guard] {h:.2f} against the best {self.best:.2f} for "
+        print(f"\n[guard] {h:.2f} against the best {self.best_held:.2f} for "
               f"{GUARD_UPDATES}+ updates: back to the best checkpoint (pool "
               f"{self.cur.active}), learning rate {was:g} -> {m.learning_rate:g}, "
               f"KL target {was_kl:g} -> {self.kl_target:g}, "
@@ -832,9 +920,9 @@ class Checkpoint(BaseCallback):
         state = {'timesteps': int(self.model.num_timesteps), 'robot': robot_stamp(),
                  'backend': self.backend, 'walls_mode': self.walls,
                  'axes': 'canonical',     # rung axes as rl.lessons.canon_axis turns them
-                 'best': self.best, 'best_active': self.best_active,
+                 'best': self.best, 'best_active': self.best_active, 'best_held': self.best_held,
                  'lr': self.model.lr_schedule(1.0), 'kl_target': self.kl_target,
-                 'rollbacks': self.rollbacks,
+                 'rollbacks': self.rollbacks, 'window': self.cur.window,
                  **self.cur.state()}
         with open(p + 'state.tmp.json', 'w') as f:
             json.dump(state, f, indent=1)
@@ -850,7 +938,8 @@ class Checkpoint(BaseCallback):
         # an update, and 4096 envs move the score on almost every step.
         s = self.score()
         if s is not None and s > self.best:
-            self.best, self.best_active, self.low_since = s, list(self.cur.active), None
+            self.best, self.best_active, self.low_since = s, self.cur.guarded(), None
+            self.best_held = self.held()
             self.save('best_')
             record('best', timesteps=int(self.model.num_timesteps), score=s,
                    pool=self.cur.active)
@@ -891,8 +980,8 @@ class Checkpoint(BaseCallback):
                    updates=int(self.model.num_timesteps // (self.model.n_steps * self.model.n_envs)),
                    pool=self.cur.active,
                    rate={str(k): self.cur.rate(k) for k in self.cur.active},
-                   length={str(k): float(np.mean(v[-WINDOW:])) for k, v in self.cur.lens.items() if v},
-                   ends=by_lesson, best=self.best, held=self.held(),
+                   length={str(k): float(np.mean(v[-self.cur.window:])) for k, v in self.cur.lens.items() if v},
+                   ends=by_lesson, best=self.best, held=self.held(), best_held=self.best_held,
                    lr=self.model.lr_schedule(1.0), kl_target=self.kl_target,
                    rollbacks=self.rollbacks, contact_cap=cap,
                    std=float(self.model.policy.log_std.detach().exp().mean()),
@@ -1019,6 +1108,7 @@ def self_check():
     # the old mean it did: 85% on lesson 1 alone scored 0.85, and unlocking lesson 2
     # at 0% dropped it to 0.42, so the 10.4M run kept a 308k-step policy as "best".
     class Cp:
+        unlock_min = UNLOCK_MIN
         active = None
         def rate(self, k):
             return (WINDOW, {1: 0.85, 2: 0.0, 3: 0.0}[k])
@@ -1073,10 +1163,11 @@ def order_check(FakeModel, FakeEnv):
 
 
 def walls_check(FakeModel, FakeEnv):
-    """ADR on the generated walls: a top moves only on a full WINDOW of probes drawn at
+    """ADR on the generated walls: a top moves only on a full WALL_WINDOW of probes drawn at
     it, up on a pass, down on a fail, never past its ends; the families enter in order;
     and the tops survive state.json"""
     from .walls import FAMILIES
+    WW = WALL_WINDOW
     w = Walls(lag=0)
     w.model = FakeModel(FakeEnv())
     assert w.active == [1] and w.tops[1]['shift'] == FAMILIES[1][0][2], (w.active, w.tops[1])
@@ -1089,18 +1180,18 @@ def walls_check(FakeModel, FakeEnv):
                                        probe_val=v, steps=100)], 'dones': [True]}
             w._on_step()
     top0, p0 = w.tops[1]['shift'], w.progress()
-    probe(1, 'shift', True, WINDOW - 1)
+    probe(1, 'shift', True, WW - 1)
     assert w.tops[1]['shift'] == top0, "moved before a full window of probes"
     probe(1, 'shift', True, 1)
     assert abs(w.tops[1]['shift'] - (top0 + 0.1)) < 1e-9 and w.progress() > p0, w.tops[1]
-    probe(1, 'shift', False, WINDOW, val=0.123)          # drawn at a top long gone: no vote
+    probe(1, 'shift', False, WW, val=0.123)          # drawn at a top long gone: no vote
     assert abs(w.tops[1]['shift'] - (top0 + 0.1)) < 1e-9, "counted probes of an old top"
-    probe(1, 'shift', False, WINDOW)
+    probe(1, 'shift', False, WW)
     assert abs(w.tops[1]['shift'] - top0) < 1e-9, "a failed window did not move the top back"
-    probe(1, 'shift', False, WINDOW)
+    probe(1, 'shift', False, WW)
     assert abs(w.tops[1]['shift'] - top0) < 1e-9, "went below the first top"
     for _ in range(40):
-        probe(1, 'shift', True, WINDOW)
+        probe(1, 'shift', True, WW)
     assert w.tops[1]['shift'] == FAMILIES[1][0][3], "went past the last top"
     assert w.active[:2] == [1, 2], f"family 2 never entered after family 1 was passed: {w.active}"
     st = json.loads(json.dumps(w.state()))
@@ -1118,7 +1209,7 @@ def walls_check(FakeModel, FakeEnv):
     old = json.loads(json.dumps(st))
     del old['walls']['spec']
     old['walls']['tops']['3'] = {'rows': 1, 'spacing': 0.30}
-    old['history']['3'] = [False] * WINDOW
+    old['history']['3'] = [False] * WW
     r = Walls(old['active'], old['history'], old['walls'])
     assert r.tops[3] == first_tops()[3] and 3 not in r.hist and r.tops[1] == w.tops[1] \
         and all(r.tops[f] == w.tops[f] for f in FAMILIES if f not in LEGACY), "a legacy checkpoint's tops"
@@ -1133,18 +1224,79 @@ def walls_check(FakeModel, FakeEnv):
     assert off.score() == off.progress() == len(FAMILIES), "a tie-break with nothing counted"
     for f in FAMILIES:                                   # every family passed: + 0.01
         off.locals = {'infos': [dict(reason='success', lesson=f, probe=-1, probe_val=0.0,
-                                     steps=100)] * WINDOW, 'dones': [True] * WINDOW}
+                                     steps=100)] * WW, 'dones': [True] * WW}
         off._on_step()
     assert abs(off.score() - (len(FAMILIES) + 0.01)) < 1e-9, off.score()
     tops = json.dumps(off.tops, sort_keys=True)
     off.locals = {'infos': [dict(reason='fell', lesson=1, probe=0, probe_val=off.tops[1]['shift'],
-                                 steps=100)] * WINDOW, 'dones': [True] * WINDOW}
+                                 steps=100)] * WW, 'dones': [True] * WW}
     off._on_step()
     assert json.dumps(off.tops, sort_keys=True) == tops, "the no-curriculum ablation moved a top"
-    print(f"walls test: ADR moves a top by its step on a full window of {WINDOW} probes at it "
+
+    # The gate over WALL_WINDOW, asked after every episode as it is on the GPU: a family
+    # truly at 60 % never lets the next one in (over 40 it did, 13 % a window); at 80 % it does
+    g = Walls(lag=0)
+    g.model = FakeModel(FakeEnv())
+    rng = np.random.default_rng(0)
+
+    def ep(f, ok, n=1):
+        for _ in range(n):
+            g.locals = {'infos': [dict(reason='success' if (ok() if callable(ok) else ok) else 'fell',
+                                       lesson=f, probe=-1, probe_val=0.0, steps=100)], 'dones': [True]}
+            g._on_step()
+    ep(1, lambda: rng.random() < 0.60, 20 * WW)
+    assert g.active == [1] and not g.cleared, f"a family at 60 % unlocked the next one: {g.active}"
+    ep(1, lambda: rng.random() < 0.80, 3 * WW)
+    assert g.active == [1, 2] and g.cleared == {1}, (g.active, g.cleared)
+    # gpu1's jam, replayed: family 3 (climbing up) never passes. It is never dropped and
+    # nothing that climbs up (5 over a break, 6 tiers) opens before it passes; after
+    # STUCK_STEPS it stops holding back what does not need it -- 4 down, 7 the corner, 8
+    # the wall behind, 9 the swing -- one at a time, each consolidated before the next
+    ep(2, True, WW)
+    assert g.active == [1, 2, 3], g.active
+    ep(3, False, WW)
+    g.num_timesteps = STUCK_STEPS - 1
+    ep(3, False)
+    assert g.active == [1, 2, 3], "let a family past a stuck one before STUCK_STEPS"
+    g.num_timesteps = STUCK_STEPS
+    ep(3, False)
+    assert g.active == [1, 2, 3, 4] and 3 not in g.cleared, f"a stuck family blocks what does not need it: {g.active}"
+    ep(1, False, WW)                                     # family 1, passed once, forgotten:
+    ep(4, True, WW)                                      # consolidation holds the pool
+    assert g.active == [1, 2, 3, 4], "unlocked while a family that had passed was slipping"
+    ep(1, True, WW)
+    assert g.active == [1, 2, 3, 4, 7], f"5 and 6 climb up and 3 has not passed: {g.active}"
+    for f, nxt in ((7, 8), (8, 9)):
+        ep(f, True, WW)
+        assert g.active[-1] == nxt, (f, g.active)
+    ep(9, True, WW)
+    assert g.active == [1, 2, 3, 4, 7, 8, 9] and 3 in g.active, f"opened an upgrade of a stuck family: {g.active}"
+    ep(3, True, WW)                                      # the stuck one passes after all:
+    assert g.active[-1] == 5, g.active                   # its upgrades open, in order
+    ep(5, True, WW)
+    assert g.active[-1] == 6, g.active
+    ep(3, False, WW)                                     # ...and once passed, it holds the pool
+    ep(6, True, WW)                                      # like any other when it slips
+    g.num_timesteps = 3 * STUCK_STEPS
+    ep(6, True)
+    assert 3 in g.cleared and not g.stalled(3), "a family that has passed was treated as stuck"
+    st = json.loads(json.dumps(g.state()))
+    r = Walls(st['active'], st['history'], st['walls'], cleared=st['cleared'], entered=st['entered'])
+    assert r.cleared == g.cleared and r.entered == g.entered, "the gate's books did not survive state.json"
+    # the guard reads the passed families' success as well as ADR's progress, capped at the
+    # gate: at 80 % a family holds all of it, forgotten outright none
+    h = Walls(lag=0)
+    h.model = FakeModel(FakeEnv())
+    h.hist[1] = [True] * WW
+    full = h.held([1])
+    h.hist[1] = [True] * int(0.8 * WW) + [False] * int(0.2 * WW)
+    assert abs(h.held([1]) - full) < 1e-9, "a family above the gate was read as forgetting"
+    h.hist[1] = [False] * WW
+    assert abs(full - h.held([1]) - 1.0) < 1e-9 and full - h.progress() == 1.0, (full, h.held([1]))
+    print(f"walls test: ADR moves a top by its step on a full window of {WW} probes at it "
           f"({UNLOCK_AT:.0%} up, {WARM_RATE:.0%} down), within its ends; families enter in "
           f"order; tops survive state.json, a family whose ranges changed starting over (a legacy "
-          f"checkpoint read against rl.walls.LEGACY); the ablation starts every family at its last tops. OK")
+          f"checkpoint read against rl.walls.LEGACY); the ablation starts every family at its last tops; the gate over {WW} walls holds a family at 60 %; a family stuck {STUCK_STEPS:,} steps stays in the pool, keeps its upgrades locked (rl.walls.NEEDS) and stops blocking the rest; the guard reads the passed families' success. OK")
 
 
 def guard_check(FakeModel, FakeEnv, feed):
@@ -1177,7 +1329,7 @@ def guard_check(FakeModel, FakeEnv, feed):
         sys.stdout = open(os.devnull, 'w')            # its [best]/[checkpoint] lines
         try:
             ck._on_rollout_end()                      # a best, over [1, 2]
-            assert ck.best == 2.0 and ck.best_active == [1, 2], (ck.best, ck.best_active)
+            assert ck.best == ck.best_held == 2.0 and ck.best_active == [1, 2], (ck.best, ck.best_active)
             best_w = {k: v.clone() for k, v in m.policy.state_dict().items()}
             best_mean = venv.obs_rms.mean.copy()
             with torch.no_grad():                     # the drift: weights, statistics...
@@ -1222,6 +1374,33 @@ def guard_check(FakeModel, FakeEnv, feed):
             sys.stdout = out
         assert abs(m.lr_schedule(1.0) - LR_MIN) < 1e-15, "the learning rate went below LR_MIN"
         ck.kl_target, ck.rollbacks = KL_START, 0      # the target's own test is below
+
+        # On generated walls the score is ADR's progress, and a passed family forgotten
+        # inside ADR's dead band moves no top: the guard reads its success as well, and
+        # one family forgotten outright, every top where it was, trips it
+        wc = Walls(lag=0)
+        wc.model = FakeModel(FakeEnv())
+        ep = lambda f, ok, n: [setattr(wc, 'locals', {'infos': [dict(reason='success' if ok else 'fell',
+                               lesson=f, probe=-1, probe_val=0.0, steps=100)], 'dones': [True]})
+                               or wc._on_step() for _ in range(n)]
+        ep(1, True, WALL_WINDOW)                      # family 1 passed, family 2 in
+        ck2 = Checkpoint(os.path.join(d, 'w'), wc, every=1)
+        ck2.init_callback(m)
+        sys.stdout = open(os.devnull, 'w')
+        try:
+            ck2._on_rollout_end()                     # the best: progress 0, family 1 held
+            assert ck2.best_active == [1] and abs(ck2.best_held - 1.0) < 1e-9, (ck2.best_active, ck2.best_held)
+            ep(1, False, WALL_WINDOW)
+            tops = json.dumps(wc.tops, sort_keys=True)
+            m.num_timesteps = 100
+            ck2._on_step()
+            m.num_timesteps = 100 + ck2.patience()
+            ck2._on_step()
+        finally:
+            sys.stdout.close()
+            sys.stdout = out
+        assert json.dumps(wc.tops, sort_keys=True) == tops and ck2.due, \
+            "a passed family forgotten with ADR's tops untouched did not trip the guard"
 
         # the noise floor and ceiling, on the same model
         be = BoundExploration()
@@ -1347,8 +1526,8 @@ def main():
     # stalled for 1.5M steps, before the adaptive rate existed to size the steps for
     # it; it is worth re-running as an arm against a 64x64 one, not as a default.
     ap.add_argument('--net', default=None,
-                    help='hidden sizes for both nets, e.g. 256,256 (default 64,64); '
-                         'fresh runs only')
+                    help='hidden sizes for both nets, e.g. 256,256 (default: 256,256 on '
+                         'mjx, 64,64 on cpu); fresh runs only')
     ap.add_argument('--snap-every', type=int, default=None,
                     help='steps between kept snapshots for the learning curve (rl.curve); '
                          'default 50M on mjx, 2M on cpu; 0 = none')
@@ -1458,7 +1637,7 @@ def main():
         # real and unsolved; `best_` keeps the peak. Do not change these three
         # (the cpu `shape` above, the net) without a 1M run that reaches lesson 1:
         # that is the cheap canary.
-        net = [int(x) for x in a.net.split(',')] if a.net else None
+        net = [int(x) for x in a.net.split(',')] if a.net else (MJX_NET if mjx else None)
         model = PPO('MlpPolicy', venv, device=a.device, verbose=1, **shape,
                     gamma=0.995, gae_lambda=0.95,
                     learning_rate=3e-4 if a.lr is None else a.lr,
@@ -1483,8 +1662,10 @@ def main():
         print(f"[curriculum] pool narrowed to {active}; the best score starts over")
         best = None
     cur = (Walls(active, state.get('history'), state.get('walls'), a.walls == 'adr',
-                 seed + state.get('timesteps', 0))
-           if gen else Curriculum(pool, active, state.get('history'), a.curriculum))
+                 seed + state.get('timesteps', 0), cleared=state.get('cleared'),
+                 entered=state.get('entered'))
+           if gen else Curriculum(pool, active, state.get('history'), a.curriculum,
+                                  cleared=state.get('cleared'), entered=state.get('entered')))
     venv.env_method('set_active', cur.active, cur.weights())
     if gen:
         cur.draw_bank(venv)              # the first episodes' walls, before learn's reset
@@ -1498,7 +1679,8 @@ def main():
                       best_active if best is not None else None,
                       state.get('rollbacks', 0), state.get('kl_target'), backend, a.walls,
                       a.snap_every if a.snap_every is not None else
-                      (50_000_000 if mjx else 2_000_000))
+                      (50_000_000 if mjx else 2_000_000),
+                      best_held=state.get('best_held') if best is not None else None)
 
     # Ctrl-C during a rollout would otherwise lose everything since the last
     # checkpoint; SIGTERM likewise, so a killed run is resumable too.

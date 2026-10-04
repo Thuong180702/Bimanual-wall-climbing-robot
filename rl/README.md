@@ -161,12 +161,19 @@ record is read against `walls.LEGACY` (gpu1's family 3 went from 0.30 back to 0.
 
 - *Families enter in the benchmark's order*, by the unlock rule the CPU path already
   had: the next family joins when every family in the pool is passed 70 % of the time
-  over its last 40 walls. Nothing ever leaves the pool, and the steps go where the
-  failures are.
+  over its last 200 walls (`WALL_WINDOW`). Nothing ever leaves the pool, and the steps
+  go where the failures are. A family enters only once the families it is made of
+  have passed (`walls.NEEDS`: 5, over a break, needs 3 and 4; 6, the tiers, 2 and 3;
+  4, 7, 8 and 9 need no climbing up), fixed with the families; the numbered order
+  satisfies it, so with nothing stuck they enter 1..9 as before. A family that has not
+  passed once in 50M steps (`STUCK_STEPS`) is never dropped: it stays in the pool with
+  the steps its failures draw and its upgrades stay locked, and it stops holding back
+  only the families that do not build on it. One that has passed holds the pool back
+  whenever it slips below the gate again.
 - *Inside a family, automatic domain randomization* (OpenAI et al. 2019, "Solving
   Rubik's Cube with a Robot Hand"; the terrain curriculum of Rudin et al. 2022): each
   parameter is drawn uniformly below its current top, except that half of the walls
-  put one parameter exactly at its top. When 40 of those in a row are passed 70 % of
+  put one parameter exactly at its top. When 200 of those in a row are passed 70 % of
   the time, that top moves up one step; at 20 % or less, down one. A wall counts only
   at the top it was drawn at.
 - *Both rules count whole cohorts*: episodes in the order they **started**, each once
@@ -179,13 +186,31 @@ record is read against `walls.LEGACY` (gpu1's family 3 went from 0.30 back to 0.
   them, so a rate over all of them is the policy's however long each ran. It costs
   each decision one episode's delay; a rollback also drops what the old policy began.
 
+**Why 200 and not the CPU path's 40, and why a stuck family is skipped (2026-10-04).**
+4096 envs end hundreds of a family's episodes between two updates and the gate is
+asked after every one, so a 40-episode window is a sample drawn again and again: a
+family truly at 60 % passes it at 70 % 13 % of the time, one at 65 % 31 % -- the 70 %
+gate was a 55-65 % one, which is the unlock-on-half-learnt the gate exists to stop
+(win17). Over 200 walls: 0.2 % and 8 %. It costs no time, since a vote already waits a
+cohort's lag (6.2M steps) for its probes: gpu1 moved each top once per 6-8M steps. And
+the order was a chain: gpu1's family 3 sat at 0 % for 90M steps with 4-9 locked behind
+it, while families that could be learnt passed the gate 6-12M steps after entering --
+and only 5 and 6 climb up. Skipping it outright would open its upgrades on a skill
+nobody has, so they wait for it; nor are families opened in parallel: one at a time,
+only once the stuck one has had 50M steps, and a family once learnt still has to be
+held before anything new comes in -- every task added to the pool pulls on the same
+network.
+
 So the question a reviewer asks of a hand-made lesson ladder -- how many lessons are
 enough, and how many more for lessons 3..9 -- has no answer to give: the difficulty is
 continuous, the rule moves it, and the benchmark is fixed in advance. The ablation is
 one flag, `--walls random` (`WALLS=random` for `gpu_run.sh`): the same walls at their
-last ranges from the first step, every family at once. The best checkpoint and the
-guard use how far the tops have come (0..1 a family, 9 in all) instead of a sum of
-success rates, which ADR keeps near its thresholds by design; among checkpoints ADR has
+last ranges from the first step, every family at once. The best checkpoint uses how far
+the tops have come (0..1 a family, 9 in all) instead of a sum of success rates, which
+ADR keeps near its thresholds by design; the guard adds what each family the best had
+passed still holds of the 70 % gate (1 at or over it, 0 at 0 %), because a family
+forgotten inside ADR's dead band -- probes passed 20-70 % -- moves no top and progress
+alone never saw it; among checkpoints ADR has
 taken equally far, the best is the one passing its training walls most often (worth at
 most 0.01, under the smallest step of any top, 0.038) -- otherwise it would freeze the
 moment every top reached its last, where a run spends most of its steps. The
@@ -1619,6 +1644,14 @@ Three levers, in the order they are worth pulling:
    256,256` is nearly free in wall clock, because the simulator is the bottleneck
    (cutting 90 % of the gradient work moved throughput by 0 %). It needs a fresh
    run, so it is an arm to put beside `win17`, not a change to it.
+   Measured 2026-10-04, the 1.5M CPU canary on the lesson ladder, seed 0, one arm
+   each: 256×256 held what it had learnt better (-2 100 %, -1 82 % against 85 % and
+   48 %) and learnt the next thing slower (lesson 0 unlocked at 850k and still 0 %;
+   64×64 had 0 at 88 %, lesson 1 at 72 % and 1.1 unlocked) -- the capacity trade, and
+   on 12 envs' 3k-sample updates, not the GPU's 131k. So the CPU path keeps 64×64 and
+   a fresh MJX run defaults to 256×256 (`MJX_NET`), where nine families share one
+   policy and the net's cost is lost in the physics; `NET=64,64 bash rl/gpu_run.sh` is
+   the other arm, still unmeasured on a GPU.
 3. **Throughput.** More envs first (`python -m rl.bench` on that machine — the Mac
    gained 20 % from 12 → 20 envs). Then the real jump: MJX runs the physics on the
    GPU with thousands of envs in parallel and is where a 10–100× would come from.
