@@ -745,6 +745,24 @@ net slide 0.2-1.5, `K_ACT` and `K_VEL` ~0.1 each. The no-pump, jump/drag and
 incentive tests pass unchanged (an idle episode -7.58 against -10 for a fall), and
 `rl.mjx_check task` matches C to 4e-10.
 
+**...but a fall was not -10 (found 2026-10-04, the first run on that reward).** The
+live term kept charging while the robot fell: in the 0.6 s until `released` both hands
+drop under every rung and out of every hop's reach, and `AIR` and `K_OVER` bill that
+at up to 3.5 m of route a metre fallen. Letting go from the hang cost -33.5 to -35.1
+on lessons 1, 3, 5 and 9, -20.7 to -22.4 of it the live term. Against -7.4 for hanging
+to the timeout and +11 for a success, an attempt then had to succeed 2 times in 3 to
+be worth making, and the policy stopped making them: a 1.5M CPU canary of the noisy,
+lidar-mapped task passed lesson -2 at 200k and then sat at 0 % from 700k on, every
+episode a timeout, the left hand re-gripping where it stood. A fall now gets back the
+live term charged since a hook last touched a rung (`live_att`, C and MJX), so it
+costs `FAIL_R` and what came before the hooks left: -12.7 (the 0.6 s of `K_FLIGHT`
+and time). Refunded both ways, so a jump that ends in a fall keeps nothing it gained
+in the air either. The same canary, seed and command with it: lessons -2 and -1 both
+at 72 % and lesson 0 unlocked by 400k, and at 1.5M the pool ran to lesson 1.1 (-2
+85 %, -1 48 %, 0 88 %, 1 72 %) where the unfixed run had -2 at 2 % and -1 at 90 % and
+had unlocked nothing past -1. One seed an arm; the fall test in `rl.climb_task` holds
+the number.
+
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
 the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines

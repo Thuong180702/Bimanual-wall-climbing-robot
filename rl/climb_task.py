@@ -618,7 +618,8 @@ class ClimbTask:
         """a lidar frame: what the four see from here joins the map, which spans each
         rung from the first seen cell to the last (rl.lidar)"""
         d = self.env.data
-        self.seen |= lidar.visible(np, self.rig, d.site_xpos, d.site_xmat, *self._rungs)
+        if not self.seen.all():            # a map only grows: nothing left to see, nothing to cast
+            self.seen |= lidar.visible(np, self.rig, d.site_xpos, d.site_xmat, *self._rungs)
         m, self.map_goals = noisy_map(list(self.segs.values()), self.goals, self.ep_z['map'],
                                       lidar.extent(np, self.seen, self._rungs[2]))
         self.map = dict(zip(self.segs, m))
@@ -1153,6 +1154,7 @@ class ClimbTask:
             self.tau_idle = float(np.abs(self.true['tau']).sum())
             self.fight_idle = self._internal()
         self.prev_d, self.prev_live = self._hand_dists(), self._live()
+        self.live_att = self.prev_live.copy()   # the live cost when a hook last touched a rung
         self.credit = np.zeros(2)            # relative approach earned since the last hold
         self.held = self._holding()
         self.prev_thr = np.array([self._throat_true(s) for s in 'LR'])
@@ -1182,6 +1184,8 @@ class ClimbTask:
         con = [self._contact(s) for s in 'LR']
         touch = np.array([c[0] for c in con])
         d, live = self._hand_dists(), self._live()
+        if (touch > 0.0).any():
+            self.live_att = live
         free, held = touch <= 0.0, self._holding()
         # a loaded hook dragged along its rung: metres, either direction, truth
         thr = np.array([self._throat_true(s) for s in 'LR'])
@@ -1195,7 +1199,9 @@ class ClimbTask:
         loaded, slide = touch > HOLD_LOAD, 0.0
         for k, (_, on) in enumerate(con):
             if loaded[k] and self.prev_loaded[k] and on:
-                rung = next(iter(on))
+                # the first in model order, as rl.mjx_task's argmax: a hook across two
+                # segments (a 4 cm gap) must not hop between them on set order
+                rung = next(n for n in self.segs if n in on)
                 ax = self.segs[rung][1]
                 if self.slide_ref[k] is None or self.slide_ref[k][0] != rung:
                     self.slide_ref[k], self.slide_net[k] = (rung, float(self.prev_thr[k] @ ax)), 0.0
@@ -1310,8 +1316,17 @@ class ClimbTask:
                     truncated = True
                 else:
                     # a blowup is paid FAIL_R alone: the books of an exploded state
-                    # (a teleport's distance, a 1e10 rad/s joint) are not a reward
-                    r = FAIL_R if why == 'blowup' else r + FAIL_R
+                    # (a teleport's distance, a 1e10 rad/s joint) are not a reward.
+                    # A fall is paid FAIL_R and what came before the hooks left: the
+                    # live term had charged the 0.6 s of falling until `released` --
+                    # both hands dropping under every rung, out of reach -- 21 on every
+                    # lesson, so a failed reach cost -35 against -7 for hanging to the
+                    # timeout, and a canary (2026-10-04) took lesson -2 from 70 % to 0 %,
+                    # every episode a timeout. Refunded both ways, so a jump that ends in
+                    # a fall keeps nothing it gained in the air either.
+                    info['refund'] = (0.0 if why == 'blowup' else
+                                      K_REACH * float((live - self.live_att).sum()))
+                    r = FAIL_R if why == 'blowup' else r + FAIL_R + info['refund']
                     terminated = True
         return np.where(np.isfinite(obs), obs, np.float32(0.0)), r, terminated, truncated, info
 
@@ -1366,6 +1381,24 @@ def main():
           f"{idle:+.2f}; a fall costs {FAIL_R:+.0f} plus the steps before it")
     assert info.get('reason') == 'timeout' and idle > FAIL_R, (
         f"doing nothing ({idle:+.2f}) costs more than falling ({FAIL_R:+.0f})")
+    # ...and the fall really is FAIL_R plus the steps before it. Let go from the hang:
+    # the live term used to charge the hands' drop under every rung on the way down,
+    # -21 on every lesson, and a fall cost -34, which priced every attempt out
+    t = ClimbTask(1, noise=False)
+    t.reset()
+    a = np.zeros(17)
+    a[[JOINTS.index('finger_L'), JOINTS.index('finger_R')]] = 1.0
+    a[[JOINTS.index('wrist_L_flexion'), JOINTS.index('wrist_R_flexion')]] = -1.0
+    fall = 0.0
+    while True:
+        _, r, te, tr, info = t.step(a)
+        fall += r
+        if te or tr:
+            break
+    print(f"fall test: letting go from the hang ends '{info.get('reason')}' after {t.n_steps} steps "
+          f"at {fall:+.2f} (refund {info.get('refund', 0.0):+.2f})")
+    assert info.get('reason') in ('released', 'fell') and FAIL_R - 5.0 < fall < FAIL_R, (
+        f"a plain fall costs {fall:+.2f}: not FAIL_R ({FAIL_R:+.0f}) plus the steps before it")
 
     # The reward change, tested against the exploit it exists for. This is phase 7's
     # own experiment: shove the robot along the rung with both hooks on and the hook
@@ -2072,8 +2105,9 @@ def main():
         forgiven += float(np.maximum(0.0, info['d'] - prev_dh)[info['loaded_start']].sum())
         prev_dh = info['d'].copy()
         if te or tr:
-            # the terminal bonus is not a potential and is not meant to be
-            acc -= SUCCESS_R if info.get('reason') == 'success' else FAIL_R
+            # the terminal bonus is not a potential and is not meant to be; a fall's
+            # refund of the live term charged in the air is part of it
+            acc -= (SUCCESS_R if info.get('reason') == 'success' else FAIL_R) + info.get('refund', 0.0)
             break
     closed = d0 - t._dist()
     expect = K_BANK * paid + K_REACH * (live0 - float(t._live().sum()))

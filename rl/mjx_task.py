@@ -152,6 +152,7 @@ class State(NamedTuple):
     # the reward's books (climb_task.reset / step)
     prev_d: jax.Array
     prev_live: jax.Array
+    live_att: jax.Array        # (2,) the live cost when a hook last touched a rung
     credit: jax.Array
     held: jax.Array
     prev_thr: jax.Array
@@ -613,7 +614,7 @@ class MjxClimb:
                    bias=ep['bias'],
                    slam_err=ct.SLAM_SIG * ep['slam'], k=jp.array(0),
                    buf_true=jp.zeros((ct.SLAM_LAG, 3)), buf_est=jp.zeros((ct.SLAM_LAG, 3)),
-                   prev_d=z2, prev_live=z2, credit=z2, held=jp.zeros(2, bool),
+                   prev_d=z2, prev_live=z2, live_att=z2, credit=z2, held=jp.zeros(2, bool),
                    prev_thr=thr, prev_loaded=con > ct.HOLD_LOAD, let_go=jp.zeros(2, bool),
                    grabs=jp.zeros(2, jp.int32), cross_axis=jp.zeros(3), cross_sign=jp.array(1.0),
                    off_t=z2, held_t=z2, slide_rung=jp.full(2, -1), slide_ref=z2, slide_net=z2,
@@ -623,7 +624,8 @@ class MjxClimb:
         _, seat_d, _ = self._seg_point(thr[0], w.rung_c, w.rung_a, w.rung_h)
         axis = w.rung_a[jp.argmin(jp.where(w.rung_valid, seat_d, jp.inf))]
         sign = jp.sign((thr[0] - thr[1]) @ axis)
-        st = st._replace(prev_d=dd, prev_live=live, held=self._holding(w, con, on, thr, true),
+        st = st._replace(prev_d=dd, prev_live=live, live_att=live,
+                         held=self._holding(w, con, on, thr, true),
                          cross_axis=axis, cross_sign=jp.where(sign == 0, 1.0, sign))
         return st, self._obs(T, st, sen)
 
@@ -666,6 +668,7 @@ class MjxClimb:
         touch, on = self._contact(d)
         thr = self._throat_true(d)
         dd, live = self._dists(w, thr)
+        live_att = jp.where((touch > 0.0).any(), live, st.live_att)
         free, held = touch <= 0.0, self._holding(w, touch, on, thr, true)
         dp = thr - st.prev_thr
         loaded = touch > ct.HOLD_LOAD
@@ -718,7 +721,8 @@ class MjxClimb:
              - ct.K_EFFORT * effort - ct.K_FIGHT * fight - ct.K_TIME - ct.K_FLIGHT * flight
              - ct.K_SLIDE * slide
              - ct.K_ACT * (a @ a) - ct.K_VEL * (true['dq'] @ true['dq']))
-        st = st._replace(held=held, prev_d=dd, prev_live=live, prev_thr=thr, prev_loaded=loaded,
+        st = st._replace(held=held, prev_d=dd, prev_live=live, live_att=live_att,
+                         prev_thr=thr, prev_loaded=loaded,
                          let_go=let_go, grabs=grabs, credit=acc, off_t=off_t,
                          held_t=held_t, slide_rung=slide_rung, slide_ref=slide_ref,
                          slide_net=slide_net, n_steps=n_steps)
@@ -738,8 +742,11 @@ class MjxClimb:
             released, 4, jp.where(timeout, 2, 0)))))
         truncated = why == 2
         terminated = (why != 0) & ~truncated
+        # a fall (fell, released) gets back the live term charged since a hook last
+        # touched a rung, as in ClimbTask
+        refund = jp.where((why == 3) | (why == 4), ct.K_REACH * (live - live_att).sum(), 0.0)
         r = jp.where(why == 5, ct.FAIL_R,       # a blowup is FAIL_R alone, as in ClimbTask
-                     r + jp.where(success, ct.SUCCESS_R, jp.where(terminated, ct.FAIL_R, 0.0)))
+                     r + jp.where(success, ct.SUCCESS_R, jp.where(terminated, ct.FAIL_R, 0.0)) + refund)
         info = dict(reason=why, lesson=lesson, family=w.family, probe=w.probe,
                     probe_val=w.probe_val,
                     steps=n_steps, dist=dd.sum(), bank=bank,
