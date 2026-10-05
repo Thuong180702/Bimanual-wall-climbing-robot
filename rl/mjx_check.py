@@ -334,19 +334,24 @@ def check_physics(lessons=(1, 2, 7, 8)):
 
     # A batch that collides only the rung slots and walls in play (Batch's `fit`, what
     # training runs) must step as one that collides every pair: families 1..3's walls
-    # at their last tops, 20 steps of random actions from the same keys
+    # at their last tops, 20 steps of random actions from the same keys. On the CPU,
+    # whatever card is here: the pairs dropped are a property of the model, and only
+    # there are two programs' sums done in the same order. On an RTX 3090 the two
+    # compiled steps round differently and 20 steps of thrashing grew that to 9.6e-2
+    # (2026-10-05), while every physical check above passed
     from . import walls as W
     lays = W.draw(W.Checker(), {1: 1.0, 2: 1.0, 3: 1.0}, W.last_tops(), np.random.default_rng(0), 32)
-    shared, runs = MjxClimb(32), []
-    for fit in (False, True):
-        b = Batch(16, seed=3, task=shared, fit=fit)
-        b.set_bank(lays)
-        seq = [np.asarray(b.reset())]
-        rng = np.random.default_rng(1)
-        for _ in range(20):
-            obs, end, r, term, trunc, info = b.step(rng.uniform(-1, 1, (16, 17)).astype(np.float32))
-            seq += [np.asarray(obs), np.asarray(r)]
-        runs.append((shared.pairs, seq))
+    with jax.default_device(jax.devices('cpu')[0]):
+        shared, runs = MjxClimb(32), []
+        for fit in (False, True):
+            b = Batch(16, seed=3, task=shared, fit=fit)
+            b.set_bank(lays)
+            seq = [np.asarray(b.reset())]
+            rng = np.random.default_rng(1)
+            for _ in range(20):
+                obs, end, r, term, trunc, info = b.step(rng.uniform(-1, 1, (16, 17)).astype(np.float32))
+                seq += [np.asarray(obs), np.asarray(r)]
+            runs.append((shared.pairs, seq))
     gap = max(float(np.abs(x - y).max() / max(1.0, np.abs(y).max())) for x, y in zip(runs[0][1], runs[1][1]))
     print(f"physics: a batch fitted to families 1..3 collides {runs[1][0][0]} rung slots"
           f"{' and the extra wall' if runs[1][0][1] else ', not the extra wall'}, and over 20 steps "
