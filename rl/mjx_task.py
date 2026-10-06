@@ -466,6 +466,11 @@ class MjxClimb:
         leaves, tree = jax.tree_util.tree_flatten(shapes, is_leaf=lambda x: isinstance(x, tuple))
         return tree.unflatten([jax.random.normal(k, s) for k, s in zip(jax.random.split(key, len(leaves)), leaves)])
 
+    def _rung_pt(self, w, p):
+        """climb_task._route's point: the nearest rung's, inside its seats"""
+        q, dist, _ = self._seg_point(p, w.rung_c, w.rung_a, jp.maximum(w.rung_h - ct.SEAT_IN, 0.0))
+        return q[jp.argmin(jp.where(w.rung_valid, dist, jp.inf))]
+
     def _dists(self, w, thr):
         """(climb_task._hand_dists, climb_task._live) for both hands: the bank's from
         the NEAREST rung's point (climb_task._route), the live one along the routes
@@ -701,9 +706,9 @@ class MjxClimb:
         credit = []
         for k in (0, 1):
             o = 1 - k
-            u = g[k] - thr[k]
+            u = g[k] - self._rung_pt(w, thr[k])       # climb_task: the partner's slide
             u = u / jp.maximum(jp.sqrt(u @ u), 1e-9)
-            rel = approach[k] - dp[o] @ u
+            rel = approach[k] - (dp[o] @ ax[o]) * (ax[o] @ u)
             credit.append(jp.where(both[k], 0.0, jp.where(both[o], rel, jp.minimum(0.0, approach[k]))))
         credit = jp.stack(credit)
         acc = st.credit + credit

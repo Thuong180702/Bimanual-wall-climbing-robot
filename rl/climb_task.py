@@ -1197,12 +1197,13 @@ class ClimbTask:
         # climb). A drag is still charged in full -- its net is its length -- so
         # K_SLIDE > K_BANK still closes 'reach free, get dragged back loaded'.
         loaded, slide = touch > HOLD_LOAD, 0.0
+        axes = np.zeros((2, 3))                 # each loaded hook's rung axis, for the credit
         for k, (_, on) in enumerate(con):
             if loaded[k] and self.prev_loaded[k] and on:
                 # the first in model order, as rl.mjx_task's argmax: a hook across two
                 # segments (a 4 cm gap) must not hop between them on set order
                 rung = next(n for n in self.segs if n in on)
-                ax = self.segs[rung][1]
+                ax = axes[k] = self.segs[rung][1]
                 if self.slide_ref[k] is None or self.slide_ref[k][0] != rung:
                     self.slide_ref[k], self.slide_net[k] = (rung, float(self.prev_thr[k] @ ax)), 0.0
                 net = abs(float(thr[k] @ ax) - self.slide_ref[k][1])
@@ -1259,6 +1260,18 @@ class ClimbTask:
         # partner is loaded at both ends -- a hook that loads and unloads on
         # alternate steps could otherwise creep backwards and credit the other
         # hand the difference.
+        #
+        # The partner's motion is its SLIDE -- along its rung, what K_SLIDE charges --
+        # and it is turned into the change it makes to this hand's bank potential,
+        # which is measured at the rung point (`_hand_dists`), so u starts there.
+        # Subtracting the partner's whole throat motion paid for the load: a loaded
+        # hook's throat sags 10-20 mm off its rung when it takes the other hand's
+        # share and comes back when that hand takes it again -- down while this
+        # hand was free (credited), up once it held (ignored). With the goal a row
+        # above that is toward the goal: gpu2 (145M steps) fluttered both hands
+        # on family 3, ~95 holds each and +2.3 m banked (+11.7) an episode that
+        # closed nothing -- 2.0 m of it the partner's vertical sag -- and
+        # never climbed (0 % for 130M steps).
         approach = self.prev_d - d
         was = was_loaded
         both = was & loaded
@@ -1268,9 +1281,9 @@ class ClimbTask:
             if both[k]:
                 continue
             if both[o]:
-                u = self.goals[k] - thr[k]
+                u = self.goals[k] - self._route(thr[k])[1]
                 u /= max(float(np.linalg.norm(u)), 1e-9)
-                credit[k] = approach[k] - float(dp[o] @ u)
+                credit[k] = approach[k] - float(dp[o] @ axes[o]) * float(axes[o] @ u)
             else:
                 credit[k] = min(0.0, approach[k])
         self.credit += credit
@@ -1984,12 +1997,14 @@ def main():
     assert abs(info['bank']) < 1e-9, f"a tap after a jump banked {info['bank']*1000:.0f} mm"
     # the drag: the right hook stays loaded and is pulled 0.2 m along the rung,
     # carrying the body and the free left hand with it; then the left hand taps
+    ax = t.segs[next(iter(on['R'][1]))][1]
+    ax = ax * np.sign(ax @ uL)                  # along the rung, toward the left goal
     st['L'] = (0.0, set())
     slid = 0.0
     for _ in range(4):
         st['d'] -= 0.05
         for s_ in 'LR':
-            st['thr'][s_] += 0.05 * uL
+            st['thr'][s_] += 0.05 * ax
         _, _, _, _, info = t.step(z)
         slid += info['slide']
         assert abs(info['credit'][0]) < 1e-9 and abs(info['credit'][1]) < 1e-9, (
@@ -2042,6 +2057,23 @@ def main():
     st['R'] = on['R']
     t.step(z)
     t.credit[:] = 0.0                             # the creep's debit is not the next case's
+    # the sag: the goal a row above (family 3), the holder's throat sinks 15 mm off its
+    # rung while the left hand is free and rises once it holds again -- the load
+    # moving, not the hook. gpu2 banked +2.3 m an episode on this.
+    g0 = t.goals[0].copy()
+    t.goals[0] = st['thr']['L'] + [0.0, 0.0, 0.10]   # straight above the left hook
+    paid = 0.0
+    for _ in range(3):
+        st['L'] = (0.0, set())
+        t.step(z)
+        st['thr']['R'][2] -= 0.015
+        paid += t.step(z)[4]['bank']
+        st['L'] = on['L']
+        paid += t.step(z)[4]['bank']
+        st['thr']['R'][2] += 0.015
+        paid += t.step(z)[4]['bank']
+    t.goals[0] = g0
+    assert abs(paid) < 1e-9, f"the holder sagging 15 mm under a free hand banked it {paid*1000:+.0f} mm"
 
     # ordinary physics must not bleed: the holder settling back and forth under a
     # stationary free hand, and two loaded hooks settling together, both net 0.
@@ -2072,7 +2104,8 @@ def main():
           "counts no grab and is charged; the tap after it banks 0; a 0.2 m drag of "
           f"the loaded hook credits 0, banks 0 on the next tap and is charged {K_SLIDE*slid:.1f}; "
           "a holder settling +-20 mm credits the free hand 0, two loaded hooks settling credit 0; "
-          "a one-step lift nets nothing either way round; a holder creeping on alternate loads credits nothing")
+          "a one-step lift nets nothing either way round; a holder creeping on alternate loads credits nothing; "
+          "a holder sagging 15 mm off its rung under a free hand banks nothing")
 
     # No pump, proved rather than hoped. The live term is a potential and must
     # telescope to the endpoints exactly; the bank pays credit that never exceeds

@@ -788,6 +788,25 @@ at 72 % and lesson 0 unlocked by 400k, and at 1.5M the pool ran to lesson 1.1 (-
 had unlocked nothing past -1. One seed an arm; the fall test in `rl.climb_task` holds
 the number.
 
+**Why gpu2 never climbed up (2026-10-06).** gpu2 (145M steps, RTX 3090) learnt
+families 1, 2, 4 and 7 and sat at 0 % on family 3 -- one row 0.10 m up, its easiest
+wall -- from its unlock at ~13M to the end, every episode a 60 s timeout. Replayed
+(full robot in C, and MJX on 8 generated walls at the run's tops) it flutters: the
+hands alternate ~3 times a second, each throat lifted 60-70 mm, the hook butting the
+upper row from below and dropping back -- ~100 holds per hand per episode, the goal
+row never reached -- and the bank paid **+2.0..2.8 m (+10..+14) an episode that
+closed nothing**. Of the credit, the hands' own approach was +0.14 m and the partner term +2.45 m, 2.0 m of
+it vertical: the holding hook's throat sags 10-20 mm off its rung when it takes the
+other hand's share and comes back when that hand holds again -- down while the free
+hand was free (subtracted, so credited), up once it held (not counted). With the
+goal a row above, down is away from it. On level goals (families 1, 2, 4, 7) the
+sag is across the goal direction and the bank came out the same within 1 %. The
+partner's motion is now its **slide** -- along its rung, what `K_SLIDE` charges --
+and turned into this hand's bank potential from its rung point, as `_hand_dists`
+measures it. The same trajectory banks -0.11 and +0.006 m; the CEM climbs of 0.10,
+0.15 and 0.30 m still pay +8.07, +10.94, +11.28. The jump/drag test has the sag (old
+rule: +45 mm over three cycles); `rl.mjx_check task` matches C to 4.8e-10.
+
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
 the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines
@@ -907,7 +926,7 @@ asserts all of it.
 
 | term | why |
 |---|---|
-| `K_BANK` on progress credited **relative to the holding hand** | paying live world distance paid for the phase-7 slide: the first policy crossed 0.75 m with a hook that never opened its finger. A per-hand *anchor* — bank how far the hold travelled in the world between supported grabs — fixed that and was beaten by the drag (the `win5` section): a light hand (under `HOLD_LOAD`) whose partner is loaded is credited its approach **minus the partner's own motion toward that goal, both ways**; a loaded hook is credited nothing either way (its motion along the rung is a slide, `K_SLIDE`'s business); a hand nobody carries is credited nothing forward and debited in full back. A drag, a tap and a jump earn exactly nothing; the one loop that would pay — reach free, get dragged back loaded — costs `K_SLIDE > K_BANK`. The first draft was one-sided to be safe (every retreat debited, only the partner's *forward* motion subtracted) and it charged a known-good one-hand step **−220 mm per episode** for ordinary settling: −7.5 m of debits against +6.3 m of credit over ten episodes. One-sided rules charge for noise |
+| `K_BANK` on progress credited **relative to the holding hand** | paying live world distance paid for the phase-7 slide: the first policy crossed 0.75 m with a hook that never opened its finger. A per-hand *anchor* — bank how far the hold travelled in the world between supported grabs — fixed that and was beaten by the drag (the `win5` section): a light hand (under `HOLD_LOAD`) whose partner is loaded is credited its approach **minus what the partner's slide along its rung did to that hand's bank potential, both ways** (its whole throat motion until 2026-10-06, which paid the load's sag: gpu2, family 3, below); a loaded hook is credited nothing either way (its motion along the rung is a slide, `K_SLIDE`'s business); a hand nobody carries is credited nothing forward and debited in full back. A drag, a tap and a jump earn exactly nothing; the one loop that would pay — reach free, get dragged back loaded — costs `K_SLIDE > K_BANK`. The first draft was one-sided to be safe (every retreat debited, only the partner's *forward* motion subtracted) and it charged a known-good one-hand step **−220 mm per episode** for ordinary settling: −7.5 m of debits against +6.3 m of credit over ten episodes. One-sided rules charge for noise |
 | anchor moves only after the hand got `CLEAR_OF` the rung | without it, a wrist-load dip counted as taking a new hold — on the 5.1M policy **every** re-anchor was that, with the hook never leaving the rung |
 | both terms charged **both ways** | paying only in the good direction is a pump: measured **+27.28 paid for 0.000 m of travel** and 99 release/reseat cycles in one episode |
 | `K_DANGLE` with a `DANGLE_GRACE` | the flat version taxed the release climbing is made of, −15.25 against +5.57 of progress. The grace is **6 s** of off-time per hand, not 3: lesson 9's swing keeps the free hand off for the 6.6 s it pumps and reaches, and at 3 s paid 0.85 for it |
