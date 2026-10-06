@@ -22,7 +22,7 @@ from . import SCENE, URDF
 OUT = os.path.join(URDF, 'lessons')
 
 # scene.xml's walls, 8 m long and 6 m deep: every layout here fits, mirrored too --
-# lesson 5's far side is 3.3 m along, lesson 4's staircase ends 1.15 m down
+# lesson 6's top tier ends 3.2 m along, lesson 4's staircase 1.15 m down
 WALL_FRONT = '    <geom name="wall_front" type="box" material="wall" pos="0.550 0.00 0.50" size="0.05 4.00 3.00"/>'
 WALL_BACK = '    <geom name="wall_back"  type="box" material="wall" pos="-0.300 0.00 0.50" size="0.05 4.00 3.00"/>'
 WALL_SIDE = '    <geom name="wall_side"  type="box" material="wall" pos="0.125 -1.050 0.50" size="0.425 0.05 3.00"/>'
@@ -241,14 +241,23 @@ LESSONS = {
                    _ry('seg2', 1.20, 1.65, 1.00)],
             goal_rungs=['rung_seg2'],
             goals=[[0.44, 1.55, 1.00], [0.44, 1.24, 1.00]]),
+    # Two rows 0.40 m apart straight above, each standing 0.20 m further out from the wall than the
+    # one below (rl.walls.OUT). Stacked in one plane, as until 2026-10-06, the robot
+    # could not hang from them: its arms and body fill the rung plane 0.10-1.10 m under
+    # its hooks (59-107 mm off it), so at the top its base sat 34 mm inside the start
+    # rung and it fell off, and every motion found up one stacked row pressed an arm on
+    # the row below at 100-415 N. Standing out, the rows below are behind it after 3 s
+    # hanging from the top. 0.40 apart, not 0.45: reaching out costs the free hook
+    # height (0.52 m up 0.15-0.25 m out), and 0.45 was not found (rl.walls, family 3).
+    # Down (lesson 4) is a staircase.
     3: dict(name='climb_up', timeout=90.0,
-            title='climb up two rows of continuous rungs',
+            title='climb up two rows, each standing 0.20 m further out from the wall',
             walls=[WALL_FRONT],
             rungs=[_ry('start', -0.90, 1.50, 1.00),
-                   _ry('up1', -0.90, 1.50, 1.45),
-                   _ry('up2', -0.90, 1.50, 1.90)],
+                   _ry('up1', -0.90, 1.50, 1.40, x=0.24),
+                   _ry('up2', -0.90, 1.50, 1.80, x=0.04)],
             goal_rungs=['rung_up2'],
-            goals=[[0.44, 0.157, 1.90], [0.44, -0.157, 1.90]]),
+            goals=[[0.04, 0.157, 1.80], [0.04, -0.157, 1.80]]),
     # Climbing down comes before climbing over, which needs both directions. A row
     # straight below the hang is inside the robot (its arms and body fill 0.25-1.10 m
     # under the start rung), so the way down is a staircase: each step lower and
@@ -263,26 +272,31 @@ LESSONS = {
             goal_rungs=['rung_step3'],
             goals=[[0.44, 2.33, -0.15], [0.44, 2.02, -0.15]]),
     # The break is past what the robot can bridge even with momentum (1.55 m hook to
-    # hook), so the only way across is up, along the top and down.
+    # hook), so the only way across is up, along the top and down. The top row spans
+    # the break alone, 0.20 m clear of both ends: up and down are diagonal steps, as
+    # on lessons 6 and 4, never a row straight below the hands.
     5: dict(name='climb_over', timeout=120.0,
             title='up, across the top, down the far side of a 2.2 m break',
             walls=[WALL_FRONT],
             rungs=[_ry('start', -0.90, 0.35, 1.00),
-                   _ry('top', -0.90, 3.30, 1.45),
+                   _ry('top', 0.55, 2.35, 1.45),
                    _ry('far', 2.55, 3.05, 1.00)],
             goal_rungs=['rung_far'],
             goals=[[0.44, 2.93, 1.00], [0.44, 2.62, 1.00]]),
+    # Two tiers of short rungs, each at its own height, each tier starting 0.15 m past
+    # the end of the one below (lesson 2's gaps, climbed diagonally): stacked over the start
+    # row, as until 2026-10-06, the robot's base sat 38 mm inside it at the goals.
     6: dict(name='staggered', timeout=120.0,
             title='climb staggered short rungs, each at its own height',
             walls=[WALL_FRONT],
-            rungs=[_ry('start', -0.90, 1.50, 1.00),
-                   _ry('stag1', -0.60, -0.25, 1.40),
-                   _ry('stag2', 0.00, 0.35, 1.50),
-                   _ry('stag3', 0.60, 0.95, 1.42),
-                   _ry('top1', -0.35, 0.00, 1.88),
-                   _ry('top2', 0.30, 0.65, 1.95)],
+            rungs=[_ry('start', -0.90, 0.40, 1.00),
+                   _ry('stag1', 0.55, 0.90, 1.40),
+                   _ry('stag2', 1.15, 1.50, 1.50),
+                   _ry('stag3', 1.75, 2.10, 1.42),
+                   _ry('top1', 2.25, 2.60, 1.88),
+                   _ry('top2', 2.85, 3.20, 1.95)],
             goal_rungs=['rung_top1', 'rung_top2'],
-            goals=[[0.44, 0.48, 1.95], [0.44, -0.18, 1.88]]),
+            goals=[[0.44, 3.02, 1.95], [0.44, 2.42, 1.88]]),
     7: dict(name='wall_corner', timeout=120.0,
             title='transfer to the perpendicular wall in the corner',
             walls=[WALL_FRONT, WALL_SIDE],

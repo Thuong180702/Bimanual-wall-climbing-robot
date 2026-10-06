@@ -32,6 +32,7 @@ MIN_W = 0.25                     # m two goals on one rung keep apart (hooks 65 
 SEAT = SEAT_IN + 0.005           # a goal's closest to a rung end
 TIMEOUT = 60.0
 CLEAR = 0.02                     # m every rung but the start one keeps from the robot at the start
+OUT = 0.20                       # m each family-3 row stands further from the wall than the one below
 
 # family -> ((parameter, sampled from, first top, last top, step), ...). Integers are
 # counts. The last tops are the benchmark's value or a margin past it, and the
@@ -42,12 +43,21 @@ CLEAR = 0.02                     # m every rung but the start one keeps from the
 FAMILIES = {
     1: (('shift', 0.0, 0.30, 1.40, 0.10),),                        # lesson 1: 1.10
     2: (('gaps', 1, 1, 2, 1), ('width', 0.04, 0.04, 0.30, 0.02)),  # lesson 2: 2 x 0.25
-    # lesson 3: 2 x 0.45. It started at 0.30 up: gpu1 never lifted a hook past 28 mm
-    # there, 0 % for 90M steps, while family 2 climbed from its 0.04 m gaps. A row straight
-    # above clears the start hang from 0.07 m (Checker); the full robot climbs one row of
-    # 0.10, 0.15, 0.30 and 0.45 m in C (CEM, 2026-09-26), phase one converging 20, 20, 30
-    # and 40 iterations in -- 0.45 in 1 search of 3.
-    3: (('rows', 1, 1, 2, 1), ('spacing', 0.10, 0.10, 0.50, 0.05)),
+    # lesson 3: 2 x 0.40, each row OUT 0.20 m further from the wall than the one below.
+    # Rows stacked straight (as until 2026-10-06) are in the robot: its arms hang 59-107
+    # mm off the rung plane, so hanging one row up, a row 0.10-0.15 m below is 15-23 mm
+    # inside the wrists, 0.20-0.50 m is 6-25 mm off the forearms and upper arms, and two
+    # rows of 0.45 put the base into the lowest one (the robot fell off the top row) --
+    # every CEM climb of a stacked row pressed an arm on the row below at 100-415 N, and
+    # gpu2 butted the row above from below for 130M steps. Standing out, the rows below
+    # are behind the robot: after 3 s hanging from the top one, 92 mm (2 x 0.45, the
+    # base) to 164 mm clear over this whole range; out 0.05-0.10 the base still swings
+    # onto the lowest of two rows. Reaching OUT costs height: the free hook rises 0.56 m
+    # in the rung plane, 0.52 m 0.15-0.25 m out (urdf/_reach.py's hang), so a row is at
+    # most 0.45 up (0.50 + the 45 mm over it would be past the reach; CEM: 0.20 and 0.40
+    # found, 0.45 not in 3 seeds). It started at 0.30 up, gpu1's 0 % for 90M steps (a reward
+    # barrier since fixed); 0.20 at the user's call.
+    3: (('rows', 1, 1, 2, 1), ('spacing', 0.20, 0.20, 0.45, 0.05)),
     4: (('steps', 1, 1, 3, 1), ('drop', 0.25, 0.30, 0.45, 0.05),   # lesson 4: 3 steps,
         ('gap', 0.05, 0.10, 0.30, 0.05)),                          #   <= 0.40 down, <= 0.20 on
     5: (('break', 1.80, 1.80, 2.50, 0.10),),                       # lesson 5: 2.20
@@ -84,7 +94,7 @@ assert set(NEEDS) == set(FAMILIES) and all(p < f for f, ps in NEEDS.items() for 
 
 # where each benchmark lesson sits in its family (rl.lessons draws them): every value
 # must lie inside the family's last range, so the benchmark is a wall training can draw
-BENCHMARK = {1: dict(shift=1.10), 2: dict(gaps=2, width=0.25), 3: dict(rows=2, spacing=0.45),
+BENCHMARK = {1: dict(shift=1.10), 2: dict(gaps=2, width=0.25), 3: dict(rows=2, spacing=0.40),
              4: dict(steps=3, drop=0.40, gap=0.20), 5: dict(**{'break': 2.20}),
              6: dict(tiers=2, rise=0.46, scatter=0.06), 7: dict(side=1.00),
              8: dict(behind=0.63), 9: dict(gap=0.90)}
@@ -163,11 +173,11 @@ def sample(family, top, rng, probe=None):
         goals, end = _goals_from(y0, rng)
         rungs.append(_row(y0, end, Z0))
         goal_rungs = [len(rungs) - 1]
-    elif family == 3:                              # rows above, up to the top one
+    elif family == 3:                              # rows above, each further out, to the top one
         m, dz = p['rows'], p['spacing']
-        rungs = [_row(Y0, Y1, Z0)] + [_row(Y0, Y1, Z0 + k * dz) for k in range(1, m + 1)]
-        z = Z0 + m * dz
-        goals, goal_rungs = [np.array([X, HY + d, z]), np.array([X, -HY + d, z])], [m]
+        rungs = [_row(Y0, Y1, Z0 + k * dz, x=X - k * OUT) for k in range(m + 1)]
+        x, z = X - m * OUT, Z0 + m * dz
+        goals, goal_rungs = [np.array([x, HY + d, z]), np.array([x, -HY + d, z])], [m]
     elif family == 4:                              # down a staircase: each step lower, further on
         y = HY + rng.uniform(0.12, 0.30)           # the start row ends past the left hook
         rungs, z = [_row(-0.9, y, Z0)], Z0
@@ -180,11 +190,12 @@ def sample(family, top, rng, probe=None):
         goals, end = _goals_from(y0, rng, z=z)
         rungs.append(_row(y0, end, z))
         goal_rungs = [len(rungs) - 1]
-    elif family == 5:                              # a break in the start row, a row above
-        e = HY + rng.uniform(0.12, 0.30)
+    elif family == 5:                              # a break in the start row, a row above it
+        e = HY + rng.uniform(0.12, 0.30)           # alone: up and down are diagonal steps (6, 4)
         f0 = e + p['break']
         goals, end = _goals_from(f0, rng)
-        rungs = [_row(-0.9, e, Z0), _row(Y0, end + rng.uniform(0.20, 0.50), Z0 + rng.uniform(0.35, 0.50)),
+        rungs = [_row(-0.9, e, Z0), _row(e + rng.uniform(0.05, 0.20), f0 - rng.uniform(0.05, 0.20),
+                                         Z0 + rng.uniform(0.35, 0.50)),
                  _row(f0, end, Z0)]
         goal_rungs = [2]
     elif family == 9:                              # one gap past the static reach: swing
@@ -193,13 +204,14 @@ def sample(family, top, rng, probe=None):
         goals, end = _goals_from(y0, rng)
         rungs = [_row(rng.uniform(-0.6, -0.45), e, Z0), _row(y0, end, Z0)]
         goal_rungs = [1]
-    elif family == 6:                              # tiers of short rungs
-        rungs, z = [_row(Y0, Y1, Z0)], Z0
+    elif family == 6:                              # tiers of short rungs, each tier past the
+        y = HY + rng.uniform(0.12, 0.30)           # end of the one below: climbed diagonally
+        rungs, z = [_row(-0.9, y, Z0)], Z0
         for t in range(p['tiers']):
             z += p['rise']
             c = 2 if t == p['tiers'] - 1 else int(rng.integers(2, 4))
             ln, gp = rng.uniform(0.30, 0.45, c), rng.uniform(0.20, 0.30, c - 1)
-            y = rng.uniform(-0.2, 0.2) - (ln.sum() + gp.sum()) / 2
+            y += rng.uniform(0.05, 0.20)
             for j in range(c):
                 rungs.append(_row(y, y + ln[j], z + rng.uniform(-p['scatter'], p['scatter'])))
                 y += ln[j] + (gp[j] if j < c - 1 else 0.0)
@@ -240,8 +252,13 @@ class Checker:
     """Is a wall usable? Its goals on seats of their rungs, and every rung but the start
     one -- and the extra wall -- at least CLEAR from each robot part it can touch, with
     the robot in its secured start hang: `rl.mjx_task` starts every generated wall from
-    that one hang, so nothing may be inside or against the robot there. Checked in C on
-    the robot MJX trains (rl.mjx_scene), through its own collision pairs."""
+    that one hang, so nothing may be inside or against the robot there. And the same hang
+    moved to the goals is CLEAR of every rung but the goal ones: a row straight below
+    where the robot ends is in its arms or body (family 3 and lessons 3 and 6 until
+    2026-10-06). A static test: hanging, the body swings toward the wall, and two rows
+    standing out 0.05-0.10 m put the base on the lowest one -- OUT is set from 3 s
+    hangs. Checked in C on the robot MJX trains (rl.mjx_scene), through its own
+    collision pairs."""
 
     def __init__(self):
         from .climb_task import ClimbTask
@@ -251,6 +268,8 @@ class Checker:
         self.m = model()
         self.d = mujoco.MjData(self.m)
         self.d.qpos[:] = t.env.data.qpos
+        self.q0 = t.env.data.qpos.copy()
+        self.mid0 = np.mean([t._route(t._throat_true(s))[1] for s in 'LR'], axis=0)
         self.rungs = [self.m.geom(f'slot_rung{i}').id for i in range(N_RUNG)]
         self.wall = self.m.geom('slot_wall').id
         # C MuJoCo skips a geom's own rotation when it was compiled at its body's (the
@@ -283,13 +302,16 @@ class Checker:
                                                             sl['rung_size'][i])
             m.geom_rbound[g] = sl['rung_size'][i][0] + sl['rung_size'][i][1]
         m.geom_pos[self.wall], m.geom_quat[self.wall] = sl['wall_pos'], sl['wall_quat']
-        mujoco.mj_kinematics(m, self.d)
         ft = np.zeros(6)
-        for g in self.rungs[1:len(rungs)] + ([self.wall] if len(lay['walls']) > 1 else []):
-            for o in self.pairs.get(g, []):
-                if mujoco.mj_geomDistance(m, self.d, g, o, CLEAR, ft) < CLEAR:
-                    return False
-        return True
+        clear = lambda gs: not any(mujoco.mj_geomDistance(m, self.d, g, o, CLEAR, ft) < CLEAR
+                                   for g in gs for o in self.pairs.get(g, []))
+        self.d.qpos[:] = self.q0
+        mujoco.mj_kinematics(m, self.d)
+        if not clear(self.rungs[1:len(rungs)] + ([self.wall] if len(lay['walls']) > 1 else [])):
+            return False
+        self.d.qpos[:3] += np.mean(lay['goals'], axis=0) - self.mid0
+        mujoco.mj_kinematics(m, self.d)
+        return clear([g for i, g in enumerate(self.rungs[:len(rungs)]) if i not in lay['goal_rungs']])
 
 
 def draw(checker, weights, tops, rng, n, probe_p=0.5):

@@ -129,10 +129,10 @@ physical parameters left free, and each parameter has a range.
 |---|---|---|
 | 1 traverse | each hand's shift along the row (0.30 -> 1.40 m) | 1.10 |
 | 2 gaps | gap count (1 -> 2), gap width (0.04 -> 0.30 m) | 2 x 0.25 |
-| 3 climb up | rows (1 -> 2), row spacing (0.10 -> 0.50 m; it was 0.30 -> 0.50, below) | 2 x 0.45 |
+| 3 climb up | rows straight above, each standing `OUT` = 0.20 m further out from the wall: rows (1 -> 2), row spacing (0.20 -> 0.45 m: reaching out costs the free hook height) -- in one plane, 0.10 -> 0.50 m, until 2026-10-06, below | 2 x 0.40 |
 | 4 climb down | a staircase of short rungs, each lower and further along: steps (1 -> 3), drop a step (0.30 -> 0.45 m), gap a step (0.10 -> 0.30 m) | 3 steps, <= 0.40 down, <= 0.20 on |
-| 5 climb over | break in the start row, a row above to go round it (1.80 -> 2.50 m: past the 1.55 m it can bridge) | 2.20 |
-| 6 staggered | tiers (1 -> 2), tier rise (0.30 -> 0.50 m), height scatter (0.02 -> 0.08 m) | 2, ~0.46, 0.06 |
+| 5 climb over | break in the start row, a row above to go round it, over the break alone (1.80 -> 2.50 m: past the 1.55 m it can bridge) | 2.20 |
+| 6 staggered | tiers of short rungs, each tier past the end of the one below: tiers (1 -> 2), tier rise (0.30 -> 0.50 m), height scatter (0.02 -> 0.08 m) | 2, ~0.46, 0.06 |
 | 7 corner | side wall distance (0.60 -> 1.10 m) | 1.00 |
 | 8 behind | back rung distance (0.35 -> 0.70 m) | 0.63 |
 | 9 swing gap | one gap in the row (0.55 -> 0.90 m: past the static reach; 1.10 until the one motion found across 0.90 took all the reach there is, below) | 0.90 |
@@ -143,14 +143,20 @@ up; 0.64-0.68 m along a rung hanging still, 1.50-1.55 m with momentum at most; 0
 down at 0.15 m aside, 0.8-0.9 m at 0.3-0.45 m aside. So a staircase step is always
 within reach, the climb-over break can only be climbed round, and the swing gap needs
 a swing from 0.58 m of gap on. Climbing down comes before climbing over, which needs
-both. It is a staircase because a row straight under the hang is inside the robot:
-its arms and body fill 0.25-1.10 m below the start rung.
+both. No climb has a row straight under the hang in the rung plane, because that row
+is inside the robot: its arms hang 59-107 mm off the plane and fill 0.10-1.10 m below
+the hooks (wrists 15-23 mm inside a row 0.10-0.15 m down, forearms and upper arms
+6-25 mm clear at 0.20-0.50, the base inside at 0.60-1.00). Down (4), and up and down
+in 5 and 6, are diagonal: each row starts past the end of the one below; the free hand
+reaches 0.53-0.56 m up anywhere within 0.63 m aside. Straight up (3), each row stands
+out from the wall instead, and the rows below are behind the robot.
 
 Everything else about a wall -- segment lengths, where a rung ends, goal offsets,
 which way it runs (half are mirrored: the robot is symmetric, the benchmark is not) --
 is drawn uniformly from fixed ranges. Every wall is checked before use
-(`walls.Checker`): its goals on seats of their rungs, and nothing but the start rung
-within 2 cm of the robot in its start hang. `python -m rl.walls` asserts every family
+(`walls.Checker`): its goals on seats of their rungs, nothing but the start rung
+within 2 cm of the robot in its start hang, and nothing but the goal rungs within
+2 cm of that hang moved to the goals. `python -m rl.walls` asserts every family
 gives usable walls at its first and last ranges, and that each benchmark lesson is a
 wall its family can draw at its last range. A checkpoint records each family's ranges
 with its tops (`walls.spec`); on a resume a family whose ranges have changed since
@@ -228,7 +234,7 @@ below (the CPU path's, and the only one it can run).
 → 0. both hands, one step (0.40 m) → 1. traverse, continuous rung → 1.1. stop at the
 end of a rung → 1.2 / 1.35. cross one gap of 0.04 / 0.08 m → 1.5. traverse, two gaps
 of 0.12 m → 1.7. cross one 0.18 m gap → 2. traverse, gaps (0.25 m) → 3. climb up two
-rows → 4. climb down a staircase (3 steps) → 5. up, over a 2.2 m break and down → 6.
+rows 0.40 m apart, each standing 0.20 m further out → 4. climb down a staircase (3 steps) → 5. up, over a 2.2 m break and down → 6.
 staggered heights → 7. perpendicular wall → 8. wall behind the back → 9. swing across a
 0.90 m gap (past the static reach). Lessons 1..9 are the benchmark; each goes toward the
 robot's left (+y) and is also scored mirrored, toward its right (`rl.lessons.mirrored`,
@@ -807,6 +813,33 @@ measures it. The same trajectory banks -0.11 and +0.006 m; the CEM climbs of 0.1
 0.15 and 0.30 m still pay +8.07, +10.94, +11.28. The jump/drag test has the sag (old
 rule: +45 mm over three cycles); `rl.mjx_check task` matches C to 4.8e-10.
 
+**...and why it could not have climbed cleanly anyway (2026-10-06).** Stacked straight,
+a row under the one the robot hangs from is in its arms or body: the arms hang 59-107
+mm off the rung plane, so hanging one row up, a row 0.10-0.15 m below is 15-23 mm
+inside the wrists, 0.20-0.50 m is 6-25 mm off the forearms and upper arms, and
+0.60-1.00 m is inside the base. Every CEM climb up one stacked row (0.10-0.45 m)
+pressed an arm on the row below at 100-415 N, the wrist into the row above at up to
+1277 N at 0.10; at the goals of benchmark lessons 3 and 6 the base sat 34 and 38 mm
+inside the start rung (hanging there 3 s, the robot fell off); lesson 5's top row ran
+over both its other rungs. As the user put it: climbing up, the row above should be
+parallel and straight above but stand out in front, not in the same plane. Family 3
+and lesson 3 now stand each row `walls.OUT` = 0.20 m further out from the wall than the
+one below (first row 0.20 m up, the user's call): after 3 s hanging from the top row
+the rows below are 92-164 mm clear over the whole range, 109 mm on lesson 3 (5 mm at
+0.15 out, and at 0.05-0.10 the base swings onto the lowest of two rows). Reaching out
+costs height -- the free hook rises 0.56 m in the rung plane, 0.52 m 0.15-0.25 m out
+(`urdf/_reach.py`'s hang) -- so the rows are at most 0.45 m apart and lesson 3's are
+0.40 (the user's call): CEM climbs 0.20 m up and 0.20 out (`ClimbTask` success, +11.88,
+nothing but the hooks and the wrists on their own rungs touching) and 0.40 up and 0.20
+out (+12.18, the same: 2 of 5 searches got there, the other one flipping the robot
+upside down onto the start row), and found no way onto a row 0.45 up and 0.20 out in 3. Lessons 5 and 6, the diagonal
+climbs, start each row or tier past the end of the one below; lesson 5's top row spans
+the break alone. CEM climbs diagonal steps of 0.20 m (+11.44) and 0.45 m (+12.64, 2
+of 2 seeds onto the row; a forearm brushes the row below for 0.14 s). With the secured hang placed at the goals and along every
+intermediate rung, every family 3-6 wall at its first and last tops and lessons 3-6 are
+25 mm clear or more everywhere; `walls.Checker` rejects
+a wall whose goal hang is within 2 cm of any other rung.
+
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
 the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines
@@ -1123,9 +1156,9 @@ are behind the raised arms and the cage's bars. Seen at the start:
 | 1 | start 88 % (the spans under the hooks and upper arms; the ends are seen) |
 | 1.5 | start 75 %, seg1 88 %, seg2 100 % |
 | 2 | start 75 %, seg1 94 % (its near 2 cm behind the left upper arm), seg2 100 % |
-| 3 | start 88 %, up1 72 % (its end 0.23 m short), up2 81 % |
+| 3 | (stacked rows, before 2026-10-06) start 88 %, up1 72 % (its end 0.23 m short), up2 81 % |
 | 4 | start 81 %, step1 66 % (one end 0.33 m short), step2 100 %, step3 100 % |
-| 6 | start 88 %, stag1 69 %, stag2 97 %, **stag3 6 %**, top1 100 %, top2 100 % |
+| 6 | (before 2026-10-06) start 88 %, stag1 69 %, stag2 97 %, **stag3 6 %**, top1 100 %, top2 100 %; now start 81 %, stag1 78 %, the rest 100 % |
 
 `python -m rl.climb_task`'s lidar test: 6 s of flailing on lesson 6 takes every rung to
 100 %. Cost: 1–5 ms of numpy per frame, 2 frames in 5 control steps.

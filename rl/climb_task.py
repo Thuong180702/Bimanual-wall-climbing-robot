@@ -1900,18 +1900,21 @@ def main():
     # ...and a reach for the next rung is progress from its first millimetre. Through
     # the NEAREST rung, a hook lifted off the start row toward the row above paid for
     # the first half of the way: gpu1 never lifted one past 28 mm on family 3, 0 % for
-    # 90M steps.
+    # 90M steps. (Reached for along the straight line: the row stands out from the wall.)
     t3 = ClimbTask(3)
     t3.reset()
-    g3 = t3.goals[0]
+    edge3 = t3._route(t3._throat_true('L'))[1]   # the left hook's rung point...
+    c3u, a3u, _ = t3.segs['rung_up1']
+    up3 = c3u + ((edge3 - c3u) @ a3u) * a3u        # ...and the nearest one on the row above
+    u3 = (up3 - edge3) / np.linalg.norm(up3 - edge3)
     zs = (0.0, 0.01, 0.05, 0.10, 0.20, 0.30)
-    lift = [t3._cost(np.array([g3[0], g3[1], 1.00 + z]), 0) for z in zs]
+    lift = [t3._cost(edge3 + z * u3, 0) for z in zs]
     assert all(b < a - (1 - AIR) * (z1 - z0) + 1e-9 for a, b, z0, z1 in zip(lift, lift[1:], zs, zs[1:])), \
-        f"lifting toward the row above is not paid: {np.round(lift, 3)}"
+        f"reaching for the row above is not paid: {np.round(lift, 3)}"
     print(f"route test: the win9 dive is {(np.linalg.norm(hover - g) - np.linalg.norm(hang - g))*1e3:+.0f} mm "
           f"of straight-line progress and {(t._cost(hover, 0) - t._cost(hang, 0))*1e3:+.0f} mm along the routes; "
           f"0.30 m along the rung pays 0.30; a loaded hook pulled 30 mm off its line moves the bank 0; "
-          f"a hook lifted 0.30 m toward the rows above is paid {lift[0] - lift[-1]:.2f}")
+          f"a hook reached 0.30 m toward the row above is paid {lift[0] - lift[-1]:.2f}")
 
     # ...and no hill anywhere a climber has to go: every lesson, each hand, along its
     # shortest route through the rungs at the robot's own reach (0.65 m; 1.0 across
