@@ -77,7 +77,7 @@ except ImportError as e:
     raise SystemExit(f"missing training deps ({e}); pip install gymnasium stable-baselines3")
 
 from . import SCENE
-from . import default_envs, hardware
+from . import default_envs, hardware, rsi
 from .climb_task import CONTROL_DT, ClimbTask
 from .lessons import LESSONS, lesson_key
 
@@ -704,8 +704,11 @@ class Walls(Curriculum):
         parameters under the tops"""
         if self.checker is None:
             self.checker = self.W.Checker()
-        env.env_method('set_bank', self.W.draw(self.checker, dict(zip(self.active, self.weights())),
-                                               self.tops, self.rng, BANK))
+        bank = self.W.draw(self.checker, dict(zip(self.active, self.weights())), self.tops,
+                           self.rng, BANK)
+        if self.enabled:                 # some of family 3's start partway up a climb (rl.rsi)
+            bank = rsi.mix(bank, self.rng, self.tops[3]['spacing'])
+        env.env_method('set_bank', bank)
 
     def _on_training_start(self):
         """every env onto a wall of the bank before the first step. SB3's learn() has
@@ -1280,9 +1283,25 @@ def walls_check(FakeModel, FakeEnv):
     g.num_timesteps = 3 * STUCK_STEPS
     ep(6, True)
     assert 3 in g.cleared and not g.stalled(3), "a family that has passed was treated as stuck"
+    # rl.rsi's episodes, started partway up a climb, are a book of their own: a window of
+    # them all passed moves neither family 3's rate nor its tops
+    rate3, tops3 = g.rate(3), dict(g.tops[3])
+    g.locals = {'infos': [dict(reason='success', lesson=3 + rsi.BOOK, probe=-1, probe_val=0.0,
+                               steps=100)] * WW, 'dones': [True] * WW}
+    g._on_step()
+    assert g.rate(3) == rate3 and g.tops[3] == tops3 and g.rate(3 + rsi.BOOK) == (WW, 1.0), \
+        "episodes started partway up a climb counted toward family 3's gate or its ADR"
+    if rsi.load() is not None:           # and the bank mixes them into family 3's walls only
+        lays = [dict(family=f) for f in (1, 3) * 50]
+        mixed = rsi.mix(lays, np.random.default_rng(0), top=0.50, share=1.0)
+        assert all(m['family'] == (3 + rsi.BOOK if l['family'] == 3 else l['family'])
+                   for l, m in zip(lays, mixed)) and min(m.get('d0_row', 99) for m in mixed) >= len(LESSONS)
+        assert rsi.mix(lays, np.random.default_rng(0), top=0.10, share=1.0) == lays, \
+            "a start was mixed into walls lower than its own climb"
     st = json.loads(json.dumps(g.state()))
     r = Walls(st['active'], st['history'], st['walls'], cleared=st['cleared'], entered=st['entered'])
     assert r.cleared == g.cleared and r.entered == g.entered, "the gate's books did not survive state.json"
+    assert r.hist.get(3 + rsi.BOOK) == g.hist[3 + rsi.BOOK], "the starts' book did not survive state.json"
     # the guard reads the passed families' success as well as ADR's progress, capped at the
     # gate: at 80 % a family holds all of it, forgotten outright none
     h = Walls(lag=0)

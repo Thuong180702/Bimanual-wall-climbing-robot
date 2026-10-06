@@ -47,7 +47,7 @@ import mujoco
 from mujoco import mjx
 from .estimator import JOINTS, THROAT_PT, MAG_WORLD
 from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET
-from . import climb_task as ct, lidar
+from . import climb_task as ct, lidar, rsi
 from .lessons import LESSONS, canon_axis
 from .mjx_scene import N_RUNG, PARK, lesson_layout, model as scene_model, slots
 
@@ -197,11 +197,12 @@ class Tables(NamedTuple):
     """the walls an env can draw, leading axis = the rows: LESSON_KEYS, then a bank of
     generated walls (rl.walls) that `Batch.set_bank` refills without a recompile"""
     walls: Wall                # (R, ...)
-    tau_idle: jax.Array        # (L,) climb_task's idle-hang torque, per lesson
-    fight_idle: jax.Array      # (L,) ...and its internal force
-    d0: mjx.Data               # (L,) the secured hang, per lesson
+    tau_idle: jax.Array        # (L + S,) climb_task's idle-hang torque, per start
+    fight_idle: jax.Array      # (L + S,) ...and its internal force
+    d0: mjx.Data               # (L + S,) the secured hang per lesson, then rl.rsi's starts
     ctrl0: jax.Array
     ngt0: jax.Array
+    grabs0: jax.Array          # (L + S, 2) holds each hand has taken by then: 0 at a hang
 
 
 class MjxClimb:
@@ -302,7 +303,27 @@ class MjxClimb:
             w.slot_pos[:L], w.slot_quat[:L], w.slot_size[:L], w.wall_pos[:L], w.wall_quat[:L])
         tau_idle = jax.vmap(lambda d: jp.abs(d.sensordata[self.s_tau]).sum())(d0)
         fight_idle = jax.vmap(lambda d: self._internal(d, self._sensors(d)))(d0)
-        return Tables(walls=w, tau_idle=tau_idle, fight_idle=fight_idle, d0=d0, ctrl0=ctrl0, ngt0=ngt0)
+        grabs0 = jp.zeros((L, 2), jp.int32)
+        ref = rsi.load()
+        if ref is not None:
+            # rl.rsi's starts after the lessons' hangs (a wall's d0_row picks one): each
+            # state forwarded on the wall it was found on, its clock at 0; the effort and
+            # fight baselines stay the secured hang's (lesson 1's), as on every wall
+            sp, inv = np.unique(ref['spacing'], return_inverse=True)   # one wall per spacing
+            sl = {k: v[inv] for k, v in self.rows([rsi.wall(float(x)) for x in sp]).items()}
+            base = mjx.make_data(self.mx)
+            ds = jax.jit(jax.vmap(lambda p, qt, sz, wp, wq, q, v, c: mjx.forward(
+                self._slot_model(p, qt, sz, wp, wq), base.replace(qpos=q, qvel=v, ctrl=c, time=jp.zeros(())))))(
+                *(jp.asarray(sl[k]) for k in ('slot_pos', 'slot_quat', 'slot_size', 'wall_pos', 'wall_quat')),
+                jp.asarray(ref['qpos']), jp.asarray(ref['qvel']), jp.asarray(ref['ctrl']))
+            r1, S = LESSON_KEYS.index(1), len(ref['spacing'])
+            cat = lambda a, b: jp.concatenate([a, b])
+            d0 = jax.tree_util.tree_map(cat, d0, ds)
+            ctrl0, ngt0 = cat(ctrl0, jp.asarray(ref['ctrl'])), cat(ngt0, jp.zeros(S))
+            tau_idle, fight_idle = cat(tau_idle, jp.full(S, tau_idle[r1])), cat(fight_idle, jp.full(S, fight_idle[r1]))
+            grabs0 = cat(grabs0, jp.asarray(ref['grabs'], jp.int32))
+        return Tables(walls=w, tau_idle=tau_idle, fight_idle=fight_idle, d0=d0, ctrl0=ctrl0,
+                      ngt0=ngt0, grabs0=grabs0)
 
     @staticmethod
     def wall(T, row):
@@ -611,8 +632,11 @@ class MjxClimb:
         u = jp.clip(((thr - mc[idx]) * ma[idx]).sum(-1), -mh[idx], mh[idx])
         con, on = self._contact(d)
         z2 = jp.zeros(2)
+        # the anchor: the left hand, as ClimbTask's, unless only the right carries load
+        # (an rl.rsi start with the left in the air)
+        anchor = jp.where(~(con[0] > ct.HOLD_LOAD) & (con[1] > ct.HOLD_LOAD), 1, 0)
         st = State(d=d, lesson=lesson, ctrl=ctrl, key=key, no_grip_t=ngt,
-                   Rf=jp.eye(3), anchor=jp.array(0), hold_idx=idx,
+                   Rf=jp.eye(3), anchor=anchor, hold_idx=idx,
                    hold_pt=mc[idx] + u[:, None] * ma[idx],
                    both_conf=jp.array(False), anchor_fresh=jp.array(True), est_thr=thr,
                    map_c=mc, map_a=ma, map_h=mh, map_goals=mg, map_z=ep['map'], seen=seen,
@@ -621,7 +645,7 @@ class MjxClimb:
                    buf_true=jp.zeros((ct.SLAM_LAG, 3)), buf_est=jp.zeros((ct.SLAM_LAG, 3)),
                    prev_d=z2, prev_live=z2, live_att=z2, credit=z2, held=jp.zeros(2, bool),
                    prev_thr=thr, prev_loaded=con > ct.HOLD_LOAD, let_go=jp.zeros(2, bool),
-                   grabs=jp.zeros(2, jp.int32), cross_axis=jp.zeros(3), cross_sign=jp.array(1.0),
+                   grabs=T.grabs0[w.d0_row], cross_axis=jp.zeros(3), cross_sign=jp.array(1.0),
                    off_t=z2, held_t=z2, slide_rung=jp.full(2, -1), slide_ref=z2, slide_net=z2,
                    n_steps=jp.array(0), wall=w)
         st, true, sen = self._sense(T, st, d, jp.zeros(3), z)

@@ -60,6 +60,10 @@ def show(name, names):
         h = hist.get(k, [])[-st.get('window', WINDOW):]
         rate = f"{sum(h)/len(h):.0%}" if h else "-"
         print(f"  {f'{k} {names.get(k, k)}' if tops else names.get(k, k):>22} {rate:>9} {len(h):>9}")
+    for k in sorted(x for x in hist if isinstance(x, int) and x >= 100):   # rl.rsi's book
+        h = hist[k][-st.get('window', WINDOW):]
+        print(f"  {f'{k - 100} started partway up':>22} {sum(h) / len(h):>9.0%} {len(h):>9}"
+              "   (rl.rsi: not the gate's)")
 
 
 def main():

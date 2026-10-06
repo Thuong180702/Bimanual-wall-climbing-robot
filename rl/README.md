@@ -840,6 +840,24 @@ intermediate rung, every family 3-6 wall at its first and last tops and lessons 
 25 mm clear or more everywhere; `walls.Checker` rejects
 a wall whose goal hang is within 2 cm of any other rung.
 
+**...and why it still did not climb: nothing ever found the first reach (2026-10-06).**
+gpu2 resumed on those walls to 179M steps: family 3 at 0 % over 7792 episodes and 39 %
+of the steps, every one a timeout -- no rollback, std rising 0.53 -> 0.60, EV 0.95. On
+family 3's training walls in MJX, 32 episodes each, gpu2's own noise, a fresh SB3 policy
+(std 1, mean ~0) and uniform random actions all touched the row above in 0 of 32, no
+throat ever within 191 mm of a goal 283 mm off; the fresh one also fell off in all 32.
+So not the resumed policy: from scratch it is the same, after relearning to hang. The
+rest was checked and is right: the row is in the lidar map from the first step, MJX
+matches C along a climb onto it (3.6e-15), the simplified robot MJX trains can climb it
+(CEM: 0.20, 0.25 and 0.30 m up, 0.20 out), and the reward pays the climb (+11.9).
+Started partway up that climb (`rl.rsi`), gpu2 already finishes it: 0/26 from the first
+5 s, 23/23 once the first hand is on the row above, 19/21 later. The one move it lacks
+is the first hand's reach. So a quarter of family 3's walls (`rsi.SHARE`) now start at
+one of 217 states along those three climbs -- the joints, speeds, setpoints and the
+holds already taken -- and those episodes are booked as family 103: never family 3's
+gate or ADR, which stay what the policy does from the hang (`rl.status` prints the book).
+In MJX the rest of the climb, replayed open loop from such a start, succeeds from 5 of 6.
+
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
 the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines
