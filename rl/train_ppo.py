@@ -354,14 +354,15 @@ class MjxVecEnv(VecEnv):
         infos = [{} for _ in range(self.num_envs)]
         if done.any():
             end = np.asarray(end)
-            why, lesson, steps, dist, fam, probe, pval = (
+            why, lesson, steps, dist, fam, probe, pval, row = (
                 np.asarray(info[k]) for k in ('reason', 'lesson', 'steps', 'dist', 'family',
-                                              'probe', 'probe_val'))
+                                              'probe', 'probe_val', 'row'))
             for i in np.nonzero(done)[0]:
                 # a generated wall reports its family (= its benchmark lesson's key)
                 infos[i] = {'reason': self.mt.REASONS[why[i]],
                             'lesson': int(fam[i]) if fam[i] >= 0 else self.mt.LESSON_KEYS[lesson[i]],
                             'probe': int(probe[i]), 'probe_val': float(pval[i]),
+                            'start': int(row[i]) - len(self.mt.LESSON_KEYS),   # rl.rsi's row, < 0 off them
                             'steps': int(steps[i]), 'dist': float(dist[i]),
                             'terminal_observation': end[i],
                             'TimeLimit.truncated': bool(trunc[i] and not term[i])}
@@ -644,6 +645,7 @@ class Walls(Curriculum):
         self._load(walls)
         self.rng = np.random.default_rng(seed)
         self.checker = None
+        self.rsi_pending, self.rsi_lag = [], min(self.lag, episode_steps(rsi.TIMEOUT))
 
     def _load(self, walls):
         """a checkpoint's tops and probes, each family's only if its ranges are the ones
@@ -660,6 +662,8 @@ class Walls(Curriculum):
                 self.tops[int(f)].update(t)
         self.probes = {k: list(v) for k, v in (w.get('probes') or {}).items()
                        if int(k.split(':')[0]) not in moved}
+        # rl.rsi's book per start, {fixture row: [success, ...]}: where its frontier is
+        self.starts = {int(j): list(v) for j, v in (w.get('starts') or {}).items()}
         for f in sorted(moved):
             self.hist.pop(f, None)
             if w.get('tops'):
@@ -707,7 +711,8 @@ class Walls(Curriculum):
         bank = self.W.draw(self.checker, dict(zip(self.active, self.weights())), self.tops,
                            self.rng, BANK)
         if self.enabled:                 # some of family 3's start partway up a climb (rl.rsi)
-            bank = rsi.mix(bank, self.rng, self.tops[3]['spacing'])
+            bank = rsi.mix(bank, self.rng, self.tops[3]['spacing'],
+                           rsi.SHARE if 3 in self.cleared else rsi.SHARE_HI, self.starts)
         env.env_method('set_bank', bank)
 
     def _on_training_start(self):
@@ -721,6 +726,23 @@ class Walls(Curriculum):
 
     def _on_rollout_start(self):
         self.draw_bank(self.training_env)
+
+    def _on_step(self):
+        out = super()._on_step()
+        # rl.rsi's book per start, in start order like every book here -- counted as they
+        # end, a start's quick successes would pass it before its failures were in, and
+        # any start the policy ever finishes from would read as passed -- but behind a lag
+        # of its own: its episodes end by rsi.TIMEOUT, half the families' 60 s (~6M steps
+        # at 4096 envs), and the frontier waits on it once per start
+        for info, done in zip(self.locals['infos'], self.locals['dones']):
+            if done and info.get('lesson') == 3 + rsi.BOOK and info.get('start', -1) >= 0:
+                t0 = self.clock - (info.get('steps') or 0)
+                if t0 >= self.since:
+                    heapq.heappush(self.rsi_pending, (t0, info['start'], info['reason'] == 'success'))
+        while self.rsi_pending and self.rsi_pending[0][0] <= self.clock - self.rsi_lag:
+            _, j, ok = heapq.heappop(self.rsi_pending)
+            self._push(self.starts, j, ok)
+        return out
 
     def _count(self, ep):
         f, p = ep['lesson'], ep.get('probe')
@@ -751,10 +773,12 @@ class Walls(Curriculum):
     def state(self):
         return dict(super().state(), walls=dict(
             tops={str(f): t for f, t in self.tops.items()}, probes=self.probes,
-            spec={str(f): self.W.spec(f) for f in self.W.FAMILIES}))
+            spec={str(f): self.W.spec(f) for f in self.W.FAMILIES},
+            starts={str(j): v[-rsi.START_WINDOW:] for j, v in self.starts.items()}))
 
     def restore(self, state):
         super().restore(state)
+        self.rsi_pending.clear()
         self._load(state.get('walls'))
 
 
@@ -979,6 +1003,12 @@ class Checkpoint(BaseCallback):
                 ends += f" | contact cap full {cap:.3%} of substeps"
                 base.capped = base.substeps = 0
             guard = self.guard()
+            # rl.rsi's frontier: s into each climb of the latest start not yet passed
+            fr = ({str(k): v for k, v in rsi.where(self.cur.starts, self.cur.tops[3]['spacing']).items()}
+                  if isinstance(self.cur, Walls) else {})
+            if fr:
+                ends += " | starts' frontier " + ", ".join(
+                    f"{k} m {'all passed' if v is None else f'{v:g} s'}" for k, v in fr.items())
             record('checkpoint', timesteps=int(self.model.num_timesteps),
                    updates=int(self.model.num_timesteps // (self.model.n_steps * self.model.n_envs)),
                    pool=self.cur.active,
@@ -988,7 +1018,7 @@ class Checkpoint(BaseCallback):
                    lr=self.model.lr_schedule(1.0), kl_target=self.kl_target,
                    rollbacks=self.rollbacks, contact_cap=cap,
                    std=float(self.model.policy.log_std.detach().exp().mean()),
-                   tops=getattr(self.cur, 'tops', None))
+                   tops=getattr(self.cur, 'tops', None), rsi_frontier=fr or None)
             print(f"[checkpoint] {self.model.num_timesteps:,} steps | {rates} | "
                   f"best {self.best:.2f} | lr {self.model.lr_schedule(1.0):g} "
                   f"kl<={self.kl_target:g}"
@@ -1298,10 +1328,45 @@ def walls_check(FakeModel, FakeEnv):
                    for l, m in zip(lays, mixed)) and min(m.get('d0_row', 99) for m in mixed) >= len(LESSONS)
         assert rsi.mix(lays, np.random.default_rng(0), top=0.10, share=1.0) == lays, \
             "a start was mixed into walls lower than its own climb"
+        # ...each booked by its start as it ends, and drawn toward the latest start along
+        # its climb not yet passed (gpu4's: 4.8 s into the 0.20 m climb), cut to rsi.TIMEOUT
+        sp = rsi.load()['spacing']
+        c20 = np.nonzero(np.isclose(sp, 0.20))[0]
+        f = int(c20[24])
+        eps = [dict(reason='success' if j > f else 'timeout', lesson=3 + rsi.BOOK, probe=-1,
+                    probe_val=0.0, start=int(j), steps=100) for j in c20 for _ in range(rsi.START_MIN)]
+        g.locals = {'infos': eps, 'dones': [True] * len(eps)}
+        g._on_step()
+        assert len(g.starts[int(c20[0])]) == rsi.START_MIN, "the climb's first start (row 0) was not booked"
+        assert rsi.frontier(g.starts, sp, c20) == {0.2: f} and rsi.where(g.starts, 0.20) == {0.2: 4.8}, \
+            f"the frontier is not the latest start failing: {rsi.frontier(g.starts, sp, c20)}"
+        draws = rsi.mix([dict(family=3)] * 2000, np.random.default_rng(1), top=0.20, share=1.0,
+                        books=g.starts)
+        rows = np.array([m['d0_row'] - len(LESSONS) for m in draws])
+        near = np.mean((rows <= f) & (rows >= f - rsi.BACK))
+        assert near > 0.5, f"only {near:.0%} of the starts drawn at the frontier (gpu4's: 3 in 66)"
+        assert all(m['timeout'] < g.W.TIMEOUT for m in draws), "a start's wall kept the 60 s timeout"
+        g.starts[int(c20[40])] = [False] * rsi.START_WINDOW      # one slips behind the frontier:
+        assert rsi.frontier(g.starts, sp, c20)[0.2] == int(c20[40]), "a start that slipped is not drawn first"
+        # with the real lags: a quick success waits out rsi.TIMEOUT (not the family's 60 s)
+        # for the failures begun before it
+        q = Walls()
+        q.model = FakeModel(FakeEnv())
+        q.locals = {'infos': [dict(reason='success', lesson=3 + rsi.BOOK, probe=-1, probe_val=0.0,
+                                   start=7, steps=10)], 'dones': [True]}
+        q._on_step()
+        q.locals = {'infos': [{}], 'dones': [False]}
+        for _ in range(q.rsi_lag - 11):
+            q._on_step()
+        assert 7 not in q.starts and q.rsi_lag < q.lag, "a start booked before its cohort could end"
+        q._on_step()
+        assert q.starts.get(7) == [True], f"a start not booked {q.rsi_lag} ticks after it began: {q.starts}"
     st = json.loads(json.dumps(g.state()))
     r = Walls(st['active'], st['history'], st['walls'], cleared=st['cleared'], entered=st['entered'])
     assert r.cleared == g.cleared and r.entered == g.entered, "the gate's books did not survive state.json"
-    assert r.hist.get(3 + rsi.BOOK) == g.hist[3 + rsi.BOOK], "the starts' book did not survive state.json"
+    assert r.hist.get(3 + rsi.BOOK) == g.hist[3 + rsi.BOOK][-WW:], "the starts' book did not survive state.json"
+    assert r.starts == {j: v[-rsi.START_WINDOW:] for j, v in g.starts.items()}, \
+        "the books per start did not survive state.json"
     # the guard reads the passed families' success as well as ADR's progress, capped at the
     # gate: at 80 % a family holds all of it, forgotten outright none
     h = Walls(lag=0)

@@ -884,6 +884,31 @@ and -0.89 at 1, 2 and 4 s -- effort and slide, the cost of moving, against hangi
 return +9.78, discounted from the hang +1.63 (was +1.35). 201 starts; replayed open loop
 in MJX, 7 of 7 sampled succeed.
 
+**...and why that did not either: the frontier start was never drawn (2026-10-07).**
+gpu4 trained fresh on those climbs to 64M steps (RTX 3090): families 1 and 2 at 85-90 %,
+family 3 from the hang 0 % (unlocked at 13M, family 4 let in past it at 63M), the starts
+partway up 55-73 % from 17M on. In MJX, every 0.20 m start, stochastic and deterministic:
+0/16 from each start up to 4.8 s, 16/16 from 5.0 s on -- 41 of 66 starts, the 62 % the run
+logged -- and the same at the 50M snapshot. At 5.0 s the left hook is already over the row
+above; at 4.8 s it is 30 mm under it and rising, and the climb lifts it over (-30 -> +34 mm
+in 5 steps) and drops it on, where the policy pulls it straight at the seat, into the
+rung's underside (189 N on the first step), drags the hand back to the start rung and
+flutters. Not out of reach: three control steps of the climb from 4.8 s and the policy
+finishes 8/8 (two 2/8, one 0/8); the climb from there with the policy's noise (0.59) on
+every joint 4/8. The objective is right (the critic: -2 until 0.2 s after the release,
++1.6 -> +10.7 once over the rung). The starts were drawn evenly and only for a quarter of
+family 3's walls: 8427 episodes in 64M steps, ~128 a start, ~2 per 1M steps, none of them
+a success at the frontier -- while family 3 from the hang took 44 % of all steps for
+nothing. Now (`rl.rsi`): Walls books each start's episodes (`start` in the info: the
+wall's d0_row) in start order, as every book here -- counted as they end, a start's quick
+successes would pass it before its failures were in -- behind a lag of TIMEOUT, the 30 s
+an episode from a start now may run (twice the longest rest of a climb), not the
+families' 60 s; `rsi.frontier` is the latest start along each climb not passed (70 % of
+its last 20, 10 at least); FOCUS (3/4) of the starts drawn are that one and the two
+before it, the rest evenly; and the starts take SHARE_HI (3/4) of family 3's walls until
+family 3 passes its gate, SHARE after. The checkpoint line and `rl.status` print the frontier
+in seconds along each climb: that, not the starts' rate, is what to watch.
+
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
 the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines

@@ -780,7 +780,7 @@ class MjxClimb:
         r = jp.where(why == 5, ct.FAIL_R,       # a blowup is FAIL_R alone, as in ClimbTask
                      r + jp.where(success, ct.SUCCESS_R, jp.where(terminated, ct.FAIL_R, 0.0)) + refund)
         info = dict(reason=why, lesson=lesson, family=w.family, probe=w.probe,
-                    probe_val=w.probe_val,
+                    probe_val=w.probe_val, row=w.d0_row,     # the start: rl.rsi's at L + j
                     steps=n_steps, dist=dd.sum(), bank=bank,
                     slide=slide, flight=flight.astype(r.dtype), parked=parked, stale=stale,
                     sep_err=sep_err, effort=effort, fight=fight, first=first.sum(),
