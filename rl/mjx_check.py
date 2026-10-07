@@ -178,7 +178,7 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
                   close('effort', ij['effort'], info['effort'], 1e-5),
                   close('fight', ij['fight'], info['fight'], 1e-5),
                   int(st.anchor) == 'LR'.index(t.anchor),
-                  list(np.asarray(ij['grabs'])) == list(info['grabs']),
+                  list(np.asarray(ij['grabs'])) == list(info['grabs']), float(ij['first']) == info['first'],
                   float(ij['flight']) == info['flight'], float(ij['parked']) == info['parked'],
                   float(ij['stale']) == info['stale'], bool(tej) == te, bool(trj) == tr,
                   why == info.get('reason', '')]

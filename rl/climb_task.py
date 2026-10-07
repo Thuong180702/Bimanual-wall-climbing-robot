@@ -405,7 +405,8 @@ K_SLIDE = 10.0           # per metre a LOADED hook (contact > HOLD_LOAD) moves a
 assert K_SLIDE > K_BANK and K_SLIDE > 2 * K_REACH, (
     "a loaded hook moving along its rung is credited nothing either way, so the only "
     "thing that stops 'reach free, drag back loaded' from being a pump is this charge")
-K_GRAB = 1.0             # once per hand per episode, for its first supported hold.
+K_GRAB = 1.0             # once per hand per episode, for its first supported hold
+                         # that banks progress (GRAB_MIN).
                          # Seating a hook from the air is the one skill the reach
                          # credit cannot teach by itself: the 600k policy carried
                          # the free hand to within 40 mm of its goal and hovered
@@ -415,6 +416,13 @@ K_GRAB = 1.0             # once per hand per episode, for its first supported ho
                          # event with a small payoff. Once per hand, so flutter
                          # cannot farm it: a partial payment of the success
                          # condition (MIN_GRABS), not a goal of its own.
+GRAB_MIN = 0.03          # m a hold must bank (its credit, toward its goal) to be paid K_GRAB.
+                         # A re-grip in place took it too: gpu3 (60M, 2026-10-06) let go and
+                         # re-took the start rung ~200 times a hand on family 3, +2 within
+                         # its first second, against the climb's -1.25 two seconds into its
+                         # reach. Measured on gpu3 in C: 1193 such holds banked at most 16
+                         # mm; lessons 1/2's real steps 54-98 mm (median), 61 of 81 >= 30 mm.
+                         # Still once per hand: the first hold that qualifies.
 SUCCESS_R = 10.0
 FAIL_R = -10.0
 GRIP_STOP = np.radians(-37.0)   # finger setpoint limit: 3 deg inside GRIP_BAND's closed edge
@@ -1161,6 +1169,7 @@ class ClimbTask:
         self.prev_loaded = np.array([self._contact(s)[0] > HOLD_LOAD for s in 'LR'])
         self.let_go = np.zeros(2, bool)      # has this hand been clear since anchoring
         self.grabs = np.zeros(2, int)        # real holds taken, per hand, this episode
+        self.grab_paid = np.zeros(2, bool)   # has this hand been paid K_GRAB this episode
         # the line the hands travel along, and which way round they start on it
         self.cross_axis = self.segs[self._seat('L')[0]][1]
         sep = self._throat_true('L') - self._throat_true('R')
@@ -1238,7 +1247,6 @@ class ClimbTask:
         took = held & ~self.held & self.let_go & loaded[::-1]
         self.let_go &= ~took
         self.grabs += took
-        first = took & (self.grabs == 1)        # each hand's first real hold this episode
         # Progress, RELATIVE to the hand that holds (see the block above the class).
         # A light hand whose partner is loaded is credited its approach minus the
         # partner's own motion toward that goal, both ways; a loaded hook is
@@ -1287,6 +1295,9 @@ class ClimbTask:
             else:
                 credit[k] = min(0.0, approach[k])
         self.credit += credit
+        # each hand's first hold this episode that banks GRAB_MIN toward its goal
+        first = took & ~self.grab_paid & (self.credit >= GRAB_MIN)
+        self.grab_paid |= first
         bank = float(self.credit[took].sum())
         self.credit[took] = 0.0
         sep_err = self._sep_error(con)
@@ -2109,6 +2120,47 @@ def main():
           "a holder settling +-20 mm credits the free hand 0, two loaded hooks settling credit 0; "
           "a one-step lift nets nothing either way round; a holder creeping on alternate loads credits nothing; "
           "a holder sagging 15 mm off its rung under a free hand banks nothing")
+
+    # K_GRAB is for a hold that banks progress: a re-grip in place is not paid (gpu3's
+    # family 3, ~200 a hand an episode), and the reach after it still is
+    t = ClimbTask(1)
+    t.reset()
+    real_con, real_d, real_thr = t._contact, t._hand_dists, t._throat_true
+    on = {s_: real_con(s_) for s_ in 'LR'}
+    st = {'L': on['L'], 'R': on['R'], 'd': real_d().copy(),
+          'thr': {s_: real_thr(s_).copy() for s_ in 'LR'}}
+    t._contact = lambda s_: st[s_]
+    t._hand_dists = lambda: st['d'].copy()
+    t._throat_true = lambda s_: st['thr'][s_].copy()
+    uL = t.goals[0] - st['thr']['L']
+    uL /= np.linalg.norm(uL)
+    st['L'] = (0.0, set())
+    t.step(z)
+    st['d'][0] -= 0.5 * GRAB_MIN                # a re-grip, a little toward the goal
+    st['thr']['L'] += 0.5 * GRAB_MIN * uL
+    st['L'] = on['L']
+    _, _, _, _, info = t.step(z)
+    assert list(info['grabs']) == [1, 0] and info['first'] == 0.0, (
+        f"a re-grip {500 * GRAB_MIN:.0f} mm on was paid K_GRAB ({info['grabs']} grabs, first {info['first']})")
+    st['L'] = (0.0, set())
+    t.step(z)
+    for _ in range(3):
+        st['d'][0] -= 0.1
+        st['thr']['L'] += 0.1 * uL
+        t.step(z)
+    st['L'] = on['L']
+    _, _, _, _, info = t.step(z)
+    assert list(info['grabs']) == [2, 0] and info['first'] == 1.0, (
+        f"the 0.3 m reach after a re-grip was not paid K_GRAB (first {info['first']})")
+    st['L'] = (0.0, set())
+    t.step(z)
+    st['d'][0] -= 0.1
+    st['thr']['L'] += 0.1 * uL
+    st['L'] = on['L']
+    _, _, _, _, info = t.step(z)
+    assert info['first'] == 0.0, "K_GRAB paid twice to one hand"
+    print(f"grab test: a re-grip {500 * GRAB_MIN:.0f} mm on is not paid K_GRAB, the 0.3 m reach "
+          "after it is, once")
 
     # No pump, proved rather than hoped. The live term is a potential and must
     # telescope to the endpoints exactly; the bank pays credit that never exceeds

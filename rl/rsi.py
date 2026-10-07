@@ -11,7 +11,8 @@ touched it in 0 of 32 episodes, their throats getting no nearer than 191-195 mm 
 283 mm off. A climb is 15-20 s of swing, reach out and up, seat, follow -- a chain nothing
 random strings together -- and with no success there is nothing for PPO to follow.
 
-The climbs are joint-setpoint sequences found by CEM (out/climb_demo/plan_chain.py) on the
+The climbs are joint-setpoint sequences found by CEM (out/climb_demo/plan_chain.py, HILL=2:
+PLAN=f3x20 seed 42; f3x25w seed 43 and f3x30w seed 47 warm-started from it, INIT=) on the
 robot MJX trains -- the simplified one, `XML=` that robot's scene -- each on one wall:
 the start row and one row SPACING up and `walls.OUT` out, full length, goals straight
 above the hang. Replayed here through ClimbTask.step on that robot, every EVERY-th control
@@ -19,6 +20,11 @@ step's state becomes a start, up to a second before the climb succeeds: the join
 their speeds, the setpoints, and the holds each hand has really taken by then (success
 asks each hand for one). Family 3's rows are the same full-length rungs whatever its
 goals and mirroring, so a start fits every family-3 wall of its spacing.
+
+None may climb more than HILL_MAX of live potential on the way (the barrier test, run on the
+motion itself, `build_fixture`): the first climbs, found without HILL, swung the free arm
+across the body up 0.40-2.44 m of it, and gpu3 (2026-10-06, 60M steps) learnt every start
+after the swing (38/40) and none on it (0/80) -- going back to the start rung paid more.
 
 Those episodes are booked as family 3 + 100 (rl.train_ppo.Walls): they never count toward
 family 3's gate or its ADR probes, which stay what the policy does from the hang.
@@ -37,6 +43,11 @@ SHARE = 0.25         # of the bank's family-3 walls, while family 3 trains
 EVERY = 5            # control steps between two starts along a climb
 MARGIN = 25          # control steps (1 s) before the climb's success: the last start
 BOOK = 100           # its episodes report family + BOOK
+HILL_MAX = 0.05      # m the live potential (both hands, what K_REACH pays) may rise above
+                     # its lowest so far along a climb. The first climbs swung the free arm
+                     # across the body up a 0.40-2.44 m hill of it before the reach paid;
+                     # gpu3 (60M steps) never learnt that stretch from these starts -- going
+                     # back to the start rung paid more -- and stayed at 0 % from the hang.
 
 
 def wall(spacing):
@@ -106,27 +117,32 @@ def _replay(spacing, path):
     z = np.load(path)
     assert np.allclose(t.ctrl, z['ctrl0'], atol=1e-6), "the climb does not start from this task's hang"
     d, out, won = t.env.data, [], None
+    cmin, hill = float(t._live().sum()), 0.0
     for k, c in enumerate(z['ctrl']):
         out.append(dict(qpos=d.qpos.copy(), qvel=d.qvel.copy(), ctrl=t.ctrl.copy(),
                         grabs=t.grabs.copy()))
         _, _, te, tr, info = t.step(np.clip((c - t.ctrl) / ACT_SCALE, -1, 1))
+        hill = max(hill, info['live'] - cmin)
+        cmin = min(cmin, info['live'])
         if te or tr:
             won = k + 1 if info.get('reason') == 'success' else None
             assert won, f"the {spacing} m climb ended '{info.get('reason')}' on replay"
             break
     assert won, f"the {spacing} m climb did not succeed on replay"
-    return out, won
+    return out, won, hill
 
 
 def build_fixture():
     rows = []
     for s, path in sorted(CLIMBS.items()):
-        states, won = _replay(s, path)
+        states, won, hill = _replay(s, path)
         keep = states[:won - MARGIN:EVERY]
         rows += [dict(st, spacing=s) for st in keep]
         print(f"rsi: the {s:.2f} m climb succeeds at step {won} ({won * 0.04:.1f} s); "
               f"{len(keep)} starts, every {EVERY} steps to {MARGIN} before it; "
-              f"holds taken by the last: {keep[-1]['grabs']}")
+              f"holds taken by the last: {keep[-1]['grabs']}; live potential's hill {hill * 1000:.0f} mm")
+        assert hill <= HILL_MAX, (f"the {s:.2f} m climb climbs {hill:.2f} m of live potential before "
+                                  f"it pays (HILL_MAX {HILL_MAX}): a policy is paid to go back from its starts")
     np.savez_compressed(FILE, **{k: np.array([r[k] for r in rows]) for k in rows[0]})
     print(f"rsi: {len(rows)} starts -> {FILE}")
 

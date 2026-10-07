@@ -159,6 +159,7 @@ class State(NamedTuple):
     prev_loaded: jax.Array
     let_go: jax.Array
     grabs: jax.Array
+    grab_paid: jax.Array       # (2,) climb_task.grab_paid: K_GRAB paid this episode
     cross_axis: jax.Array
     cross_sign: jax.Array
     off_t: jax.Array
@@ -645,7 +646,8 @@ class MjxClimb:
                    buf_true=jp.zeros((ct.SLAM_LAG, 3)), buf_est=jp.zeros((ct.SLAM_LAG, 3)),
                    prev_d=z2, prev_live=z2, live_att=z2, credit=z2, held=jp.zeros(2, bool),
                    prev_thr=thr, prev_loaded=con > ct.HOLD_LOAD, let_go=jp.zeros(2, bool),
-                   grabs=T.grabs0[w.d0_row], cross_axis=jp.zeros(3), cross_sign=jp.array(1.0),
+                   grabs=T.grabs0[w.d0_row], grab_paid=T.grabs0[w.d0_row] > 0,
+                   cross_axis=jp.zeros(3), cross_sign=jp.array(1.0),
                    off_t=z2, held_t=z2, slide_rung=jp.full(2, -1), slide_ref=z2, slide_net=z2,
                    n_steps=jp.array(0), wall=w)
         st, true, sen = self._sense(T, st, d, jp.zeros(3), z)
@@ -723,7 +725,6 @@ class MjxClimb:
         took = held & ~st.held & let_go & loaded[::-1]
         let_go = let_go & ~took
         grabs = st.grabs + took
-        first = took & (grabs == 1)
         approach = st.prev_d - dd
         both = was & loaded
         g = w.goals
@@ -736,6 +737,7 @@ class MjxClimb:
             credit.append(jp.where(both[k], 0.0, jp.where(both[o], rel, jp.minimum(0.0, approach[k]))))
         credit = jp.stack(credit)
         acc = st.credit + credit
+        first = took & ~st.grab_paid & (acc >= ct.GRAB_MIN)     # climb_task: K_GRAB's hold
         bank = jp.where(took, acc, 0.0).sum()
         acc = jp.where(took, 0.0, acc)
         shared = on[0] & on[1]                     # climb_task._sep_error: one rung only
@@ -752,7 +754,8 @@ class MjxClimb:
              - ct.K_ACT * (a @ a) - ct.K_VEL * (true['dq'] @ true['dq']))
         st = st._replace(held=held, prev_d=dd, prev_live=live, live_att=live_att,
                          prev_thr=thr, prev_loaded=loaded,
-                         let_go=let_go, grabs=grabs, credit=acc, off_t=off_t,
+                         let_go=let_go, grabs=grabs, grab_paid=st.grab_paid | first,
+                         credit=acc, off_t=off_t,
                          held_t=held_t, slide_rung=slide_rung, slide_ref=slide_ref,
                          slide_net=slide_net, n_steps=n_steps)
         # climb_task._success
