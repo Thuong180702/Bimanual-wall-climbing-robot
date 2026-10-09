@@ -128,12 +128,21 @@ EOF
     # preflight (gpu4's RTX 3090, 2026-10-07: the task and physics checks 23 min, the
     # batch 10, of 42). The batch's speed, timed beside them, is only a rough number:
     # what it settles is that ENVS fits; Warp is timed against JAX after, alone.
+    # Each on its own quarter of the cores: XLA, LLVM and OpenBLAS size their thread
+    # pools by the cores a process may run on (a JAX compile: 63 threads on 12 cores, 18
+    # on 3), and four sized for all 96 ran gpu6's box out of threads (2026-10-09: 'LLVM
+    # ERROR: pthread_create failed', the physics check aborted at its first compile).
+    # A check that still dies beside the others runs again alone before it counts.
     say "preflight 3/5: at once -- the JAX task against ClimbTask, MJX physics against C," \
         "MJX's Warp backend against both, and $ENVS envs in one batch (halved until it fits)"
-    check() { step $PY -m rl.mjx_check "$@" 2>&1 | tee "$RUN/check_$1.txt"; }
+    read -ra quarter <<< "$($PY -c "import os; c = sorted(os.sched_getaffinity(0)); n = max(len(c) // 4, 1)
+print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
+    on() { local q=${quarter[$1]}; shift; if command -v taskset >/dev/null; then step taskset -c "$q" "$@"; else step "$@"; fi; }
+    check() { local i=$1; shift; on "$i" $PY -m rl.mjx_check "$@" 2>&1 | tee "$RUN/check_$1.txt"; }
+    again() { say "the $1 check died beside the others: again, alone"; step $PY -m rl.mjx_check "$@" 2>&1 | tee "$RUN/check_$1.txt"; }
     fit() {
         local n=$ENVS
-        until step $PY -m rl.mjx_task --envs "$n" --steps 10 >> "$RUN/check_envs.txt" 2>&1; do
+        until on 3 $PY -m rl.mjx_task --envs "$n" --steps 10 >> "$RUN/check_envs.txt" 2>&1; do
             [ "$n" -gt 1024 ] || return 1
             n=$(( n / 2 )); say "that batch does not run here: trying ENVS=$n"
         done
@@ -141,11 +150,14 @@ EOF
     }
     echo jax > "$RUN/physics"            # JAX unless Warp proves itself, and if it never finishes
     : > "$RUN/check_envs.txt"
-    check task & p1=$!
-    check physics & p2=$!
-    check warp --out "$RUN/physics" & p3=$!
+    check 0 task & p1=$!
+    check 1 physics & p2=$!
+    check 2 warp --out "$RUN/physics" & p3=$!
     fit & p4=$!
-    wait $p1; r1=$?; wait $p2; r2=$?; wait $p4; r4=$?; wait $p3
+    wait $p1; r1=$?; wait $p2; r2=$?; wait $p4; r4=$?; wait $p3; r3=$?
+    [ $r1 -eq 0 ] || { again task; r1=$?; }
+    [ $r2 -eq 0 ] || { again physics; r2=$?; }
+    [ $r3 -eq 0 ] || again warp --out "$RUN/physics"   # a wrong Warp ends 0, saying jax
     cat "$RUN"/check_task.txt "$RUN"/check_physics.txt "$RUN"/check_warp.txt "$RUN"/check_envs.txt >> "$RUN/preflight.txt"
     grep -E "control-steps/s|build \+ compile" "$RUN/check_envs.txt"
     [ $r1 -eq 0 ] && [ $r2 -eq 0 ] \

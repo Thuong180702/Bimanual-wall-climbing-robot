@@ -444,7 +444,9 @@ needs nobody:
    MJX's Warp backend against C and JAX -- these four at once, each its own process
    (`check_*.txt`): each is one robot at a time or XLA compiling, a core apiece with
    the GPU near idle, and one after another they were 33 of gpu4's 42 preflight
-   minutes -- then Warp timed against JAX with the card to itself, and a tiny run that
+   minutes; each on its own quarter of the cores (unpinned, four processes sizing their
+   thread pools for all 96 ran gpu6's box out of threads), and one that still dies
+   beside the others runs again alone -- then Warp timed against JAX with the card to itself, and a tiny run that
    saves and resumes; each step at most an hour. It stops here on any failure -- and it never falls back to training on the CPU.
    Each step is announced in the console with its time, and prints as it goes
    (`PYTHONUNBUFFERED`: piped, Python used to hold a step's whole output until it
