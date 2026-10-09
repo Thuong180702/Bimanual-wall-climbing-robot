@@ -440,9 +440,12 @@ needs nobody:
 
 1. **preflight**, once per commit, `ENVS`, `WALLS` and card: JAX and torch on the card in one process, the JAX
    task still ClimbTask's on this card (`rl.mjx_check task physics`), a batch of
-   `ENVS` fits and how fast it runs (halved, down to 1024, until one does -- and the
-   run keeps that size), and a tiny run that saves and resumes; each step at most an
-   hour. It stops here on any failure -- and it never falls back to training on the CPU.
+   `ENVS` fits (halved, down to 1024, until one does -- and the run keeps that size),
+   MJX's Warp backend against C and JAX -- these four at once, each its own process
+   (`check_*.txt`): each is one robot at a time or XLA compiling, a core apiece with
+   the GPU near idle, and one after another they were 33 of gpu4's 42 preflight
+   minutes -- then Warp timed against JAX with the card to itself, and a tiny run that
+   saves and resumes; each step at most an hour. It stops here on any failure -- and it never falls back to training on the CPU.
    Each step is announced in the console with its time, and prints as it goes
    (`PYTHONUNBUFFERED`: piped, Python used to hold a step's whole output until it
    ended, and gpu1's first preflight looked hung). Through the task and physics
@@ -1031,11 +1034,15 @@ own measures: hook loads after 2 s hanging 152/152 N on lessons 1, 2, 7 and 8, a
 the side pull +14.3 mm, as C's; one control step from C's state along win17's gait,
 joints p90 8.9e-5 and loads p90 0.20 N off -- JAX's own, the same run, 2.6e-4 and 0.30 N:
 Warp keeps every contact, as C does, where JAX keeps the deepest 24; a NaN in
-one world ends it alone; win17's 88 episodes over its eleven lessons, JAX 11 and Warp 10
-successes (the check now runs its hardest four, for the preflight's time). `python -m rl.mjx_check warp --envs N --out f` runs all that,
-win17's episodes on both backends, then times both at N envs on a GPU, and writes
-'warp' only if it is right and at least WARP_GAIN (1.1x) faster -- else 'jax', and
-why. gpu_run.sh's preflight runs it and the run trains with what it wrote
+one world ends it alone; and in closed loop, on what training runs -- gpu4's best
+(rl/fixtures/gpu4, the policy alone) on families 1 and 2 at its tops and family 3's
+rl.rsi starts, the same 24 draws -- JAX and Warp both 7/7, 3/5 and 11/12, episode for
+episode. (win17's old lessons, which no run trains on any more, gave 0/32 on both at
+its hardest four: a comparison of nothing.) `python -m rl.mjx_check warp --out f` runs all that and
+win17's episodes on both backends and writes 'warp' if Warp is right, else 'jax' and
+why; `--speed --envs N` then times both at N envs on a GPU and keeps 'warp' only if it
+is at least WARP_GAIN (1.1x) faster. gpu_run.sh's preflight runs the first beside the
+other checks and the second alone, and the run trains with what they wrote
 (out/<name>/physics, `--physics`).
 
 Dropping the pairs that never meet instead, measured first: every pair's least gap

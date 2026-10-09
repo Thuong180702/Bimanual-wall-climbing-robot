@@ -6,9 +6,10 @@
 #
 #   1. preflight, once per commit, ENVS, WALLS and card: JAX and torch both on the card in one process, the
 #      JAX task still ClimbTask's on THIS card (rl.mjx_check task physics), a batch of
-#      ENVS fits and how fast it runs, which of MJX's backends the run steps on (Warp
-#      only if it is C MuJoCo's physics by the same checks and faster: rl.mjx_check
-#      warp; out/<name>/physics), and a tiny training run that saves and resumes.
+#      ENVS fits, which of MJX's backends the run steps on (Warp only if it is C
+#      MuJoCo's physics by the same checks and faster: rl.mjx_check warp;
+#      out/<name>/physics) -- these four at once, each its own process, the GPU near
+#      idle through them -- and a tiny training run that saves and resumes.
 #      Anything wrong stops here, before the hours are paid for.
 #   2. train -- on generated walls with ADR (rl.walls), or WALLS=random for the
 #      no-curriculum ablation -- resuming by itself: a crash restarts from the last checkpoint, at most
@@ -103,10 +104,10 @@ say() { echo "[gpu_run $(date '+%F %T')] $*" | tee -a "$RUN/gpu_run.log"; }
 card=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)
 stamp="$(git rev-parse HEAD) $ENVS $WALLS $card"
 if [ "$(cat "$RUN/preflight.ok" 2>/dev/null)" != "$stamp" ]; then
-    say "preflight: 6 steps on this card, each at most an hour. Harmless in the console:" \
+    say "preflight: 5 steps on this card, each at most an hour. Harmless in the console:" \
         "'numa_hwloc ... hwloc_set_cpubind() failed' (XLA may not pin its threads in a" \
         "container), and Warp's 'MULTICCD ... CYLINDER' warning (one contact a motor pair)"
-    say "preflight 1/6: the GPU JAX and torch see"
+    say "preflight 1/5: the GPU JAX and torch see"
     $PY -m rl.hardware > "$RUN/preflight.txt" 2>&1
     cat "$RUN/preflight.txt"
     grep -q "via JAX" "$RUN/preflight.txt" \
@@ -120,27 +121,45 @@ y = torch.ones(1024, 1024, device='cuda')
 assert float((y @ y).sum()) == 1024.0 ** 3
 print("JAX on", jax.devices()[0].device_kind, "| torch on", torch.cuda.get_device_name(0))
 EOF
-    say "preflight 2/6: the lesson scenes"
+    say "preflight 2/5: the lesson scenes"
     step $PY -m rl.lessons >> "$RUN/preflight.txt" 2>&1 || { say "the lesson scenes failed: $RUN/preflight.txt"; exit 1; }
-    say "preflight 3/6: the JAX task and MJX physics against C MuJoCo, one robot at a time" \
-        "(the GPU stays near idle through it)"
-    step $PY -m rl.mjx_check task physics 2>&1 | tee -a "$RUN/preflight.txt" \
-        || { say "the GPU path is not the CPU path's task on this card: $RUN/preflight.txt"; exit 1; }
-    # the batch the run will train with: halved until it fits the card
-    say "preflight 4/6: $ENVS envs in one batch: compile, then control-steps/s"
-    until step $PY -m rl.mjx_task --envs "$ENVS" --steps 50 2>&1 | tee -a "$RUN/preflight.txt"; do
-        [ "$ENVS" -gt 1024 ] || { say "not even 1024 envs run on this card: $RUN/preflight.txt"; exit 1; }
-        ENVS=$(( ENVS / 2 )); say "that batch does not run here: trying ENVS=$ENVS"
-    done
-    echo "$ENVS" > "$RUN/envs"
-    # JAX unless Warp proves itself: what is in the file if the check never finishes
-    echo jax > "$RUN/physics"
-    say "preflight 5/6: MJX's Warp backend against C and against JAX, then both at $ENVS envs:" \
-        "the physics this run steps on"
-    step $PY -m rl.mjx_check warp --envs "$ENVS" --out "$RUN/physics" 2>&1 | tee -a "$RUN/preflight.txt"
+    # Four at once, each its own process. Each is one robot at a time or XLA compiling
+    # -- a core apiece, the GPU near idle -- so one after another they were most of the
+    # preflight (gpu4's RTX 3090, 2026-10-07: the task and physics checks 23 min, the
+    # batch 10, of 42). The batch's speed, timed beside them, is only a rough number:
+    # what it settles is that ENVS fits; Warp is timed against JAX after, alone.
+    say "preflight 3/5: at once -- the JAX task against ClimbTask, MJX physics against C," \
+        "MJX's Warp backend against both, and $ENVS envs in one batch (halved until it fits)"
+    check() { step $PY -m rl.mjx_check "$@" 2>&1 | tee "$RUN/check_$1.txt"; }
+    fit() {
+        local n=$ENVS
+        until step $PY -m rl.mjx_task --envs "$n" --steps 10 >> "$RUN/check_envs.txt" 2>&1; do
+            [ "$n" -gt 1024 ] || return 1
+            n=$(( n / 2 )); say "that batch does not run here: trying ENVS=$n"
+        done
+        echo "$n" > "$RUN/envs"
+    }
+    echo jax > "$RUN/physics"            # JAX unless Warp proves itself, and if it never finishes
+    : > "$RUN/check_envs.txt"
+    check task & p1=$!
+    check physics & p2=$!
+    check warp --out "$RUN/physics" & p3=$!
+    fit & p4=$!
+    wait $p1; r1=$?; wait $p2; r2=$?; wait $p4; r4=$?; wait $p3
+    cat "$RUN"/check_task.txt "$RUN"/check_physics.txt "$RUN"/check_warp.txt "$RUN"/check_envs.txt >> "$RUN/preflight.txt"
+    grep -E "control-steps/s|build \+ compile" "$RUN/check_envs.txt"
+    [ $r1 -eq 0 ] && [ $r2 -eq 0 ] \
+        || { say "the GPU path is not the CPU path's task on this card: $RUN/check_task.txt, $RUN/check_physics.txt"; exit 1; }
+    [ $r4 -eq 0 ] || { say "not even 1024 envs run on this card: $RUN/check_envs.txt"; exit 1; }
+    ENVS=$(cat "$RUN/envs")
+    say "preflight 4/5: the physics this run steps on, $ENVS envs"
+    if [ "$(cat "$RUN/physics")" = warp ]; then
+        echo jax > "$RUN/physics"        # right, and now it must be faster too
+        step $PY -m rl.mjx_check warp --speed --envs "$ENVS" --out "$RUN/physics" 2>&1 | tee -a "$RUN/preflight.txt"
+    fi
     say "physics: $(cat "$RUN/physics")"
     rm -rf out/_preflight
-    say "preflight 6/6: a short training run that saves and resumes (its log: $RUN/preflight.txt)"
+    say "preflight 5/5: a short training run that saves and resumes (its log: $RUN/preflight.txt)"
     PHY=$(cat "$RUN/physics")
     { step $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$PHY" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} \
       && step $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$PHY" --envs 256 --walls "$WALLS" --steps 8192 --resume; } \

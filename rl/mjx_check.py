@@ -7,7 +7,8 @@
     python -m rl.mjx_check policy       # a trained policy: full robot, simplified in C, MJX
     python -m rl.mjx_check contacts     # which parts touch under a trained policy
     python -m rl.mjx_check policy --run out/g1   # another run's best checkpoint
-    python -m rl.mjx_check warp --envs 4096 --out f   # train on MJX's Warp backend?
+    python -m rl.mjx_check warp --out f               # is MJX's Warp backend right? ('warp' / 'jax')
+    python -m rl.mjx_check warp --speed --envs 4096 --out f   # ...and faster at 4096 envs
 
 Four things could each make a GPU-trained policy worthless on the CPU path, and
 each gets its own check, because a failure in one is invisible to the others:
@@ -43,6 +44,10 @@ import numpy as np
 # full robot, lessons -2..2. Frozen in the repo, so every machine -- the GPU box
 # included -- replays the same one; out/win17 moves whenever that run is resumed.
 RUN = os.path.join(os.path.dirname(__file__), 'fixtures', 'win17')
+# ...and one learnt on what training runs now, the generated walls (rl.walls): gpu4's
+# best, 61.3M steps, families 1 and 2 at 85-90 %, family 3's rl.rsi starts at ~60 %
+# (its Adam moments and last rollout dropped: the policy alone, the same actions)
+WALLS_RUN = os.path.join(os.path.dirname(__file__), 'fixtures', 'gpu4')
 
 
 def _task(k, xml=None, seed=0):
@@ -664,11 +669,13 @@ def check_contacts(lessons=None, episodes=2):
 
 
 # --- warp -------------------------------------------------------------------------
-def check_warp(envs=None, out=None):
+def check_warp(envs=None, out=None, speed=False):
     """MJX's Warp backend against C MuJoCo by check_physics' own measures and a policy's
-    episodes against the JAX backend's; on a CUDA GPU, both timed at `envs`. -> 'warp'
-    only if it is right and faster, else 'jax', written to `out` with the reason
-    printed: gpu_run.sh trains on what it says, and on 'jax' if this never finishes"""
+    episodes against the JAX backend's; with `envs`, on a CUDA GPU, both timed at
+    `envs` envs. -> 'warp' only if it is right (and, timed, faster), else 'jax', written
+    to `out` with the reason printed: gpu_run.sh trains on what it says, and on 'jax'
+    if this never finishes. `speed`: the timing alone, Warp already found right -- the
+    preflight checks it beside the other checks, then times it with the card to itself"""
     def decide(impl, why):
         print(f"warp: training physics -> {impl}: {why}", flush=True)
         if out:
@@ -676,13 +683,16 @@ def check_warp(envs=None, out=None):
                 f.write(impl + '\n')
         return impl
 
-    try:
-        import warp  # noqa: F401 -- MJX's Warp backend needs warp-lang (requirements-gpu.txt)
-        _warp_right()
-    except AssertionError as e:
-        return decide('jax', f"Warp is not C MuJoCo's physics here: {e}")
-    except Exception as e:                    # an import, a kernel, a shape: not usable
-        return decide('jax', f"Warp did not run: {type(e).__name__}: {e}")
+    if not speed:
+        try:
+            import warp  # noqa: F401 -- MJX's Warp backend needs warp-lang (requirements-gpu.txt)
+            _warp_right()
+        except AssertionError as e:
+            return decide('jax', f"Warp is not C MuJoCo's physics here: {e}")
+        except Exception as e:                # an import, a kernel, a shape: not usable
+            return decide('jax', f"Warp did not run: {type(e).__name__}: {e}")
+        if not envs:
+            return decide('warp', "Warp is right; not timed yet (--speed)")
     import jax
     if jax.devices()[0].platform != 'gpu':
         return decide('jax', "Warp is right, but there is no CUDA GPU here to be faster on")
@@ -695,9 +705,10 @@ def check_warp(envs=None, out=None):
 WARP_GAIN = 1.1          # how much faster Warp must be to be worth a second physics
 
 
-def _warp_right(lessons=(1, 2, 7, 8), episodes=8):
+def _warp_right(lessons=(1, 2, 7, 8), episodes=24):
     """check_physics' hang, side pull and one-step-from-C's-state on Warp, the same
-    thresholds; then the policy's episodes on Warp and on JAX, check_policy's margin"""
+    thresholds; then a policy's episodes on the walls training runs, on Warp and on
+    JAX, check_policy's margin"""
     import jax, jax.numpy as jp
     from mujoco import mjx
     from .mjx_scene import c_path
@@ -705,7 +716,7 @@ def _warp_right(lessons=(1, 2, 7, 8), episodes=8):
 
     print(f"warp: MJX's Warp backend on {jax.devices()[0].device_kind}, one robot at a time "
           f"-- compiling first", flush=True)
-    task = MjxClimb(impl='warp')
+    task = MjxClimb(episodes, impl='warp')      # bank rows: the closed loop's walls
     b = Batch(1, task=task)
     step = jax.jit(task.step_batch)
     throats = jax.jit(jax.vmap(task._throat_true))
@@ -783,43 +794,55 @@ def _warp_right(lessons=(1, 2, 7, 8), episodes=8):
     assert over == 0, f"Warp gave up contacts or constraint rows in {over} substeps: raise WARP_CONTACTS/WARP_EFC"
 
     # a blown-up env ends as 'blowup', finite, and leaves the others alone: on Warp the
-    # batch shares one contact buffer
-    b3 = Batch(3, task=task)
-    b3.reset()
-    d = b3.state.d
-    b3.state = b3.state._replace(d=d.replace(qvel=d.qvel.at[0, 0].set(jp.nan)),
-                                 Rf=b3.state.Rf.at[1].set(jp.nan))
-    z3 = np.zeros((3, 17), np.float32)
-    obs, end, r, term, trunc, info = b3.step(z3)
+    # batch shares one contact buffer (the closed loop's batch, one compile fewer)
+    bw = Batch(episodes, task=task)
+    bw.set_probs({1: 1.0})
+    bw.reset()
+    d = bw.state.d
+    bw.state = bw.state._replace(d=d.replace(qvel=d.qvel.at[0, 0].set(jp.nan)),
+                                 Rf=bw.state.Rf.at[1].set(jp.nan))
+    zb = np.zeros((episodes, 17), np.float32)
+    obs, end, r, term, trunc, info = bw.step(zb)
     why = [REASONS[int(x)] for x in np.asarray(info['reason'])]
-    assert why == ['blowup', 'blowup', ''], f"a NaN on Warp ended as {why}"
+    assert why[:2] == ['blowup', 'blowup'] and not any(why[2:]), f"a NaN on Warp ended as {why}"
     for _ in range(3):
         assert all(np.isfinite(np.asarray(x)).all() for x in (obs, end, r)), "a NaN got out on Warp"
-        obs, end, r, term, trunc, info = b3.step(z3)
+        obs, end, r, term, trunc, info = bw.step(zb)
     print("warp: a NaN state or estimate ends as 'blowup', finite, and resets", flush=True)
 
-    # closed loop: the policy's episodes on Warp and on JAX, the same draws
+    # closed loop, on what training runs: gpu4's policy on families 1 and 2 at its tops
+    # and on family 3's rl.rsi starts (its climbs from the hang never finish), each env's
+    # first episode, the same draws on both. win17's old lessons were never trained on
+    pol = _policy(WALLS_RUN)
     if pol is None:
         return
-    predict, pool = pol
-    pool = pool[-4:]                 # its hardest four: the most contact, and the preflight's time
+    import json
+    from . import walls as W, rsi
+    tops = W.first_tops()
+    for f, t in json.load(open(os.path.join(WALLS_RUN, 'best_state.json')))['walls']['tops'].items():
+        tops[int(f)].update(t)
+    lays = rsi.mix(W.draw(W.Checker(), {1: 1.0, 2: 1.0, 3: 1.0}, tops, np.random.default_rng(0), episodes),
+                   np.random.default_rng(1), tops[3]['spacing'], share=1.0)
     runs = {}
     for impl in ('jax', 'warp'):
-        bb = Batch(episodes, task=task if impl == 'warp' else MjxClimb())
-        ok = 0
-        for k in pool:
-            bb.set_probs({k: 1.0})
-            o, done = np.asarray(bb.reset()), np.zeros(episodes, bool)
-            while not done.all():
-                o, _, _, term, trunc, info = bb.step(predict(o))
-                o = np.asarray(o)
-                end = np.asarray(term | trunc) & ~done
-                ok += sum(REASONS[int(info['reason'][i])] == 'success' for i in np.nonzero(end)[0])
-                done |= end
+        bb = bw if impl == 'warp' else Batch(episodes, task=MjxClimb(episodes))
+        bb.set_bank(lays)
+        bb.key = jax.random.PRNGKey(0)   # the same walls and noise: bw has stepped already
+        o, done, ok = np.asarray(bb.reset()), np.zeros(episodes, bool), {}
+        while not done.all():
+            o, _, _, term, trunc, info = bb.step(pol[0](o))
+            o = np.asarray(o)
+            end = np.asarray(term | trunc) & ~done
+            for i in np.nonzero(end)[0]:
+                f, won = int(info['family'][i]), REASONS[int(info['reason'][i])] == 'success'
+                ok[f] = [ok.get(f, [0, 0])[0] + won, ok.get(f, [0, 0])[1] + 1]
+            done |= end
         runs[impl] = ok
-    n = episodes * len(pool)
-    print(f"warp: the policy's {n} episodes over lessons {pool}: JAX {runs['jax']}/{n}, "
-          f"Warp {runs['warp']}/{n} successes", flush=True)
+    say = lambda ok: ", ".join(f"family {f if f < rsi.BOOK else f'{f - rsi.BOOK} from its starts'} "
+                               f"{w}/{n}" for f, (w, n) in sorted(ok.items()))
+    print(f"warp: gpu4's policy, {episodes} episodes on the walls training runs: JAX {say(runs['jax'])}; "
+          f"Warp {say(runs['warp'])}", flush=True)
+    runs = {k: sum(w for w, _ in v.values()) for k, v in runs.items()}
     assert abs(runs['warp'] - runs['jax']) <= 0.2 * max(runs.values()) + 2, \
         "the same policy climbs clearly better on one backend"
 
@@ -862,6 +885,9 @@ if __name__ == '__main__':
             i = which.index(flag)
             opts[flag[2:]] = kind(which[i + 1])
             del which[i:i + 2]
+    if '--speed' in which:
+        which.remove('--speed')
+        opts['speed'] = True
     which = which or ['task', 'physics', 'model', 'policy']
     if len(which) == 1:
         CHECKS[which[0]](**opts)
