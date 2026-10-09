@@ -15,8 +15,9 @@ The climbs are joint-setpoint sequences found by CEM (out/climb_demo/plan_chain.
 PLAN=f3x20 seed 42; f3x25w seed 43 and f3x30w seed 47 warm-started from it, INIT=) on the
 robot MJX trains -- the simplified one, `XML=` that robot's scene -- each on one wall:
 the start row and one row SPACING up and `walls.OUT` out, full length, goals straight
-above the hang. Replayed here through ClimbTask.step on that robot, every EVERY-th control
-step's state becomes a start, up to a second before the climb succeeds: the joints and
+above the hang. Replayed here through ClimbTask.step on that robot, every control step's
+state becomes a row, up to a second before the climb succeeds, and every EVERY of them a
+start, booked as one and begun from any of its rows (`mix`): the joints and
 their speeds, the setpoints, and the holds each hand has really taken by then (success
 asks each hand for one). Family 3's rows are the same full-length rungs whatever its
 goals and mirroring, so a start fits every family-3 wall of its spacing.
@@ -39,6 +40,15 @@ control steps of the climb from there and it finished 8/8; the climb from there 
 policy's own noise on every joint, 4/8. A start one step back from what is learnt is
 learnable; drawn 1 time in 66 it is never learnt. FOCUS of the starts now go to the BACK + 1
 starts ending at the frontier, the rest evenly, so what is learnt is still visited.
+
+A start booked fewer than START_MIN times is drawn as one at the frontier. Drawn evenly, cold
+books (a resume, a climb ADR lets in) put the frontier at the climb's last start, and it
+walked down through every start the policy already finishes from, BACK + 1 of them per
+TIMEOUT lag: for gpu4, 41 of them, 13-25M steps simulated before it reached 4.8 s; 6-9M now.
+
+A start's episodes begin from any of its EVERY control steps, not its first only: gpu4's
+policy finished 0/192 from 4.8 s, the first step of a start, and every one from 5.0 s, the
+next start's -- a cliff with nothing between to learn from, however often it is drawn.
 """
 import os
 import numpy as np
@@ -60,7 +70,7 @@ BACK = 2             # ...the frontier start and the BACK before it, evenly
 START_WINDOW = 20    # a start's book: its last episodes...
 START_MIN = 10       # ...at least this many before it can count as passed...
 PASS = 0.7           # ...at this rate (train_ppo.UNLOCK_AT, the families' gate)
-EVERY = 5            # control steps between two starts along a climb
+EVERY = 5            # control steps a start spans along a climb (rows: one a control step)
 MARGIN = 25          # control steps (1 s) before the climb's success: the last start
 BOOK = 100           # its episodes report family + BOOK
 HILL_MAX = 0.05      # m the live potential (both hands, what K_REACH pays) may rise above
@@ -82,7 +92,8 @@ def wall(spacing):
 
 
 def load():
-    """{spacing, qpos, qvel, ctrl, grabs}, one row a start; None before `python -m rl.rsi`"""
+    """{spacing, qpos, qvel, ctrl, grabs, start}, one row a control step, `start` the one it
+    is booked as; and start_spacing, one a start. None before `python -m rl.rsi`"""
     if not os.path.exists(FILE):
         return None
     z = np.load(FILE)
@@ -113,43 +124,47 @@ def where(books, top):
     ref = load()
     if ref is None:
         return {}
-    sp = ref['spacing']
+    sp = ref['start_spacing']
     ok = np.nonzero(sp <= top + 1e-9)[0]
     return {s: None if f is None else round((f - int(np.argmax(sp == s))) * EVERY * 0.04, 2)
             for s, f in frontier(books, sp, ok).items()}     # 0.04 s: climb_task.CONTROL_DT
 
 
 def weights(books, spacing, ok):
-    """draw probabilities over the starts `ok`: FOCUS shared by the climbs' frontiers, each
-    over its BACK + 1 starts ending there, and the rest evenly over every start"""
+    """draw probabilities over the starts `ok`: FOCUS evenly over the starts to learn from
+    -- each climb's BACK + 1 ending at its frontier, and every start booked fewer than
+    START_MIN times -- and the rest evenly over every start"""
     ok = np.asarray(ok)
+    hot = np.array([len(books.get(int(j), [])) < START_MIN for j in ok])
+    for f in frontier(books, spacing, ok).values():
+        if f is not None:
+            hot |= (spacing[ok] == spacing[f]) & (ok <= f) & (ok >= f - BACK)
     w = np.full(len(ok), (1.0 - FOCUS) / len(ok))
-    fr = [f for f in frontier(books, spacing, ok).values() if f is not None]
-    for f in fr:
-        win = (spacing[ok] == spacing[f]) & (ok <= f) & (ok >= f - BACK)
-        w[win] += FOCUS / len(fr) / win.sum()
+    w[hot] += FOCUS / max(hot.sum(), 1)
     return w / w.sum()
 
 
 def mix(layouts, rng, top, share=SHARE, books=None):
     """`layouts` (rl.walls.draw's) with `share` of the family-3 ones started partway up a
     climb: a start whose spacing is at most family 3's `top`, drawn toward the frontiers
-    in `books` (`weights`), on a family-3 wall of that spacing (its own goals and
-    mirroring) cut to TIMEOUT, booked as family 3 + BOOK and probing nothing"""
+    in `books` (`weights`), from any of its rows, on a family-3 wall of that spacing (its
+    own goals and mirroring) cut to TIMEOUT, booked as family 3 + BOOK and probing nothing"""
     ref = load()
     if ref is None:
         return layouts
     from . import walls as W
     from .lessons import LESSONS
-    L = len(LESSONS)                     # rl.mjx_task.LESSON_KEYS: the starts follow them
-    ok = np.nonzero(ref['spacing'] <= top + 1e-9)[0]
-    p = weights(books or {}, ref['spacing'], ok) if len(ok) else None
+    L = len(LESSONS)                     # rl.mjx_task.LESSON_KEYS: the rows follow them
+    sp = ref['start_spacing']
+    ok = np.nonzero(sp <= top + 1e-9)[0]
+    p = weights(books or {}, sp, ok) if len(ok) else None
     out = []
     for lay in layouts:
         if lay.get('family') == 3 and len(ok) and rng.random() < share:
             j = int(rng.choice(ok, p=p))
-            lay = dict(W.sample(3, dict(rows=1, spacing=float(ref['spacing'][j])), rng, 'spacing'),
-                       family=3 + BOOK, probe=None, probe_val=0.0, d0_row=L + j, timeout=TIMEOUT)
+            row = int(rng.choice(np.nonzero(ref['start'] == j)[0]))
+            lay = dict(W.sample(3, dict(rows=1, spacing=float(sp[j])), rng, 'spacing'),
+                       family=3 + BOOK, probe=None, probe_val=0.0, d0_row=L + row, timeout=TIMEOUT)
         out.append(lay)
     return out
 
@@ -197,23 +212,28 @@ def _replay(spacing, path):
 
 
 def build_fixture():
-    rows = []
+    rows, j0 = [], 0
     for s, path in sorted(CLIMBS.items()):
         states, won, hill = _replay(s, path)
-        keep = states[:won - MARGIN:EVERY]
-        rows += [dict(st, spacing=s) for st in keep]
+        keep = states[:won - MARGIN]
+        rows += [dict(st, spacing=s, start=j0 + k // EVERY) for k, st in enumerate(keep)]
+        j0 = rows[-1]['start'] + 1
         print(f"rsi: the {s:.2f} m climb succeeds at step {won} ({won * 0.04:.1f} s); "
-              f"{len(keep)} starts, every {EVERY} steps to {MARGIN} before it; "
+              f"{len(keep)} rows to {MARGIN} steps before it, a start every {EVERY}; "
               f"holds taken by the last: {keep[-1]['grabs']}; live potential's hill {hill * 1000:.0f} mm")
         assert hill <= HILL_MAX, (f"the {s:.2f} m climb climbs {hill:.2f} m of live potential before "
                                   f"it pays (HILL_MAX {HILL_MAX}): a policy is paid to go back from its starts")
-    np.savez_compressed(FILE, **{k: np.array([r[k] for r in rows]) for k in rows[0]})
-    print(f"rsi: {len(rows)} starts -> {FILE}")
+    z = {k: np.array([r[k] for r in rows]) for k in rows[0]}
+    z['start_spacing'] = z['spacing'][np.unique(z['start'], return_index=True)[1]]
+    np.savez_compressed(FILE, **z)
+    print(f"rsi: {len(rows)} rows, {j0} starts -> {FILE}")
 
 
 if __name__ == '__main__':
     build_fixture()
     z = load()
-    assert z['qpos'].shape[0] == z['spacing'].shape[0] and np.isfinite(z['qpos']).all()
+    assert z['qpos'].shape[0] == z['spacing'].shape[0] == z['start'].shape[0] and np.isfinite(z['qpos']).all()
+    assert (np.diff(z['start']) >= 0).all() and np.bincount(z['start']).max() == EVERY
+    assert (z['start_spacing'][z['start']] == z['spacing']).all(), "a start spans two climbs"
     assert z['grabs'].max() >= 1, "no start has a hold taken: the starts never reach the row above"
     print("rsi: OK")

@@ -646,6 +646,8 @@ class Walls(Curriculum):
         self.rng = np.random.default_rng(seed)
         self.checker = None
         self.rsi_pending, self.rsi_lag = [], min(self.lag, episode_steps(rsi.TIMEOUT))
+        ref = rsi.load()
+        self.rsi_start = None if ref is None else ref['start']    # fixture row -> its start
 
     def _load(self, walls):
         """a checkpoint's tops and probes, each family's only if its ranges are the ones
@@ -738,7 +740,8 @@ class Walls(Curriculum):
             if done and info.get('lesson') == 3 + rsi.BOOK and info.get('start', -1) >= 0:
                 t0 = self.clock - (info.get('steps') or 0)
                 if t0 >= self.since:
-                    heapq.heappush(self.rsi_pending, (t0, info['start'], info['reason'] == 'success'))
+                    heapq.heappush(self.rsi_pending, (t0, int(self.rsi_start[info['start']]),
+                                                      info['reason'] == 'success'))
         while self.rsi_pending and self.rsi_pending[0][0] <= self.clock - self.rsi_lag:
             _, j, ok = heapq.heappop(self.rsi_pending)
             self._push(self.starts, j, ok)
@@ -1330,11 +1333,14 @@ def walls_check(FakeModel, FakeEnv):
             "a start was mixed into walls lower than its own climb"
         # ...each booked by its start as it ends, and drawn toward the latest start along
         # its climb not yet passed (gpu4's: 4.8 s into the 0.20 m climb), cut to rsi.TIMEOUT
-        sp = rsi.load()['spacing']
+        ref = rsi.load()
+        sp, rows_of = ref['start_spacing'], lambda j: np.nonzero(ref['start'] == j)[0]
+        row0 = lambda j: int(rows_of(j)[0])
         c20 = np.nonzero(np.isclose(sp, 0.20))[0]
         f = int(c20[24])
         eps = [dict(reason='success' if j > f else 'timeout', lesson=3 + rsi.BOOK, probe=-1,
-                    probe_val=0.0, start=int(j), steps=100) for j in c20 for _ in range(rsi.START_MIN)]
+                    probe_val=0.0, start=int(rows_of(j)[k % len(rows_of(j))]), steps=100)
+               for j in c20 for k in range(rsi.START_MIN)]
         g.locals = {'infos': eps, 'dones': [True] * len(eps)}
         g._on_step()
         assert len(g.starts[int(c20[0])]) == rsi.START_MIN, "the climb's first start (row 0) was not booked"
@@ -1343,9 +1349,18 @@ def walls_check(FakeModel, FakeEnv):
         draws = rsi.mix([dict(family=3)] * 2000, np.random.default_rng(1), top=0.20, share=1.0,
                         books=g.starts)
         rows = np.array([m['d0_row'] - len(LESSONS) for m in draws])
-        near = np.mean((rows <= f) & (rows >= f - rsi.BACK))
+        js = ref['start'][rows]
+        near = np.mean((js <= f) & (js >= f - rsi.BACK))
         assert near > 0.5, f"only {near:.0%} of the starts drawn at the frontier (gpu4's: 3 in 66)"
+        # ...from any of its EVERY control steps: gpu4 finished 0/192 from 4.8 s, all from 5.0
+        assert set(rows[js == f]) == set(range(row0(f), row0(f) + rsi.EVERY)), \
+            f"the frontier start's episodes began from rows {sorted(set(rows[js == f]))} only"
         assert all(m['timeout'] < g.W.TIMEOUT for m in draws), "a start's wall kept the 60 s timeout"
+        # a start not yet booked is drawn as one at the frontier: cold books are drawn evenly,
+        # not from the climb's last starts down (gpu4's resume: 13-25M steps to reach 4.8 s)
+        assert np.allclose(rsi.weights({}, sp, c20), 1 / len(c20)), "cold books drew the last starts first"
+        part = {j: v for j, v in g.starts.items() if j != int(c20[50])}
+        assert rsi.weights(part, sp, c20)[50] > 0.1, "a start not yet booked was drawn as a passed one"
         g.starts[int(c20[40])] = [False] * rsi.START_WINDOW      # one slips behind the frontier:
         assert rsi.frontier(g.starts, sp, c20)[0.2] == int(c20[40]), "a start that slipped is not drawn first"
         # with the real lags: a quick success waits out rsi.TIMEOUT (not the family's 60 s)
@@ -1353,7 +1368,7 @@ def walls_check(FakeModel, FakeEnv):
         q = Walls()
         q.model = FakeModel(FakeEnv())
         q.locals = {'infos': [dict(reason='success', lesson=3 + rsi.BOOK, probe=-1, probe_val=0.0,
-                                   start=7, steps=10)], 'dones': [True]}
+                                   start=row0(7) + 3, steps=10)], 'dones': [True]}
         q._on_step()
         q.locals = {'infos': [{}], 'dones': [False]}
         for _ in range(q.rsi_lag - 11):

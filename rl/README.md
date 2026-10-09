@@ -905,9 +905,16 @@ successes would pass it before its failures were in -- behind a lag of TIMEOUT, 
 an episode from a start now may run (twice the longest rest of a climb), not the
 families' 60 s; `rsi.frontier` is the latest start along each climb not passed (70 % of
 its last 20, 10 at least); FOCUS (3/4) of the starts drawn are that one and the two
-before it, the rest evenly; and the starts take SHARE_HI (3/4) of family 3's walls until
+before it, and any start booked fewer than 10 times, the rest evenly; and the starts take SHARE_HI (3/4) of family 3's walls until
 family 3 passes its gate, SHARE after. The checkpoint line and `rl.status` print the frontier
-in seconds along each climb: that, not the starts' rate, is what to watch.
+in seconds along each climb: that, not the starts' rate, is what to watch. (Unbooked
+starts drawn first, 2026-10-09: drawn as passed ones, the cold books of gpu4's resume would
+have walked the frontier down from 13 s through 41 starts the policy already finishes
+from, one 30 s lag per three: 13-25M steps simulated to reach 4.8 s, 6-9M now. And a start
+is now its five control steps, every one a row of the fixture, its episodes begun from any:
+gpu4's policy from 4.80, 4.84, 4.88, 4.92, 4.96 and 5.00 s finished 0, 0, 9, 23, 21 and 23
+of 24 -- the start at 4.8 s was 0/192 from its first step alone, the one at 5.0 s all, and
+nothing between was ever drawn; over its five steps it is ~44 %, a step at a time to learn.)
 
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
