@@ -312,12 +312,13 @@ class MjxVecEnv(VecEnv):
     (reason, lesson, steps, dist, the terminal observation, TimeLimit.truncated) and
     the same `set_active`, so everything downstream is unchanged."""
 
-    def __init__(self, lessons, n, seed=0, bank=0):
+    def __init__(self, lessons, n, seed=0, bank=0, impl='jax'):
         from . import mjx_task          # JAX only on this path
         self.mt = mjx_task
         self.bank = bank                # > 0: procedural walls (Walls), drawn from set_bank
-        # fit: collide only what the walls in play need (rl.mjx_task.Batch._fit)
-        self.batch = mjx_task.Batch(n, seed, bank=bank, fit=True)
+        # fit: collide only what the walls in play need (rl.mjx_task.Batch._fit);
+        # impl: MJX's JAX or Warp backend (--physics; rl.mjx_check warp chooses)
+        self.batch = mjx_task.Batch(n, seed, bank=bank, fit=True, impl=impl)
         # substeps where the solver's contact cap was full, of all simulated; the
         # checkpoint line prints the share and zeroes it (rl.mjx_scene.MAX_CONTACTS)
         self.capped = self.substeps = 0
@@ -1579,6 +1580,9 @@ def main():
     ap.add_argument('--backend', default='auto', choices=['auto', 'cpu', 'mjx'],
                     help='where the simulator runs; auto = mjx when rl.hardware finds '
                          'a GPU JAX can use, else cpu')
+    ap.add_argument('--physics', default='jax', choices=['jax', 'warp'],
+                    help="mjx: MJX's JAX backend, or its Warp one -- gpu_run.sh passes what "
+                         "`rl.mjx_check warp` found right and faster on the card")
     ap.add_argument('--resume', action='store_true')
     ap.add_argument('--from-best', dest='from_best', action='store_true',
                     help='with --resume, continue from best_model.zip instead of the '
@@ -1675,8 +1679,8 @@ def main():
     shape = (dict(n_steps=MJX_PPO['n_steps'], n_epochs=MJX_PPO['n_epochs'],
                   batch_size=envs * MJX_PPO['n_steps'] // MJX_PPO['minibatches'])
              if mjx else dict(n_steps=256, n_epochs=10, batch_size=512))
-    print(f"[backend] {backend}: {envs} envs, policy on {a.device}, "
-          f"{envs * shape['n_steps']:,} steps per update")
+    print(f"[backend] {backend}{f' ({a.physics} physics)' if mjx else ''}: {envs} envs, "
+          f"policy on {a.device}, {envs * shape['n_steps']:,} steps per update")
     state = {}
     ck = 'best_' if a.from_best else ''
     if a.resume:
@@ -1697,7 +1701,7 @@ def main():
     # a resumed MJX batch draws from a key of its own, not the start's sequence again
     seed = a.seed or 0
     base = VecMonitor(MjxVecEnv(pool, envs, seed + state.get('timesteps', 0),
-                                bank=BANK if gen else 0) if mjx else
+                                bank=BANK if gen else 0, impl=a.physics) if mjx else
                       SubprocVecEnv([(lambda i=i: MultiLesson(pool, seed=1000 * seed + i))
                                      for i in range(envs)]))
     if a.resume:
@@ -1792,7 +1796,8 @@ def main():
     # one line of progress.jsonl (rl.plot reads it)
     model.set_logger(Logger(None, [HumanOutputFormat(sys.stdout),
                                    JsonLines(os.path.join(run, 'progress.jsonl'))]))
-    record('start', argv=sys.argv[1:], backend=backend, envs=envs, device=str(model.device),
+    record('start', argv=sys.argv[1:], backend=backend, physics=a.physics if mjx else None,
+           envs=envs, device=str(model.device),
            seed=a.seed, timesteps=int(model.num_timesteps), pool=cur.active,
            n_steps=model.n_steps, batch_size=model.batch_size, n_epochs=model.n_epochs,
            gamma=model.gamma, gae_lambda=model.gae_lambda, ent_coef=model.ent_coef,

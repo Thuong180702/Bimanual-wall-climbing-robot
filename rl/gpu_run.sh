@@ -6,7 +6,9 @@
 #
 #   1. preflight, once per commit, ENVS, WALLS and card: JAX and torch both on the card in one process, the
 #      JAX task still ClimbTask's on THIS card (rl.mjx_check task physics), a batch of
-#      ENVS fits and how fast it runs, and a tiny training run that saves and resumes.
+#      ENVS fits and how fast it runs, which of MJX's backends the run steps on (Warp
+#      only if it is C MuJoCo's physics by the same checks and faster: rl.mjx_check
+#      warp; out/<name>/physics), and a tiny training run that saves and resumes.
 #      Anything wrong stops here, before the hours are paid for.
 #   2. train -- on generated walls with ADR (rl.walls), or WALLS=random for the
 #      no-curriculum ablation -- resuming by itself: a crash restarts from the last checkpoint, at most
@@ -101,10 +103,10 @@ say() { echo "[gpu_run $(date '+%F %T')] $*" | tee -a "$RUN/gpu_run.log"; }
 card=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)
 stamp="$(git rev-parse HEAD) $ENVS $WALLS $card"
 if [ "$(cat "$RUN/preflight.ok" 2>/dev/null)" != "$stamp" ]; then
-    say "preflight: 5 steps on this card, each at most an hour. Harmless in the console:" \
+    say "preflight: 6 steps on this card, each at most an hour. Harmless in the console:" \
         "'numa_hwloc ... hwloc_set_cpubind() failed' (XLA may not pin its threads in a" \
-        "container) and 'Failed to import warp' (MJX's optional backend, not used here)"
-    say "preflight 1/5: the GPU JAX and torch see"
+        "container), and Warp's 'MULTICCD ... CYLINDER' warning (one contact a motor pair)"
+    say "preflight 1/6: the GPU JAX and torch see"
     $PY -m rl.hardware > "$RUN/preflight.txt" 2>&1
     cat "$RUN/preflight.txt"
     grep -q "via JAX" "$RUN/preflight.txt" \
@@ -118,23 +120,30 @@ y = torch.ones(1024, 1024, device='cuda')
 assert float((y @ y).sum()) == 1024.0 ** 3
 print("JAX on", jax.devices()[0].device_kind, "| torch on", torch.cuda.get_device_name(0))
 EOF
-    say "preflight 2/5: the lesson scenes"
+    say "preflight 2/6: the lesson scenes"
     step $PY -m rl.lessons >> "$RUN/preflight.txt" 2>&1 || { say "the lesson scenes failed: $RUN/preflight.txt"; exit 1; }
-    say "preflight 3/5: the JAX task and MJX physics against C MuJoCo, one robot at a time" \
+    say "preflight 3/6: the JAX task and MJX physics against C MuJoCo, one robot at a time" \
         "(the GPU stays near idle through it)"
     step $PY -m rl.mjx_check task physics 2>&1 | tee -a "$RUN/preflight.txt" \
         || { say "the GPU path is not the CPU path's task on this card: $RUN/preflight.txt"; exit 1; }
     # the batch the run will train with: halved until it fits the card
-    say "preflight 4/5: $ENVS envs in one batch: compile, then control-steps/s"
+    say "preflight 4/6: $ENVS envs in one batch: compile, then control-steps/s"
     until step $PY -m rl.mjx_task --envs "$ENVS" --steps 50 2>&1 | tee -a "$RUN/preflight.txt"; do
         [ "$ENVS" -gt 1024 ] || { say "not even 1024 envs run on this card: $RUN/preflight.txt"; exit 1; }
         ENVS=$(( ENVS / 2 )); say "that batch does not run here: trying ENVS=$ENVS"
     done
     echo "$ENVS" > "$RUN/envs"
+    # JAX unless Warp proves itself: what is in the file if the check never finishes
+    echo jax > "$RUN/physics"
+    say "preflight 5/6: MJX's Warp backend against C and against JAX, then both at $ENVS envs:" \
+        "the physics this run steps on"
+    step $PY -m rl.mjx_check warp --envs "$ENVS" --out "$RUN/physics" 2>&1 | tee -a "$RUN/preflight.txt"
+    say "physics: $(cat "$RUN/physics")"
     rm -rf out/_preflight
-    say "preflight 5/5: a short training run that saves and resumes (its log: $RUN/preflight.txt)"
-    { step $PY -m rl.train_ppo --name _preflight --backend mjx --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} \
-      && step $PY -m rl.train_ppo --name _preflight --backend mjx --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
+    say "preflight 6/6: a short training run that saves and resumes (its log: $RUN/preflight.txt)"
+    PHY=$(cat "$RUN/physics")
+    { step $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$PHY" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} \
+      && step $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$PHY" --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
         >> "$RUN/preflight.txt" 2>&1 \
         || { say "a short training run did not save and resume: $RUN/preflight.txt"; exit 1; }
     rm -rf out/_preflight
@@ -159,7 +168,8 @@ while :; do
     net=; [ -z "$resume" ] && [ -n "${NET:-}" ] && net="--net $NET"
     say "train: $have steps so far, $need to go, $(( left / 60 )) min left, $ENVS envs"
     t0=$(date +%s)
-    $PY -m rl.train_ppo --name "$NAME" --backend mjx --envs "$ENVS" --seed "$SEED" \
+    $PY -m rl.train_ppo --name "$NAME" --backend mjx --physics "$(cat "$RUN/physics" 2>/dev/null || echo jax)" \
+                        --envs "$ENVS" --seed "$SEED" \
                         --walls "$WALLS" --steps "$need" $resume $net ${CKPT:+--ckpt-every "$CKPT"} &
     pid=$! why=
     # Watched: at the deadline it is told to stop (SIGTERM: it saves, then exits), and so

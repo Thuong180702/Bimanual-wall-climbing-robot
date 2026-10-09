@@ -1011,6 +1011,41 @@ pair and fitted to lessons 1..3. Training also starts every env on a generated w
 (`Walls._on_training_start`): SB3's reset had put them on the nine benchmark lessons,
 which ran to their timeouts off the curriculum.
 
+**MJX's Warp backend, chosen per card (2026-10-09).** gpu4 on an RTX 3090: 6,200
+steps/s, the card "100 %" busy at 237 of 350 W, its memory controller 67 %, 5 of 24 GB --
+bandwidth again, and still every pair every substep: 642 a substep fitted to families
+1..4 (534 the robot's capsules against 3 rung slots, 56 its meshes against the front
+wall). MJX's Warp implementation (`impl='warp'`; mujoco-mjx 3.12 carries it, warp-lang
+1.16 runs it) tests only the pairs its broadphase finds near. Three things had to change
+for it, each found as a robot that fell with no contact at all: Warp culls a pair by
+each geom's bounds, per world, so a slot's are its rung's (`_slot_model`; the parked
+slot's were a 0.2 m rung's, and a hook off a rung's middle fell through); its kinematics
+never moves the world's own geoms, so each wall's rungs and extra wall are written into
+the data (`_place_static`); and it keeps the batch's contacts in one buffer, each with
+its world, so the hooks' loads are summed across the batch every substep
+(`step_batch`, `_contacts`) and handed to the same `update`. A reset copies the start's
+fields into the env's own Warp data. On this Mac's CPU, against C by `check_physics`'
+own measures: hook loads after 2 s hanging 152/152 N on lessons 1, 2, 7 and 8, as C's;
+the side pull +14.3 mm, as C's; one control step from C's state along win17's gait,
+joints p90 8.9e-5 and loads p90 0.20 N off -- JAX's own, the same run, 2.6e-4 and 0.30 N:
+Warp keeps every contact, as C does, where JAX keeps the deepest 24; a NaN in
+one world ends it alone; win17's 88 episodes over its eleven lessons, JAX 11 and Warp 10
+successes (the check now runs its hardest four, for the preflight's time). `python -m rl.mjx_check warp --envs N --out f` runs all that,
+win17's episodes on both backends, then times both at N envs on a GPU, and writes
+'warp' only if it is right and at least WARP_GAIN (1.1x) faster -- else 'jax', and
+why. gpu_run.sh's preflight runs it and the run trains with what it wrote
+(out/<name>/physics, `--physics`).
+
+Dropping the pairs that never meet instead, measured first: every pair's least gap
+(bounding sphere against the plane or the rung segment) over 128 envs x 800 control
+steps on families 1..9 at their last tops with rl.rsi's starts, and as many on lessons
+1..9, gpu4's policy in half the envs and uniform random actions in the other half
+(out/prune/). 287 of 1258 never came within 5 cm, and without them the fitted substep
+moves 3.06 MB instead of 3.32 -- 1.09x. Not done: the pairs that cost (a mesh's 69
+vertices against the wall) all come near it sometimes, so even dropping every wall pair
+would be 1.53x, and a pair dropped for having never met is one a new gait can meet --
+Warp's broadphase drops the far ones every substep, exactly.
+
 **It learns, from scratch, on the MJX path** -- measured on this Mac's CPU with 256
 envs (8192 steps an update), seed 1, 1.5M steps, 184 updates, 85 min: lessons -2, -1
 and 0 passed (92 / 90 / 90 % at the end) and lesson 1 unlocked; approx_kl 0.008-0.014

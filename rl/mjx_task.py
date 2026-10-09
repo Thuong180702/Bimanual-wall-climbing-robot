@@ -27,6 +27,15 @@ What had to change, and nothing else:
   * branches are selects: `jp.where` both ways instead of `if`.
   * a finished env resets inside the same jitted step, onto a lesson drawn from the
     pool's weights, which the curriculum moves without a recompile.
+
+Two MJX backends step it (`impl`): JAX, which tests every listed pair every substep
+however far apart, and Warp, whose broadphase tests only the near ones. Warp keeps
+the batch's contacts in one buffer, each with its world, so its step runs over the
+whole batch (`MjxClimb.step_batch`, `_contacts`); it reads a world's own geoms --
+the rungs -- from the data, not the model (`_place_static`); and a reset copies the
+start into the env's own data (`reset`'s d_like). `rl.mjx_check warp` decides which
+one a run trains on: Warp only where it is C MuJoCo's physics by the same checks
+JAX passes, and faster.
 """
 import inspect, os, time, warnings
 # MJX shrinks a mesh face of more than 20 coplanar vertices to 20 for its contact
@@ -60,6 +69,11 @@ _ENV = {k: v.default for k, v in inspect.signature(ClimbingEnv).parameters.items
 FALL_Z, FREE_FALL_S, QVEL_MAX = _ENV['fall_z'], _ENV['free_fall_s'], _ENV['qvel_max']
 FINGERS = [JOINTS.index('finger_L'), JOINTS.index('finger_R')]
 MINVAL = 1e-15           # mujoco's mjMINVAL, for rotvec's zero-angle case
+# MJX's Warp backend (`impl='warp'`, rl.mjx_check warp decides): it keeps all of a world's
+# contacts, not the deepest MAX_CONTACTS, in one buffer for the whole batch, and gives
+# up any past these -- counted, as `capped`, when it does. C never had more than 17.
+WARP_CONTACTS = 48       # contacts a world, on average over the batch
+WARP_EFC = 256           # constraint rows a world: four a contact, and the joint limits
 
 
 # --- small rotation helpers, as climb_task / rl.estimator compute them -------------
@@ -204,14 +218,17 @@ class Tables(NamedTuple):
     ctrl0: jax.Array
     ngt0: jax.Array
     grabs0: jax.Array          # (L + S, 2) holds each hand has taken by then: 0 at a hang
+    con0: jax.Array            # (L + S, 2) `_contact` at each start: what Warp's reset reads
+    on0: jax.Array             # (L + S, 2, N_RUNG)
 
 
 class MjxClimb:
     """the task over every lesson, one model. Pure functions of (tables, state) for
     one env; `Batch` vmaps them."""
 
-    def __init__(self, bank=0):
+    def __init__(self, bank=0, impl='jax'):
         self.bank = bank           # generated-wall rows after the lessons' (rl.walls)
+        self.impl = impl           # what steps the physics: 'jax', or 'warp' (`step_batch`)
         self.mc = scene_model()
         m = self.mc
         self.mx = mjx.put_model(m, impl='jax')
@@ -247,6 +264,13 @@ class MjxClimb:
         self.efc4 = con.efc_address[:, None] + np.arange(4)
         self.tables = self._tables()
         self.pairs = (N_RUNG, True)      # what `mx` collides (set_pairs); the tables use all
+        # the tables are made, and the estimator's kinematics run, on JAX whatever steps
+        self.mxj, self._kd = self.mx, mjx.make_data(self.mx)
+        self.public = [f for f in vars(self._kd) if f != '_impl']   # mjx.Data's own fields
+        if impl == 'warp':
+            import warp
+            warp.config.quiet = True     # a line for every kernel it loads, otherwise
+            self.mx = mjx.put_model(m, impl='warp')
 
     def set_pairs(self, n_rung, wall2):
         """step with the collision pairs of the first `n_rung` rung slots and, with
@@ -255,10 +279,12 @@ class MjxClimb:
         inside moves exactly as with every pair (`rl.mjx_check physics` asserts it)"""
         if (n_rung, wall2) == self.pairs:
             return
-        mx = mjx.put_model(scene_model(n_rung, wall2), impl='jax')
+        mc = scene_model(n_rung, wall2)
+        mx = mjx.put_model(mc, impl='jax')
         shape = lambda x: [a.shape for a in jax.tree_util.tree_leaves(mjx.make_data(x))]
-        assert shape(mx) == shape(self.mx), "a pair set that changes the state's shapes"
-        self.mx, self.pairs = mx, (n_rung, wall2)
+        assert shape(mx) == shape(self.mxj), "a pair set that changes the state's shapes"
+        self.mx = mx if self.impl == 'jax' else mjx.put_model(mc, impl='warp')
+        self.pairs = (n_rung, wall2)
 
     # ---- per-lesson tables ------------------------------------------------------
     @staticmethod
@@ -323,8 +349,9 @@ class MjxClimb:
             ctrl0, ngt0 = cat(ctrl0, jp.asarray(ref['ctrl'])), cat(ngt0, jp.zeros(S))
             tau_idle, fight_idle = cat(tau_idle, jp.full(S, tau_idle[r1])), cat(fight_idle, jp.full(S, fight_idle[r1]))
             grabs0 = cat(grabs0, jp.asarray(ref['grabs'], jp.int32))
+        con0, on0 = jax.jit(jax.vmap(self._contact))(d0)
         return Tables(walls=w, tau_idle=tau_idle, fight_idle=fight_idle, d0=d0, ctrl0=ctrl0,
-                      ngt0=ngt0, grabs0=grabs0)
+                      ngt0=ngt0, grabs0=grabs0, con0=con0, on0=on0)
 
     @staticmethod
     def wall(T, row):
@@ -337,10 +364,29 @@ class MjxClimb:
 
     def _slot_model(self, pos, quat, size, wpos, wquat):
         mx = self.mx
-        return mx.replace(
+        mx = mx.replace(
             geom_pos=mx.geom_pos.at[self.rung_geoms].set(pos).at[self.wall_geom].set(wpos),
             geom_quat=mx.geom_quat.at[self.rung_geoms].set(quat).at[self.wall_geom].set(wquat),
             geom_size=mx.geom_size.at[self.rung_geoms].set(size))
+        if mx.impl == mjx.Impl.WARP:
+            # Warp's broadphase culls a pair by each geom's bounds, the parked slot's
+            # (a 0.2 m rung) unless they are the rung's: a hook off its middle fell through
+            r, h = size[:, 0], size[:, 1]
+            box = jp.concatenate([jp.zeros((len(r), 3)), jp.stack([r, r, r + h], -1)], -1)
+            mx = mx.replace(geom_rbound=mx.geom_rbound.at[self.rung_geoms].set(r + h),
+                            geom_aabb=mx.geom_aabb.at[self.rung_geoms].set(
+                                box.reshape((len(r),) + mx.geom_aabb.shape[1:])))
+        return mx
+
+    def _place_static(self, d, w):
+        """the wall's rungs and extra wall where Warp reads them: in the data. Its
+        kinematics leaves the world's own geoms where `make_data` put them -- parked,
+        and no hook ever touched a rung -- where JAX's places them from the model"""
+        from mujoco.mjx._src.math import quat_to_mat
+        g = np.r_[self.rung_geoms, self.wall_geom]
+        quat = jp.concatenate([w.slot_quat, w.wall_quat[None]])
+        return d.replace(geom_xpos=d.geom_xpos.at[g].set(jp.concatenate([w.slot_pos, w.wall_pos[None]])),
+                         geom_xmat=d.geom_xmat.at[g].set(jax.vmap(quat_to_mat)(quat)))
 
     def _secure(self, pos, quat, size, wpos, wquat):
         """ClimbTask.reset's physics: the keyframe, then 0.4 s closing the fingers to
@@ -529,8 +575,9 @@ class MjxClimb:
     def _tree(self, d, q):
         """encoder-only kinematics with the free joint at the origin: throats, base
         and torso in the tree's own frame (Estimator.update's first mj_kinematics)"""
-        dd = mjx.kinematics(self.mx, d.replace(qpos=jp.concatenate(
-            [jp.zeros(3), jp.array([1.0, 0.0, 0.0, 0.0]), q])))
+        q = jp.concatenate([jp.zeros(3), jp.array([1.0, 0.0, 0.0, 0.0]), q])
+        dd = (mjx.kinematics(self.mx, d.replace(qpos=q)) if self.impl == 'jax' else
+              mjx.kinematics(self.mxj, self._kd.replace(qpos=q)))     # JAX's, not a Warp call
         thr = dd.xpos[self.hook] + jp.einsum('sij,j->si', dd.xmat[self.hook], jp.asarray(THROAT_PT))
         return thr, dd.xpos[self.base], dd.xmat[self.torso]
 
@@ -612,18 +659,26 @@ class MjxClimb:
             self._confirmed(sen).astype(thr.dtype)]).astype(jp.float32)
 
     # ---- episode ----------------------------------------------------------------
-    def reset(self, T, lesson, key):
-        """climb_task.reset, from the lesson's secured hang -> (state, obs)"""
+    def reset(self, T, lesson, key, d_like=None):
+        """climb_task.reset, from the lesson's secured hang -> (state, obs). `d_like`
+        (Warp): the env's own data, which takes the start's state -- its fields, not
+        Warp's, which the next step recomputes and one buffer of which the batch shares"""
         r0 = T.walls.d0_row[lesson]
-        d = jax.tree_util.tree_map(lambda x: x[r0], T.d0)
+        if d_like is None:
+            d, con = jax.tree_util.tree_map(lambda x: x[r0], T.d0), None
+        else:
+            d = d_like.replace(**{f: getattr(T.d0, f)[r0] for f in self.public})
+            con = (T.con0[r0], T.on0[r0])
         key, k1, k2 = jax.random.split(key, 3)
         return self.start(T, lesson, d, T.ctrl0[r0], T.ngt0[r0], key,
-                          self._normals(k1, ct.episode_noise(N_RUNG)), self._normals(k2, ct.STEP_NOISE))
+                          self._normals(k1, ct.episode_noise(N_RUNG)), self._normals(k2, ct.STEP_NOISE),
+                          con)
 
-    def start(self, T, lesson, d, ctrl, ngt, key, ep, z):
+    def start(self, T, lesson, d, ctrl, ngt, key, ep, z, con=None):
         """the rest of climb_task.reset once the fingers are shut: the map, the holds,
         the first sense and the books. `ep`: the episode's draws
-        (climb_task.episode_noise(N_RUNG)); `z`: the first sense's"""
+        (climb_task.episode_noise(N_RUNG)); `z`: the first sense's; `con`: `_contact`
+        at `d`, when it is not to be read from it (Warp)"""
         w = self.wall(T, lesson)
         thr = self._throat_true(d)
         seen = lidar.visible(jp, self.rig, d.site_xpos, d.site_xmat, w.rung_c, w.rung_a, w.rung_h,
@@ -631,7 +686,7 @@ class MjxClimb:
         mc, ma, mh, mg = self._noisy_map(w, ep['map'], lidar.extent(jp, seen, w.rung_h))
         idx = jp.stack([self._nearest_rung(w, thr[s])[1] for s in (0, 1)])   # climb_task._hung
         u = jp.clip(((thr - mc[idx]) * ma[idx]).sum(-1), -mh[idx], mh[idx])
-        con, on = self._contact(d)
+        con, on = self._contact(d) if con is None else con
         z2 = jp.zeros(2)
         # the anchor: the left hand, as ClimbTask's, unless only the right carries load
         # (an rl.rsi start with the left in the air)
@@ -689,14 +744,15 @@ class MjxClimb:
             length=ct.FRAME_SKIP)
         return st._replace(d=d, ctrl=ctrl, no_grip_t=ngt), flight, w, capped
 
-    def update(self, T, st, action, flight, w_sum, z):
+    def update(self, T, st, action, flight, w_sum, z, con=None):
         """everything climb_task.step does after the physics -> (state, obs, reward,
         terminated, truncated, info). Separate from `physics` so `rl.mjx_check` can
-        feed it C MuJoCo's own states and compare it with ClimbTask exactly."""
+        feed it C MuJoCo's own states and compare it with ClimbTask exactly. `con`:
+        `_contact` at the state, when it is not to be read from it (Warp)"""
         a = jp.clip(action, -1.0, 1.0)
         d, lesson, w = st.d, st.lesson, st.wall
         st, true, sen = self._sense(T, st, d, w_sum, z)
-        touch, on = self._contact(d)
+        touch, on = self._contact(d) if con is None else con
         thr = self._throat_true(d)
         dd, live = self._dists(w, thr)
         live_att = jp.where((touch > 0.0).any(), live, st.live_att)
@@ -797,31 +853,101 @@ class MjxClimb:
         # substeps in which the solver's MAX_CONTACTS were all in use (rl.mjx_scene)
         return st, obs, r, term, trunc, dict(info, capped=capped)
 
+    # ---- Warp: the whole batch at once ------------------------------------------
+    def _contacts(self, d):
+        """`_contact` for every env from Warp's one contact buffer (each contact
+        carries its world) -> (force (n, 2), touched (n, 2, N_RUNG), substeps over
+        WARP_CONTACTS or WARP_EFC (n,): contacts or rows Warp gave up)"""
+        c, n = d._impl, d.qpos.shape[0]
+        na, nj = c.contact__dist.shape[0], c.efc__force.shape[1]
+        live = jp.arange(na) < c.nacon[0]
+        wid = jp.where(live, c.contact__worldid, n)                 # the rest: segment n
+        g1, g2 = c.contact__geom[:, 0], c.contact__geom[:, 1]
+        adr = c.contact__efc_address                                 # (na, 4): its pyramid rows
+        fn = jp.where(adr >= 0, c.efc__force[jp.minimum(wid, n - 1)[:, None], jp.maximum(adr, 0)], 0.0).sum(-1)
+        rung1 = (g1[:, None] == self.rung_geoms[None]).any(-1)
+        rung2 = (g2[:, None] == self.rung_geoms[None]).any(-1)
+        on = jp.stack([(((g1[:, None] == h[None]).any(-1) & rung2) | ((g2[:, None] == h[None]).any(-1) & rung1))
+                       for h in self.hook_geoms])                    # (2, na)
+        force = jax.ops.segment_sum(jp.where(on, jp.abs(fn)[None], 0.0).T, wid, n + 1)[:n]
+        slot = (g1[:, None] == self.rung_geoms[None]) | (g2[:, None] == self.rung_geoms[None])
+        hit = on[:, :, None] & slot[None] & (c.contact__dist < 0.0)[None, :, None]   # (2, na, N_RUNG)
+        touched = jax.ops.segment_max(hit.transpose(1, 0, 2).astype(jp.int32), wid, n + 1)[:n] > 0
+        over = (c.nacon[0] > na) | (c.nefc > nj)
+        return force, touched, over.astype(jp.int32)
+
+    def step_batch(self, T, st, actions):
+        """`step` for every env at once, as Warp needs it: its contacts are read across
+        the batch (`_contacts`), so the substeps' books are kept here and `update` is
+        handed the contacts. The same books as `physics`, the same update after."""
+        n = actions.shape[0]
+        a = jp.clip(actions, -1.0, 1.0)
+        ctrl = jp.clip(st.ctrl + ct.ACT_SCALE * a, self.lo, self.hi)
+        d = jax.vmap(self._place_static)(st.d, st.wall).replace(ctrl=ctrl)
+        # each env's model made inside the vmap, as `physics` does: made outside, every
+        # field of it would come out one a world, the meshes too
+        one = jax.vmap(lambda w, d: mjx.step(self._env_model(w), d))
+
+        def sub(carry, _):
+            d, flight, ngt, w, capped = carry
+            d = one(st.wall, d)
+            con, _, over = self._contacts(d)
+            return (d, flight + ~(con > ct.HOLD_LOAD).any(-1),
+                    jp.where((con > 0.0).any(-1), 0.0, ngt + self.dt),
+                    w + d.sensordata[:, self.s_gyro], capped + over), None
+
+        z = jp.zeros(n, jp.int32)
+        (d, flight, ngt, w, capped), _ = jax.lax.scan(
+            sub, (d, z, st.no_grip_t, jp.zeros((n, 3)), z), None, length=ct.FRAME_SKIP)
+        st = st._replace(d=d, ctrl=ctrl, no_grip_t=ngt)
+        con, on, _ = self._contacts(d)
+
+        def upd(st, action, flight, w, con, on):
+            key, k = jax.random.split(st.key)
+            return self.update(T, st._replace(key=key), action, flight, w,
+                               self._normals(k, ct.STEP_NOISE), (con, on))
+
+        st, obs, r, term, trunc, info = jax.vmap(upd)(st, actions, flight, w, con, on)
+        return st, obs, r, term, trunc, dict(info, capped=capped)
+
 
 class Batch:
     """N envs on MJX with the auto-reset a VecEnv needs; the curriculum sets the
     lesson draw weights (`probs`, over LESSON_KEYS) without a recompile."""
 
-    def __init__(self, n, seed=0, task=None, bank=0, fit=False):
-        self.task = task or MjxClimb(bank)
+    def __init__(self, n, seed=0, task=None, bank=0, fit=False, impl='jax'):
+        self.task = task or MjxClimb(bank, impl)
         self.n = n
         self.fit = fit
         self.key = jax.random.PRNGKey(seed)
+        if self.task.impl == 'warp':     # every env's data, whose state each reset replaces
+            self.dw = jax.vmap(lambda _: mjx.make_data(
+                self.task.mc, impl='warp', naconmax=n * WARP_CONTACTS, njmax=WARP_EFC))(jp.arange(n))
         self._compile()
         self.set_probs({k: 1.0 for k in LESSON_KEYS})
 
     def _compile(self):
         t, n = self.task, self.n
-        self._reset = jax.jit(jax.vmap(t.reset, in_axes=(None, 0, 0)))
+        warp = t.impl == 'warp'
+        reset = jax.vmap(t.reset, in_axes=(None, 0, 0, 0) if warp else (None, 0, 0))
+        self._reset = jax.jit(reset)
 
         def step(T, st, actions, probs, key):
-            st, obs, r, term, trunc, info = jax.vmap(t.step, in_axes=(None, 0, 0))(T, st, actions)
+            if warp:
+                st, obs, r, term, trunc, info = t.step_batch(T, st, actions)
+            else:
+                st, obs, r, term, trunc, info = jax.vmap(t.step, in_axes=(None, 0, 0))(T, st, actions)
             done = term | trunc
             k1, k2 = jax.random.split(key)
             lessons = jax.random.choice(k1, probs.shape[0], (n,), p=probs)
-            fresh, fresh_obs = jax.vmap(t.reset, in_axes=(None, 0, 0))(T, lessons, jax.random.split(k2, n))
+            keys = jax.random.split(k2, n)
+            fresh, fresh_obs = reset(T, lessons, keys, st.d) if warp else reset(T, lessons, keys)
             pick = lambda f, s: jp.where(done.reshape((-1,) + (1,) * (s.ndim - 1)), f, s)
-            st = jax.tree_util.tree_map(pick, fresh, st)
+            if warp:      # the data's own fields only: Warp's are shared by the batch
+                d = st.d.replace(**{f: pick(getattr(fresh.d, f), getattr(st.d, f)) for f in t.public})
+                st = jax.tree_util.tree_map(pick, fresh._replace(d=None), st._replace(d=None))._replace(d=d)
+            else:
+                st = jax.tree_util.tree_map(pick, fresh, st)
             return st, jp.where(done[:, None], fresh_obs, obs), obs, r, term, trunc, info
 
         self._step = jax.jit(step)
@@ -871,7 +997,8 @@ class Batch:
     def reset(self):
         self.key, k1, k2 = jax.random.split(self.key, 3)
         lessons = jax.random.choice(k1, self.probs.shape[0], (self.n,), p=self.probs)
-        self.state, obs = self._reset(self.task.tables, lessons, jax.random.split(k2, self.n))
+        args = (self.dw,) if self.task.impl == 'warp' else ()
+        self.state, obs = self._reset(self.task.tables, lessons, jax.random.split(k2, self.n), *args)
         self._fit()
         return obs
 
@@ -883,11 +1010,11 @@ class Batch:
         return obs, obs_end, r, term, trunc, info
 
 
-def bench(n, steps=20):
+def bench(n, steps=20, impl='jax'):
     """control-steps/s of one batch: colliding every pair (every lesson), then fitted to
     lessons 1..3 -- the collision pairs families 1..3 need, what training runs early"""
-    print(f"{n} envs on {jax.devices()[0].device_kind}: building and compiling first")
-    b = Batch(n)
+    print(f"{n} envs on {jax.devices()[0].device_kind}, {impl}: building and compiling first")
+    b = Batch(n, impl=impl)
     a = np.zeros((n, 17), np.float32)
     for fit in (False, True):
         if fit:
@@ -913,5 +1040,6 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--envs', type=int, default=64)
     ap.add_argument('--steps', type=int, default=20)
+    ap.add_argument('--impl', default='jax', choices=['jax', 'warp'])
     a = ap.parse_args()
-    bench(a.envs, a.steps)
+    bench(a.envs, a.steps, a.impl)

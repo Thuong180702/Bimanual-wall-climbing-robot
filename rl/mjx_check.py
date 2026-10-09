@@ -7,6 +7,7 @@
     python -m rl.mjx_check policy       # a trained policy: full robot, simplified in C, MJX
     python -m rl.mjx_check contacts     # which parts touch under a trained policy
     python -m rl.mjx_check policy --run out/g1   # another run's best checkpoint
+    python -m rl.mjx_check warp --envs 4096 --out f   # train on MJX's Warp backend?
 
 Four things could each make a GPU-trained policy worthless on the CPU path, and
 each gets its own check, because a failure in one is invisible to the others:
@@ -30,6 +31,10 @@ each gets its own check, because a failure in one is invisible to the others:
             climbs as well on all three. After a GPU run, `--run out/<name>` asks
             the question the other way round: does what MJX taught hold on the
             full robot?
+  warp      the backend. MJX's Warp implementation, which only tests the pairs its
+            broadphase finds near, against C by physics' own measures, and a
+            policy's episodes on it against the JAX backend's; then both timed. Not
+            in the default set: gpu_run.sh runs it to choose what training steps on.
 """
 import os, pickle, subprocess, sys, time
 import numpy as np
@@ -658,8 +663,192 @@ def check_contacts(lessons=None, episodes=2):
                 print(f"  {key[0]:>16} - {key[1]:<16} {c / n * 100:6.2f} % of steps, mean {f / c:6.1f} N")
 
 
+# --- warp -------------------------------------------------------------------------
+def check_warp(envs=None, out=None):
+    """MJX's Warp backend against C MuJoCo by check_physics' own measures and a policy's
+    episodes against the JAX backend's; on a CUDA GPU, both timed at `envs`. -> 'warp'
+    only if it is right and faster, else 'jax', written to `out` with the reason
+    printed: gpu_run.sh trains on what it says, and on 'jax' if this never finishes"""
+    def decide(impl, why):
+        print(f"warp: training physics -> {impl}: {why}", flush=True)
+        if out:
+            with open(out, 'w') as f:
+                f.write(impl + '\n')
+        return impl
+
+    try:
+        import warp  # noqa: F401 -- MJX's Warp backend needs warp-lang (requirements-gpu.txt)
+        _warp_right()
+    except AssertionError as e:
+        return decide('jax', f"Warp is not C MuJoCo's physics here: {e}")
+    except Exception as e:                    # an import, a kernel, a shape: not usable
+        return decide('jax', f"Warp did not run: {type(e).__name__}: {e}")
+    import jax
+    if jax.devices()[0].platform != 'gpu':
+        return decide('jax', "Warp is right, but there is no CUDA GPU here to be faster on")
+    sps = {impl: _warp_speed(impl, envs or 4096) for impl in ('jax', 'warp')}
+    ratio = sps['warp'] / sps['jax']
+    why = f"{sps['warp']:,.0f} env-steps/s against JAX's {sps['jax']:,.0f} ({ratio:.2f}x)"
+    return decide('warp', why) if ratio >= WARP_GAIN else decide('jax', why + f", under {WARP_GAIN}x")
+
+
+WARP_GAIN = 1.1          # how much faster Warp must be to be worth a second physics
+
+
+def _warp_right(lessons=(1, 2, 7, 8), episodes=8):
+    """check_physics' hang, side pull and one-step-from-C's-state on Warp, the same
+    thresholds; then the policy's episodes on Warp and on JAX, check_policy's margin"""
+    import jax, jax.numpy as jp
+    from mujoco import mjx
+    from .mjx_scene import c_path
+    from .mjx_task import MjxClimb, Batch, REASONS
+
+    print(f"warp: MJX's Warp backend on {jax.devices()[0].device_kind}, one robot at a time "
+          f"-- compiling first", flush=True)
+    task = MjxClimb(impl='warp')
+    b = Batch(1, task=task)
+    step = jax.jit(task.step_batch)
+    throats = jax.jit(jax.vmap(task._throat_true))
+    z = np.zeros((1, 17), np.float32)
+    over = 0
+
+    def start(k):
+        b.set_probs({k: 1.0})
+        b.reset()
+        return b.state
+
+    for k in lessons:
+        t = _task(k, c_path(k))
+        t.reset()
+        st = start(k)
+        base0 = np.asarray(st.d.xpos[0, task.base])
+        for _ in range(50):                                   # 2 s of hanging still
+            t.step(np.zeros(17))
+            st, *_, info = step(task.tables, st, z)
+            over += int(np.asarray(info['capped']).sum())
+        cs, js = [t._contact(s)[0] for s in 'LR'], np.asarray(info['touch'])[0]
+        drift = np.linalg.norm(np.asarray(st.d.xpos[0, task.base]) - base0) * 1e3
+        print(f"warp: lesson {k:>4}: after 2 s hanging, hook loads C {cs[0]:.0f}/{cs[1]:.0f} "
+              f"Warp {js[0]:.0f}/{js[1]:.0f} N; base drift {drift:.1f} mm", flush=True)
+        assert (js > 50).all() and np.allclose(js, cs, rtol=0.25), \
+            f"lesson {k}: Warp hangs on {js} N against C's {cs}"
+        assert drift < 5.0, f"lesson {k}: Warp drifted {drift:.1f} mm hanging still"
+
+    # the side pull: 0.23 x body weight along the rung for 6 s
+    t = _task(1, c_path(1))
+    t.reset()
+    st = start(1)
+    ax = np.array([0.0, 1.0, 0.0])
+    f = np.zeros(6)
+    f[:3] = 0.23 * t.weight * ax
+    p0c, p0j = t._throat_true('R').copy(), np.asarray(throats(st.d))[0, 1]
+    t.env.data.xfrc_applied[t.env.base] = f
+    st = st._replace(d=st.d.replace(xfrc_applied=st.d.xfrc_applied.at[0, task.base].set(jp.asarray(f))))
+    for _ in range(150):
+        t.step(np.zeros(17))
+        st, *_ = step(task.tables, st, z)
+    mc_ = (t._throat_true('R') - p0c) @ ax * 1e3
+    mj_ = (np.asarray(throats(st.d))[0, 1] - p0j) @ ax * 1e3
+    print(f"warp: {0.23 * t.weight:.0f} N along the rung for 6 s slides the loaded hook "
+          f"C {mc_:+.1f} mm, Warp {mj_:+.1f} mm", flush=True)
+    assert abs(mj_) < 60 and abs(mj_ - mc_) < max(10.0, 0.5 * abs(mc_)), \
+        "the hook slides differently on Warp: the pad or the solver is off"
+
+    # one control step from C's own state along the policy's gait (check_physics')
+    pol = _policy()
+    rng = np.random.default_rng(0)
+    t = _task(1, c_path(1))
+    o, _ = t.reset()
+    st0 = start(1)
+    eq, ef = [], []
+    for i in range(300):
+        a = pol[0](o[None])[0] if pol else rng.uniform(-0.5, 0.5, 17)
+        dc = mjx.put_data(t.env.model, t.env.data)
+        st = st0._replace(d=st0.d.replace(**{f: jp.asarray(getattr(dc, f))[None] for f in task.public}),
+                          ctrl=jp.asarray(t.ctrl, jp.float32)[None])
+        o, r, te, tr, _ = t.step(a)
+        st1, *_, info = step(task.tables, st, jp.asarray(a, jp.float32)[None])
+        over += int(np.asarray(info['capped']).sum())
+        eq.append(np.abs(np.asarray(st1.d.qpos)[0] - t.env.data.qpos).max())
+        ef.append(np.abs(np.asarray(info['touch'])[0] - [t._contact(s)[0] for s in 'LR']).max())
+        if te or tr:
+            o, _ = t.reset()
+    eq, ef = np.array(eq), np.array(ef)
+    print(f"warp: one control step from C's own state, {len(eq)} steps of "
+          f"{'the policy' if pol else 'random actions'}: joints off by p50 {np.median(eq):.1e} "
+          f"p90 {np.percentile(eq, 90):.1e} max {eq.max():.1e}; hook loads p50 "
+          f"{np.median(ef):.2f} p90 {np.percentile(ef, 90):.2f} max {ef.max():.0f} N", flush=True)
+    assert np.percentile(eq, 90) < 1e-3 and np.percentile(ef, 90) < 5.0, \
+        "Warp and C part in one control step from the same state: a collision or the solver differs"
+    assert over == 0, f"Warp gave up contacts or constraint rows in {over} substeps: raise WARP_CONTACTS/WARP_EFC"
+
+    # a blown-up env ends as 'blowup', finite, and leaves the others alone: on Warp the
+    # batch shares one contact buffer
+    b3 = Batch(3, task=task)
+    b3.reset()
+    d = b3.state.d
+    b3.state = b3.state._replace(d=d.replace(qvel=d.qvel.at[0, 0].set(jp.nan)),
+                                 Rf=b3.state.Rf.at[1].set(jp.nan))
+    z3 = np.zeros((3, 17), np.float32)
+    obs, end, r, term, trunc, info = b3.step(z3)
+    why = [REASONS[int(x)] for x in np.asarray(info['reason'])]
+    assert why == ['blowup', 'blowup', ''], f"a NaN on Warp ended as {why}"
+    for _ in range(3):
+        assert all(np.isfinite(np.asarray(x)).all() for x in (obs, end, r)), "a NaN got out on Warp"
+        obs, end, r, term, trunc, info = b3.step(z3)
+    print("warp: a NaN state or estimate ends as 'blowup', finite, and resets", flush=True)
+
+    # closed loop: the policy's episodes on Warp and on JAX, the same draws
+    if pol is None:
+        return
+    predict, pool = pol
+    pool = pool[-4:]                 # its hardest four: the most contact, and the preflight's time
+    runs = {}
+    for impl in ('jax', 'warp'):
+        bb = Batch(episodes, task=task if impl == 'warp' else MjxClimb())
+        ok = 0
+        for k in pool:
+            bb.set_probs({k: 1.0})
+            o, done = np.asarray(bb.reset()), np.zeros(episodes, bool)
+            while not done.all():
+                o, _, _, term, trunc, info = bb.step(predict(o))
+                o = np.asarray(o)
+                end = np.asarray(term | trunc) & ~done
+                ok += sum(REASONS[int(info['reason'][i])] == 'success' for i in np.nonzero(end)[0])
+                done |= end
+        runs[impl] = ok
+    n = episodes * len(pool)
+    print(f"warp: the policy's {n} episodes over lessons {pool}: JAX {runs['jax']}/{n}, "
+          f"Warp {runs['warp']}/{n} successes", flush=True)
+    assert abs(runs['warp'] - runs['jax']) <= 0.2 * max(runs.values()) + 2, \
+        "the same policy climbs clearly better on one backend"
+
+
+def _warp_speed(impl, envs, steps=20):
+    """env-steps/s of a batch fitted to families 1..3's walls at their last tops, as
+    training runs them, random actions, after its compile"""
+    import jax
+    from . import walls as W
+    from .mjx_task import Batch
+    from .train_ppo import BANK
+    b = Batch(envs, impl=impl, bank=BANK, fit=True)
+    b.set_bank(W.draw(W.Checker(), {1: 1.0, 2: 1.0, 3: 1.0}, W.last_tops(),
+                      np.random.default_rng(0), BANK))
+    b.reset()
+    rng = np.random.default_rng(1)
+    a = rng.uniform(-1, 1, (envs, 17)).astype(np.float32)
+    jax.block_until_ready(b.step(a))                         # compile
+    t0 = time.perf_counter()
+    for _ in range(steps):
+        out = b.step(a)
+    jax.block_until_ready(out)
+    sps = envs * steps / (time.perf_counter() - t0)
+    print(f"warp: {envs} envs on {impl}: {sps:,.0f} env-steps/s", flush=True)
+    return sps
+
+
 CHECKS = dict(task=check_task, physics=check_physics, model=check_model,
-              policy=check_policy, contacts=check_contacts)
+              policy=check_policy, contacts=check_contacts, warp=check_warp)
 
 if __name__ == '__main__':
     which = sys.argv[1:]
@@ -667,9 +856,15 @@ if __name__ == '__main__':
         i = which.index('--run')
         RUN = which[i + 1]
         del which[i:i + 2]
+    opts = {}
+    for flag, kind in (('--envs', int), ('--out', str)):       # check_warp's
+        if flag in which:
+            i = which.index(flag)
+            opts[flag[2:]] = kind(which[i + 1])
+            del which[i:i + 2]
     which = which or ['task', 'physics', 'model', 'policy']
     if len(which) == 1:
-        CHECKS[which[0]]()
+        CHECKS[which[0]](**opts)
     else:
         # one process each: the task check runs JAX in float64, the others as training does
         for w in which:

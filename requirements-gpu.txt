@@ -10,7 +10,9 @@
 #   torch cu126   PyTorch dropped Volta (sm_70) from its CUDA 12.8 builds in 2.11, and
 #                 CUDA 13 cannot build it at all; cu126 is the build that still runs a V100
 #   2.13.0        the version every CPU run and checkpoint here was made with
-# Direct pins: mujoco==3.12.0 mujoco-mjx==3.12.0 jax[cuda12]==0.11.1
+#   warp-lang     mujoco-mjx[warp]'s pin: MJX's Warp backend (rl.mjx_check warp), which
+#                 training steps on only where it is right and faster than JAX
+# Direct pins: mujoco==3.12.0 mujoco-mjx==3.12.0 jax[cuda12]==0.11.1 warp-lang==1.16.0
 #              torch==2.13.0+cu126 gymnasium==1.3.0 stable-baselines3==2.9.0
 --extra-index-url https://download.pytorch.org/whl/cu126
 absl-py==2.5.0
@@ -62,4 +64,5 @@ torch==2.13.0+cu126
 trimesh==5.1.0
 triton==3.7.1
 typing-extensions==4.16.0
+warp-lang==1.16.0
 zipp==4.1.0
