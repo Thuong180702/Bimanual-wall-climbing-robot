@@ -48,6 +48,10 @@ RUN = os.path.join(os.path.dirname(__file__), 'fixtures', 'win17')
 # best, 61.3M steps, families 1 and 2 at 85-90 %, family 3's rl.rsi starts at ~60 %
 # (its Adam moments and last rollout dropped: the policy alone, the same actions)
 WALLS_RUN = os.path.join(os.path.dirname(__file__), 'fixtures', 'gpu4')
+# m an rl.rsi start may see a hook from where it is: the 0.20 m climb from the hang sees
+# its free hook 28-44 mm off around the catch, 60 at most (out/gpu5_diag/ahrs_path.py);
+# its starts, 72 at most since 2026-10-09, up to 0.3 m before
+RSI_SEEN = 0.1
 
 
 def _task(k, xml=None, seed=0):
@@ -203,6 +207,24 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
         print(f"task: lesson {k}: {n} steps equal (ends {ends or 'none'}, {banks} banked "
               f"steps, {switches} anchor switches, first grabs {grabs})")
     print("task: largest differences " + ", ".join(f"{a} {b:.1e}" for a, b in worst.items()))
+    # rl.rsi's starts, which ClimbTask has none of: the estimator begins where a climb's
+    # has got to, each hook seen about as near where it is as along the climb from the
+    # hang -- not where one accelerometer reading mid-swing puts it: 0.1-0.3 m
+    # around the 0.20 m climb's catch until 2026-10-09, and gpu5 learnt to finish on that
+    from . import rsi
+    ref = rsi.load()
+    if ref is not None:
+        reset, L, W0, far = jax.jit(task.reset), len(LESSON_KEYS), task.tables.walls, 0.0
+        for j in range(0, len(ref['spacing']), 7):
+            new = task.rows([dict(rsi.wall(float(ref['spacing'][j])), family=3 + rsi.BOOK, d0_row=L + j)])
+            T = task.tables._replace(walls=W0._replace(**{f: getattr(W0, f).at[:1].set(jp.asarray(v))
+                                                          for f, v in new.items()}))
+            st, _ = reset(T, 0, jax.random.PRNGKey(j))
+            err = float(np.linalg.norm(np.asarray(st.est_thr) - np.asarray(task._throat_true(st.d)), axis=1).max())
+            far = max(far, err)
+            assert err < RSI_SEEN, (f"rl.rsi's row {j} (the {ref['spacing'][j]:.2f} m climb): "
+                                    f"a hook seen {err * 1000:.0f} mm from where it is as the episode starts")
+        print(f"task: rl.rsi's starts: each hook seen at most {far * 1000:.0f} mm from where it is")
     print("task: OK -- the JAX task is ClimbTask's, observation by observation")
 
 

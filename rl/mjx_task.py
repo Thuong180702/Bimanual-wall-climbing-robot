@@ -602,7 +602,8 @@ class MjxClimb:
         sen = ct.sensed(true, z['sen'], st.bias)
         dt = ct.FRAME_SKIP * self.dt
         first = st.k == 0
-        Rf = jp.where(first, _triad(sen['acc'], sen['mag']), st.Rf)
+        Rf = jp.where(first & (st.wall.d0_row < len(LESSON_KEYS)),     # an rl.rsi start's: `start`
+                      _triad(sen['acc'], sen['mag']), st.Rf)
         Rf = Rf @ _rotm(ct.sensed_rates(w_sum, z['w'], st.bias['gyro']) * self.dt)
         R_tri = _triad(sen['acc'], sen['mag'])
         Rf = Rf @ _rotm((dt / ct.AHRS_TAU) * _rotvec(Rf.T @ R_tri))
@@ -691,8 +692,16 @@ class MjxClimb:
         # the anchor: the left hand, as ClimbTask's, unless only the right carries load
         # (an rl.rsi start with the left in the air)
         anchor = jp.where(~(con[0] > ct.HOLD_LOAD) & (con[1] > ct.HOLD_LOAD), 1, 0)
+        # the attitude filter: from a hang, `_sense` starts it from one accelerometer and
+        # magnetometer reading, as ClimbTask does. An rl.rsi start is mid-swing, where that
+        # reading is the swing's as much as gravity's: 16-37 deg off around the catch, the
+        # free hook seen 0.1-0.3 m from where it is, a different way at every row -- gpu5
+        # (2026-10-09) finished from 4.80 s on that and 0/12 there with the true attitude
+        # or after the climb itself from the hang. So it starts where a climb's filter
+        # has got to by then: the torso's attitude (2-3 deg off along the 0.20 m climb)
+        rsi_start = w.d0_row >= len(LESSON_KEYS)
         st = State(d=d, lesson=lesson, ctrl=ctrl, key=key, no_grip_t=ngt,
-                   Rf=jp.eye(3), anchor=anchor, hold_idx=idx,
+                   Rf=jp.where(rsi_start, d.xmat[self.torso], jp.eye(3)), anchor=anchor, hold_idx=idx,
                    hold_pt=mc[idx] + u[:, None] * ma[idx],
                    both_conf=jp.array(False), anchor_fresh=jp.array(True), est_thr=thr,
                    map_c=mc, map_a=ma, map_h=mh, map_goals=mg, map_z=ep['map'], seen=seen,

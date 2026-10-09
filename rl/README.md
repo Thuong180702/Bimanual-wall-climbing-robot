@@ -921,6 +921,21 @@ gpu4's policy from 4.80, 4.84, 4.88, 4.92, 4.96 and 5.00 s finished 0, 0, 9, 23,
 of 24 -- the start at 4.8 s was 0/192 from its first step alone, the one at 5.0 s all, and
 nothing between was ever drawn; over its five steps it is ~44 %, a step at a time to learn.)
 
+**gpu5's frontier was moved by the estimator, not the policy (2026-10-09).** gpu5 (0ebf33d,
+Warp, 42.9M steps in 49 min) passed the 0.20 m climb's start at 4.8 s by 21M and then sat at
+4.6 s for 21M steps; per control step its policy finished 0/16 up to 4.76 s and 11/16 at
+4.80. The two rows' bodies are 19 mm apart, but what the policy SEES of the free hook was
+not: an rsi start began the attitude filter as a hang does, from one accelerometer and
+magnetometer reading, and mid-swing the accelerometer reads the swing too -- 16-37 deg off
+vertical around the catch, the free hook seen 0.1-0.3 m from where it is, a different way
+at each row (at 4.68-4.76 s already on the upper rung, at 4.80 s 0.2 m under it). Along the
+climb from the hang the filter has settled by then: 2-3 deg, the hook 28-44 mm off. From
+4.80 s the same policy finished 11/16 from the rsi start, 0/12 after the climb itself from
+the hang and 0/12 from the start with the true attitude; its real edge is 4.88 s, gpu4's.
+An rsi start now begins the filter at the torso's attitude (`MjxClimb.start`; the hangs
+keep ClimbTask's), and `rl.mjx_check task` fails any start that sees a hook 0.1 m off (317 mm
+before, 72 now). The measurements: out/gpu5_diag.
+
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
 the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines
