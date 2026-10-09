@@ -27,16 +27,24 @@ if ! command -v uv >/dev/null; then
     fi
 fi
 
-# croc, pinned and checked against the release's own sha256: `croc send <file>` here,
-# `CROC_SECRET=<code> croc` at home (brew install croc on a Mac)
-CROC=11.5.3
-CROC_SHA=73b44449937a3f656571c4f016cb2fd0e722544568d7a17dcc3b82475ad250ad
-if ! croc --version 2>/dev/null | grep -q "$CROC"; then
+# croc, the LATEST release, checked against that release's own checksums: `croc send
+# <file>` here, `CROC_SECRET=<code> croc` at home. Both ends must run the same version
+# (a pinned 11.5.3 here fell behind the Mac's brew croc), so this updates it on every
+# run, and at home: brew upgrade croc. The latest is where releases/latest redirects:
+# GitHub's API allows 60 calls an hour an address, and a rented box shares its address
+CROC=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/schollz/croc/releases/latest \
+       | sed -n 's|.*/tag/v\([0-9][0-9.]*\)$|\1|p') || CROC=
+have=$(croc --version 2>/dev/null | awk '{print $3}' | sed 's/^v//') || have=
+if [ -z "$CROC" ]; then
+    echo "WARNING: GitHub did not say which croc is the latest; keeping ${have:-no croc at all}"
+elif [ "$have" != "$CROC" ]; then
     tmp=$(mktemp -d)
-    curl -LsSf -o "$tmp/croc.tgz" \
-        "https://github.com/schollz/croc/releases/download/v$CROC/croc_v${CROC}_Linux-64bit.tar.gz"
-    echo "$CROC_SHA  $tmp/croc.tgz" | sha256sum -c --quiet
-    tar xzf "$tmp/croc.tgz" -C "$tmp" croc
+    url="https://github.com/schollz/croc/releases/download/v$CROC"
+    tgz="croc_v${CROC}_Linux-64bit.tar.gz"
+    curl -LsSf -o "$tmp/$tgz" "$url/$tgz"
+    curl -LsSf -o "$tmp/sums.txt" "$url/croc_v${CROC}_checksums.txt"
+    (cd "$tmp" && grep " $tgz\$" sums.txt | sha256sum -c --quiet)
+    tar xzf "$tmp/$tgz" -C "$tmp" croc
     install -m 755 "$tmp/croc" "$HOME/.local/bin/croc"
     rm -rf "$tmp"
 fi
@@ -53,5 +61,5 @@ print("torch", torch.__version__, "cuda" if torch.cuda.is_available() else "NO C
       torch.cuda.get_device_name(0) if torch.cuda.is_available() else "")
 EOF
 .venv/bin/python -m rl.hardware
-echo "croc $(croc --version 2>&1 | awk '{print $3}') in ~/.local/bin"
+echo "croc $(croc --version 2>&1 | awk '{print $3}') in ~/.local/bin -- at home the same: brew upgrade croc"
 echo "setup done. Next:  mkdir -p out && nohup bash rl/gpu_run.sh <run name> > out/<run name>.console 2>&1 &"

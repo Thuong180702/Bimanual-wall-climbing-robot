@@ -206,6 +206,7 @@ pack() {
     croc=$(command -v croc || echo "$HOME/.local/bin/croc")
     say "packed: out/$NAME.tgz ($(du -h "out/$NAME.tgz" | cut -f1)). Send it home with"
     say "    $croc send out/$NAME.tgz        and at home:  CROC_SECRET=<the code it prints> croc --yes"
+    say "    (croc $($croc --version 2>&1 | awk '{print $3}') here: the one at home must be the same -- brew upgrade croc)"
     say "then at home: tar xzf $NAME.tgz -C out && python -m rl.curve --name $NAME && python -m rl.plot --name $NAME"
 }
 

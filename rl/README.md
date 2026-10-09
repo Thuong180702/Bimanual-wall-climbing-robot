@@ -511,8 +511,10 @@ does not install -- plot at home.
 
 **Getting it home:** `gpu_run.sh` ends by packing the run into `out/<name>.tgz` and
 printing the line to send it: `croc send out/gpu1.tgz` on the box (`gpu_setup.sh`
-installs croc 11.5.3, checked against its release checksum), then on the Mac
-(`brew install croc`) `CROC_SECRET=<the code it printed> croc --yes`. croc is
+installs croc's latest release, checked against that release's checksums, and updates
+it on every run: the two ends must run the same version, and a pinned 11.5.3 fell
+behind the Mac's), then on the Mac (`brew upgrade croc`) `CROC_SECRET=<the code it
+printed> croc --yes`. croc is
 end-to-end encrypted (a key agreed from the code phrase), direct when it can be and
 through its public relay when not. At home:
 
