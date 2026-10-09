@@ -94,6 +94,7 @@ say() { echo "[gpu_run $(date '+%F %T')] $*" | tee -a "$RUN/gpu_run.log"; }
 
 { echo "== $(date)  HOURS=$HOURS TOTAL=$TOTAL ENVS=$ENVS SEED=$SEED WALLS=$WALLS"
   git rev-parse HEAD; git status --short
+  echo "threads allowed: ulimit -u $(ulimit -u), cgroup pids.max $(cat /sys/fs/cgroup/pids.max 2>/dev/null || echo -)"
   nvidia-smi
   $PY -c "import importlib.metadata as m; print('\n'.join(sorted(f\"{d.metadata['Name']}=={d.version}\" for d in m.distributions())))"
 } >> "$RUN/provenance.txt" 2>&1
@@ -137,7 +138,8 @@ EOF
         "MJX's Warp backend against both, and $ENVS envs in one batch (halved until it fits)"
     read -ra quarter <<< "$($PY -c "import os; c = sorted(os.sched_getaffinity(0)); n = max(len(c) // 4, 1)
 print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
-    on() { local q=${quarter[$1]}; shift; if command -v taskset >/dev/null; then step taskset -c "$q" "$@"; else step "$@"; fi; }
+    pin=; taskset -c "${quarter[0]}" true 2>/dev/null && pin=1    # no taskset, or not allowed: unpinned
+    on() { local q=${quarter[$1]}; shift; if [ -n "$pin" ]; then step taskset -c "$q" "$@"; else step "$@"; fi; }
     check() { local i=$1; shift; on "$i" $PY -m rl.mjx_check "$@" 2>&1 | tee "$RUN/check_$1.txt"; }
     again() { say "the $1 check died beside the others: again, alone"; step $PY -m rl.mjx_check "$@" 2>&1 | tee "$RUN/check_$1.txt"; }
     fit() {
@@ -246,8 +248,12 @@ pack() {
 [ -f "$RUN/best_model.zip" ] || { say "no best checkpoint to score"; pack; exit 1; }
 say "scoring best_ on the full robot, the benchmark 1..9 both ways round: $EPISODES episodes each, one process each"
 jobs="1 1m 2 2m 3 3m 4 4m 5 5m 6 6m 7 7m 8 8m 9 9m"   # 'm': mirrored, toward the right
+# One thread each: an episode is one robot in C MuJoCo, and unset, every one of the 18
+# would size numpy's, scipy's and torch's pools for all the cores -- thousands of
+# threads, past what gpu6's box allowed four JAX processes (preflight, 2026-10-09)
 job() {
     k=${1%m}; m=; [ "$1" != "$k" ] && m=--mirror
+    OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
     $PY -m rl.eval --name "$NAME" --from-best --lessons="$k" $m --episodes "$EPISODES" \
         --jsonl "$RUN/eval.jsonl" > "$RUN/eval_$1.txt" 2>&1
 }
