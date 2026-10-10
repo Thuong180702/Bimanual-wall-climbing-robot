@@ -812,6 +812,149 @@ class BoundExploration(BaseCallback):
         return True
 
 
+CLONE_RATIO = 0.3    # the cloning gradient's norm, this times PPO's own on the actor. Resumed
+                     # on gpu6 (64 envs, CPU): the mean 10.7 sigma off the reference over its
+                     # 125 rows, 1.3 three updates later; the first update's KL 3.5 against
+                     # 1.4 for PPO alone, the next ones PPO's own (1.0: 5.4, then 0.9 sigma)
+CLONE_BATCH = 512    # reference rows' observations a PPO minibatch step clones
+CLONE_DRAWS = 16     # sensor-noise draws observed at each fixture row
+CLONE_CHUNK = 1024   # resets at a time while observing them
+
+
+class Clone(BaseCallback):
+    """Behaviour cloning of rl.rsi's reference climbs, where the policy does not finish
+    them: every PPO optimizer step also pulls the policy's MEAN action at the fixture rows
+    of each start not yet passed (rl.rsi.unpassed, from Walls' books) toward the climb's
+    own action there (rl.rsi.actions), observed as an episode started at that row
+    observes it. Its gradient is added to PPO's after SB3 clips it, scaled to CLONE_RATIO
+    of that one's norm on the actor's weights: a fixed share of every step whatever the
+    two losses' scales, so PPO keeps most of it. On only while family 3 is in the pool and
+    has not passed its gate, and only at rows the books say fail: a start passed is the
+    policy's own business. Demonstration-augmented policy gradient
+    (Rajeswaran et al. 2018, DAPG; Nair et al. 2018, the Q-filter's "only where the
+    demonstration is better").
+
+    Why (2026-10-10): gpu6 (61M steps, the rsi attitude fixed) finished the 0.20 m climb
+    from every row from 4.88 s on and from none before -- at 4.80 s 0/64 and 4.84 s 0/64
+    with its own noise -- and the frontier had not moved one start in 42M steps, gpu4's
+    and gpu5's cliff exactly. Not the reward: from 4.84 s the reference's step is paid
+    +0.03..+0.06 a step against the policy's ~0, and the critic knows it (V +8.5 one step
+    later against +0.6). Not observation: the same critic reads 4.84 s at +1.9 and 4.88 s
+    at +11. It is a skill the policy has no noise to find: before 4.88 s the hook must keep
+    rising on the rung's front (the side away from the wall) until it is over it, then come
+    in over its top and down; the policy's catch, learnt where the hook is already level
+    with the rung, drives it straight in, into the underside. Its mean is
+    6.9-8.4 sigma from the reference's action (17 joints) at every row of it, and the
+    catch needs one step of all of that or two to three of half -- out of reach of a
+    Gaussian's noise however long it runs. Cloned offline on rows 60..121 (out/gpu6_diag/
+    bc_probe.py), the same policy finished 4.72-4.84 s 3-6/12 with its own noise: inside
+    what PPO learns from, as the RSI chain had been until it met this step."""
+
+    def __init__(self, cur, batch=None):
+        super().__init__()
+        self.cur = cur
+        self.ref = rsi.load()
+        self.act = None if self.ref is None else rsi.actions(self.ref).astype(np.float32)
+        self.obs = None          # raw observations [fixture row, CLONE_DRAWS, dim]...
+        self.seen = set()        # ...of these climbs' rows (spacings), made when first wanted
+        self.batch = batch       # the observing batch, built then
+        self.rows = np.zeros(0, int)
+        self.rng = np.random.default_rng(0)
+        self.hooked = None
+        self.log = []
+
+    def wanted(self):
+        """the fixture rows to clone now"""
+        c = self.cur
+        if self.ref is None or not c.enabled or 3 not in c.active or 3 in c.cleared:
+            return np.zeros(0, int)
+        return rsi.unpassed(c.starts, self.ref, c.tops[3]['spacing'])
+
+    def observe(self, spacing):
+        """(its fixture rows, [rows, CLONE_DRAWS, dim]): each row of the `spacing` climb observed
+        as an episode started there observes it (rl.rsi.mix's walls, the episode's own sensor
+        noise each draw), on JAX MJX -- a reset needs no physics, and this batch never steps"""
+        import jax
+        import jax.numpy as jp
+        from . import mjx_task as mt, walls as W
+        if self.batch is None:
+            self.batch = mt.Batch(CLONE_CHUNK, bank=CLONE_CHUNK, impl='jax')
+        b, L = self.batch, len(mt.LESSON_KEYS)
+        rows = np.nonzero(np.isclose(self.ref['spacing'], spacing))[0]
+        js = np.repeat(rows, CLONE_DRAWS)
+        key, out = jax.random.PRNGKey(int(rows[0])), []
+        for i in range(0, len(js), CLONE_CHUNK):
+            part = js[i:i + CLONE_CHUNK]
+            pad = np.r_[part, np.full(CLONE_CHUNK - len(part), part[-1])]
+            b.set_bank([dict(W.sample(3, dict(rows=1, spacing=float(spacing)), self.rng, 'spacing'),
+                             family=3 + rsi.BOOK, probe=None, probe_val=0.0, d0_row=L + int(j),
+                             timeout=rsi.TIMEOUT) for j in pad])
+            key, k = jax.random.split(key)
+            _, o = b._reset(b.task.tables, jp.asarray(L + np.arange(CLONE_CHUNK)), jax.random.split(k, CLONE_CHUNK))
+            out.append(np.asarray(o)[:len(part)])
+        return rows, np.concatenate(out).reshape(len(rows), CLONE_DRAWS, -1)
+
+    def _on_rollout_start(self):
+        if self.log:                     # the update just done: on its rollout table
+            off, scale = np.mean(self.log, axis=0)
+            self.logger.record('clone/rows', len(self.rows))
+            self.logger.record('clone/off_sigma', off)
+            self.logger.record('clone/scale', scale)
+            self.log.clear()
+        rows = self.wanted()
+        for s in set(self.ref['spacing'][rows].tolist()) - self.seen:
+            t = time.time()
+            j, o = self.observe(s)
+            if self.obs is None:
+                self.obs = np.zeros((len(self.ref['start']), CLONE_DRAWS, o.shape[-1]), np.float32)
+            self.obs[j] = o
+            self.seen.add(s)
+            print(f"[clone] the {s:.2f} m climb's {len(j)} rows observed {CLONE_DRAWS} times each "
+                  f"({time.time() - t:.0f} s)", flush=True)
+        if bool(len(rows)) != bool(len(self.rows)):     # on or off; how many: clone/rows
+            print(f"[clone] cloning the reference at {len(rows)} fixture rows "
+                  f"(starts not passed){'' if len(rows) else ': off'}", flush=True)
+        self.rows = rows
+        opt = self.model.policy.optimizer
+        if self.hooked is not opt:       # a resume builds a new one; a rollback keeps it
+            opt.register_step_pre_hook(lambda *_: self.add())
+            self.hooked = opt
+        return True
+
+    def _on_step(self):
+        return True
+
+    def pool(self, n):
+        """n (raw observation, reference action) pairs from the rows being cloned"""
+        j = self.rng.choice(self.rows, n)
+        return self.obs[j, self.rng.integers(CLONE_DRAWS, size=n)], self.act[j]
+
+    def add(self):
+        """into the actor's gradients, before the optimizer steps on them"""
+        if not len(self.rows):
+            return
+        import torch
+        pol = self.model.policy
+        ps = [p for m in (pol.pi_features_extractor, pol.mlp_extractor.policy_net, pol.action_net)
+              for p in m.parameters() if p.grad is not None]
+        obs, act = self.pool(CLONE_BATCH)
+        x = torch.as_tensor(self.model.get_env().normalize_obs(obs), dtype=torch.float32, device=pol.device)
+        y = torch.as_tensor(act, device=pol.device)
+        with torch.enable_grad():
+            mu = pol.get_distribution(x).distribution.mean
+            g = torch.autograd.grad(((mu - y) ** 2).sum(1).mean(), ps)
+        with torch.no_grad():
+            own = torch.sqrt(sum((p.grad ** 2).sum() for p in ps))
+            norm = torch.sqrt(sum((d ** 2).sum() for d in g))
+            if norm < 1e-12:
+                return
+            s = float(CLONE_RATIO * own / norm)
+            for p, d in zip(ps, g):
+                p.grad.add_(d, alpha=s)
+            sd = pol.log_std.exp()
+            self.log.append((float((((mu - y) / sd) ** 2).sum(1).sqrt().mean()), s))
+
+
 class AdaptiveLR(BaseCallback):
     """Move the learning rate so each update changes the policy by about the run's
     KL target: x1/1.5 when the last update's approx_kl passed twice it, x1.5 when it
@@ -1140,6 +1283,7 @@ def self_check():
     order_check(FakeModel, FakeEnv)
     guard_check(FakeModel, FakeEnv, feed)
     walls_check(FakeModel, FakeEnv)
+    clone_check()
 
     # The best-checkpoint score must never fall just because a lesson unlocked. Under
     # the old mean it did: 85% on lesson 1 alone scored 0.85, and unlocking lesson 2
@@ -1551,6 +1695,98 @@ def guard_check(FakeModel, FakeEnv, feed):
           f"it to {KL_MIN:g}. OK")
 
 
+def clone_check():
+    """Clone: the reference's actions line up with its rows; it clones the rows of the starts
+    not passed; on a real (tiny) PPO it pulls the mean to them with CLONE_RATIO of PPO's own
+    gradient; it follows the optimizer through a rollback and a resume; and it is off once
+    family 3 has passed."""
+    import tempfile
+    import torch
+    from stable_baselines3.common.vec_env import DummyVecEnv
+    from .climb_task import ACT_SCALE
+    ref = rsi.load()
+    if ref is not None:
+        act = rsi.actions(ref)
+        for s in rsi.CLIMBS:
+            j = np.nonzero(np.isclose(ref['spacing'], s))[0]
+            assert np.abs(ref['ctrl'][j[1:]] - ref['ctrl'][j[:-1]] - ACT_SCALE * act[j[:-1]]).max() < 1e-9, \
+                f"the {s} m climb's reference actions are not its rows' steps"
+        st, sp = ref['start'], ref['spacing']
+        c20 = np.unique(st[np.isclose(sp, 0.20)])
+        books = {int(j): [j > c20[24]] * rsi.START_MIN for j in c20}      # gpu6: passed from 4.88 s
+        assert (rsi.unpassed(books, ref, 0.20) == np.nonzero(np.isin(st, c20[:25]))[0]).all(), \
+            "not the rows of the starts not passed"
+        assert len(rsi.unpassed({}, ref, 0.10)) == 0 and \
+            set(sp[rsi.unpassed({}, ref, 0.25)].tolist()) == {0.20, 0.25}, "not the climbs the top lets in"
+
+    class Toy(gym.Env):
+        observation_space = gym.spaces.Box(-5.0, 5.0, (3,), np.float32)
+        action_space = gym.spaces.Box(-1.0, 1.0, (2,), np.float32)
+
+        def reset(self, seed=None, options=None):
+            return np.random.randn(3).astype(np.float32), {}
+
+        def step(self, a):
+            return np.random.randn(3).astype(np.float32), float(np.random.randn()), False, False, {}
+
+    class Cur:
+        enabled, active, cleared, starts, tops = True, [1, 2, 3], [1, 2], {}, {3: {'spacing': 0.20}}
+
+    venv = VecNormalize(DummyVecEnv([Toy]), norm_reward=False)
+    m = PPO('MlpPolicy', venv, n_steps=64, batch_size=16, verbose=0, seed=0)
+    c = Clone(Cur())
+    c.ref = dict(spacing=np.full(8, 0.20), start=np.arange(8) // 2)     # 8 rows, 4 starts
+    c.act = np.random.default_rng(1).uniform(-0.8, 0.8, (8, 2)).astype(np.float32)
+    g = np.random.default_rng(2)            # a row's observations: its state, plus sensor noise
+    c.obs = (g.normal(size=(8, 1, 3)) + 0.1 * g.normal(size=(8, CLONE_DRAWS, 3))).astype(np.float32)
+    c.seen = {0.20}
+    c.init_callback(m)
+    calls = []
+    c.add, add = (lambda: (calls.append(1), add())[1]), c.add
+
+    def off():
+        x = torch.as_tensor(venv.normalize_obs(c.obs.reshape(-1, 3)), dtype=torch.float32)
+        with torch.no_grad():
+            mu = m.policy.get_distribution(x).distribution.mean.numpy()
+        return float(np.abs(mu - np.repeat(c.act, CLONE_DRAWS, axis=0)).mean())
+    before = off()
+    m.learn(64 * 40, callback=[c])
+    after = off()
+    assert len(c.rows) == 8 and after < 0.5 * before, \
+        f"cloning did not pull the mean to the reference: |mu - a| {before:.3f} -> {after:.3f}"
+    pol = m.policy
+    ps = [p for mod in (pol.mlp_extractor.policy_net, pol.action_net) for p in mod.parameters()]
+    for p in pol.parameters():
+        p.grad = None
+    for p in ps:
+        p.grad = torch.full_like(p, 1e-4)
+    own = float(torch.sqrt(sum((p.grad ** 2).sum() for p in ps)))
+    was = [p.grad.clone() for p in ps]
+    add()
+    added = float(torch.sqrt(sum(((p.grad - w) ** 2).sum() for p, w in zip(ps, was))))
+    assert abs(added - CLONE_RATIO * own) <= 1e-4 * own, f"cloning added {added:g} to PPO's {own:g}"
+    with tempfile.TemporaryDirectory() as d:        # a rollback keeps the optimizer, a resume does not
+        m.save(os.path.join(d, 'm'))
+        m.set_parameters(os.path.join(d, 'm.zip'), exact_match=True)
+        n = len(calls)
+        m.learn(64, callback=[c], reset_num_timesteps=False)
+        assert len(calls) > n, "the cloning stopped at a rollback"
+        m2 = PPO.load(os.path.join(d, 'm'), env=venv)
+        c.init_callback(m2)
+        n = len(calls)
+        m2.learn(64, callback=[c], reset_num_timesteps=False)
+        k = len(calls) - n
+        assert k > 0 and c.hooked is m2.policy.optimizer, "the cloning did not follow a resume"
+        m2.learn(64, callback=[c], reset_num_timesteps=False)
+        assert len(calls) - n == 2 * k, "the cloning hooked one optimizer twice"
+    Cur.cleared = [1, 2, 3]
+    c._on_rollout_start()
+    assert len(c.rows) == 0, "cloning on after family 3 passed its gate"
+    print(f"clone test: the reference's actions are its rows' steps; the starts not passed are "
+          f"cloned at {CLONE_RATIO:g}x PPO's gradient, |mu - a| {before:.2f} -> {after:.2f} "
+          f"on a toy; it follows a rollback and a resume, and stops once family 3 passes. OK")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--name', default='climber', help='run directory under out/')
@@ -1810,7 +2046,7 @@ def main():
         # no progress_bar: it pulls in tqdm + rich, and verbose=1 already prints the
         # rollout table with elapsed time and total_timesteps every update
         model.learn(total_timesteps=a.steps,
-                    callback=[cur, ckpt, AdaptiveLR(ckpt), BoundExploration()],
+                    callback=[cur, ckpt, AdaptiveLR(ckpt), BoundExploration()] + ([Clone(cur)] if gen else []),
                     reset_num_timesteps=not a.resume)
     except KeyboardInterrupt:
         how = 'interrupted'

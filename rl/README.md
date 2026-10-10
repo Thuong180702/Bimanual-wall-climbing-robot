@@ -938,6 +938,31 @@ An rsi start now begins the filter at the torso's attitude (`MjxClimb.start`; th
 keep ClimbTask's), and `rl.mjx_check task` fails any start that sees a hook 0.1 m off (317 mm
 before, 72 now). The measurements: out/gpu5_diag.
 
+**gpu6: the catch is out of the noise's reach, so the reference is cloned there
+(2026-10-10).** gpu6 (2a4b5ba, Warp, 61.2M steps) reached the start at 4.8 s by 19M and
+held there 42M steps; per control step its policy finished 0/64 from 4.76, 4.80 and 4.84 s
+and 12/12 from 4.88 on -- gpu4's and gpu5's real edge, now with nothing in the way of
+seeing it. At 4.84 s the left throat is 29 mm under the upper rung and 51 mm in front of it
+(the side away from the wall: the row stands 0.20 m out); the climb keeps lifting it there,
+to 13 mm over the rung, before bringing it in over the top and down onto it, and the policy
+drives it straight in at once, into the underside (47 N), drops away and goes back to the
+start rung -- from 4.88 s, 14 mm higher, the same move rides up over the rung. The reward is not what
+stops it: the climb's step is paid +0.03..+0.06 a step against ~0, and the critic knows it
+(V +8.5 one step on against +0.6; +1.9 at 4.84 s, +11 at 4.88). Exploration is: the
+policy's mean is 7-8 sigma (17 joints) from the climb's action at every one of those rows,
+and the catch from 4.84 s takes one step of all of that (8/8), or two to three of half
+(5/8, 8/8), never one of half (0/8); from 4.80 s two whole steps. A Gaussian's noise does
+not find that in any number of steps, and with no success PPO has nothing to follow. Cloned
+offline at rows 60-121 (out/gpu6_diag/bc_probe.py), the same policy finished 4.72-4.84 s
+3-6/12 with its own noise and families 1 and 2 29/32 and 24/32 (32/32, 26/32 before). So
+(`train_ppo.Clone`, DAPG's demonstration term with the Q-filter's "only where it is
+better"): while family 3 is in the pool and has not passed, every PPO step also pulls the
+policy's mean toward the climb's action (`rsi.actions`) at the rows of every start the
+books have not passed (`rsi.unpassed`), observed as an episode from that row observes it,
+at CLONE_RATIO of PPO's own gradient norm. Resumed on gpu6 (64 envs, CPU) it took the mean
+from 10.7 sigma off over those 125 rows to 1.3 in three updates; the rollout table shows
+it as clone/rows, clone/off_sigma, clone/scale. The measurements: out/gpu6_diag.
+
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
 the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines

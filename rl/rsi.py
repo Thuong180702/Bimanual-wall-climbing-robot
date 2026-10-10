@@ -46,6 +46,10 @@ books (a resume, a climb ADR lets in) put the frontier at the climb's last start
 walked down through every start the policy already finishes from, BACK + 1 of them per
 TIMEOUT lag: for gpu4, 41 of them, 13-25M steps simulated before it reached 4.8 s; 6-9M now.
 
+Where the books say the policy does not finish, rl.train_ppo.Clone also clones the climb's own
+action at every row (`actions`, `unpassed`): gpu6 (2026-10-10, 61M steps) finished every row
+from 4.88 s and none before, 0/64 at 4.84 s, the catch there 7-8 sigma of its noise away.
+
 A start's episodes begin from any of its EVERY control steps, not its first only: gpu4's
 policy finished 0/192 from 4.8 s, the first step of a start, and every one from 5.0 s, the
 next start's -- a cliff with nothing between to learn from, however often it is drawn.
@@ -98,6 +102,27 @@ def load():
         return None
     z = np.load(FILE)
     return {k: z[k] for k in z.files}
+
+
+def actions(ref):
+    """each fixture row's reference action: the step its climb takes from that row,
+    what `_replay` fed ClimbTask.step (a row's ctrl plus ACT_SCALE times it is the next
+    row's, exactly)"""
+    from .climb_task import ACT_SCALE
+    out = np.zeros_like(ref['ctrl'])
+    for s, path in CLIMBS.items():
+        rows = np.nonzero(np.isclose(ref['spacing'], s))[0]
+        if len(rows):
+            out[rows] = np.clip((np.load(path)['ctrl'][:len(rows)] - ref['ctrl'][rows]) / ACT_SCALE, -1, 1)
+    return out
+
+
+def unpassed(books, ref, top):
+    """the fixture rows of every start not yet passed in `books`, over the climbs family 3's
+    `top` lets in: where the policy does not finish the climb (rl.train_ppo.Clone)"""
+    j = np.unique(ref['start'][ref['spacing'] <= top + 1e-9])
+    bad = [int(s) for s in j if not passed(books.get(int(s), []))]
+    return np.nonzero(np.isin(ref['start'], bad))[0]
 
 
 def passed(h):
