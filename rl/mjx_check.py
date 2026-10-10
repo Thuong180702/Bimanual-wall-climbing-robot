@@ -718,7 +718,11 @@ def check_warp(envs=None, out=None, speed=False):
     import jax
     if jax.devices()[0].platform != 'gpu':
         return decide('jax', "Warp is right, but there is no CUDA GPU here to be faster on")
-    sps = {impl: _warp_speed(impl, envs or 4096) for impl in ('jax', 'warp')}
+    sps = {}
+    for impl in ('jax', 'warp'):
+        sps[impl] = _timed(impl, envs or 4096)
+        if sps[impl] is None:
+            return decide('jax', f"{impl}'s batch of {envs or 4096} envs did not run here")
     ratio = sps['warp'] / sps['jax']
     why = f"{sps['warp']:,.0f} env-steps/s against JAX's {sps['jax']:,.0f} ({ratio:.2f}x)"
     return decide('warp', why) if ratio >= WARP_GAIN else decide('jax', why + f", under {WARP_GAIN}x")
@@ -867,6 +871,18 @@ def _warp_right(lessons=(1, 2, 7, 8), episodes=24):
     runs = {k: sum(w for w, _ in v.values()) for k, v in runs.items()}
     assert abs(runs['warp'] - runs['jax']) <= 0.2 * max(runs.values()) + 2, \
         "the same policy climbs clearly better on one backend"
+
+
+def _timed(impl, envs):
+    """`_warp_speed` in a process of its own -> env-steps/s, None if it died. In one
+    process, XLA's allocator kept what the JAX batch had used and Warp's graph for 4096
+    envs found no memory beside it (gpu6, 2026-10-10: 'Warp CUDA error 2: out of
+    memory'), and the run fell back to JAX at half the speed"""
+    r = subprocess.run([sys.executable, '-c', f"from rl.mjx_check import _warp_speed; _warp_speed({impl!r}, {envs})"],
+                       stdout=subprocess.PIPE, text=True)
+    print(r.stdout, end='', flush=True)
+    said = [x for x in r.stdout.splitlines() if x.startswith(f"warp: {envs} envs on {impl}: ")]
+    return float(said[-1].rsplit(': ', 1)[1].split()[0].replace(',', '')) if r.returncode == 0 and said else None
 
 
 def _warp_speed(impl, envs, steps=20):
