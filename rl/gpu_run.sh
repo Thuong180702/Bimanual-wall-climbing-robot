@@ -7,7 +7,7 @@
 #   1. preflight, once per commit, ENVS, WALLS and card: JAX and torch both on the card in one process, the
 #      JAX task still ClimbTask's on THIS card (rl.mjx_check task physics), a batch of
 #      ENVS fits, which of MJX's backends the run steps on (Warp only if it is C
-#      MuJoCo's physics by the same checks and faster: rl.mjx_check warp;
+#      MuJoCo's physics by the same checks: rl.mjx_check warp;
 #      out/<name>/physics) -- these four at once, each its own process, the GPU near
 #      idle through them -- and a tiny training run that saves and resumes.
 #      Anything wrong stops here, before the hours are paid for.
@@ -105,10 +105,10 @@ say() { echo "[gpu_run $(date '+%F %T')] $*" | tee -a "$RUN/gpu_run.log"; }
 card=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)
 stamp="$(git rev-parse HEAD) $ENVS $WALLS $card"
 if [ "$(cat "$RUN/preflight.ok" 2>/dev/null)" != "$stamp" ]; then
-    say "preflight: 5 steps on this card, each at most an hour. Harmless in the console:" \
+    say "preflight: 4 steps on this card, each at most an hour. Harmless in the console:" \
         "'numa_hwloc ... hwloc_set_cpubind() failed' (XLA may not pin its threads in a" \
         "container), and Warp's 'MULTICCD ... CYLINDER' warning (one contact a motor pair)"
-    say "preflight 1/5: the GPU JAX and torch see"
+    say "preflight 1/4: the GPU JAX and torch see"
     $PY -m rl.hardware > "$RUN/preflight.txt" 2>&1
     cat "$RUN/preflight.txt"
     grep -q "via JAX" "$RUN/preflight.txt" \
@@ -122,19 +122,19 @@ y = torch.ones(1024, 1024, device='cuda')
 assert float((y @ y).sum()) == 1024.0 ** 3
 print("JAX on", jax.devices()[0].device_kind, "| torch on", torch.cuda.get_device_name(0))
 EOF
-    say "preflight 2/5: the lesson scenes"
+    say "preflight 2/4: the lesson scenes"
     step $PY -m rl.lessons >> "$RUN/preflight.txt" 2>&1 || { say "the lesson scenes failed: $RUN/preflight.txt"; exit 1; }
     # Four at once, each its own process. Each is one robot at a time or XLA compiling
     # -- a core apiece, the GPU near idle -- so one after another they were most of the
     # preflight (gpu4's RTX 3090, 2026-10-07: the task and physics checks 23 min, the
     # batch 10, of 42). The batch's speed, timed beside them, is only a rough number:
-    # what it settles is that ENVS fits; Warp is timed against JAX after, alone.
+    # what it settles is that ENVS fits.
     # Each on its own quarter of the cores: XLA, LLVM and OpenBLAS size their thread
     # pools by the cores a process may run on (a JAX compile: 63 threads on 12 cores, 18
     # on 3), and four sized for all 96 ran gpu6's box out of threads (2026-10-09: 'LLVM
     # ERROR: pthread_create failed', the physics check aborted at its first compile).
     # A check that still dies beside the others runs again alone before it counts.
-    say "preflight 3/5: at once -- the JAX task against ClimbTask, MJX physics against C," \
+    say "preflight 3/4: at once -- the JAX task against ClimbTask, MJX physics against C," \
         "MJX's Warp backend against both, and $ENVS envs in one batch (halved until it fits)"
     read -ra quarter <<< "$($PY -c "import os; c = sorted(os.sched_getaffinity(0)); n = max(len(c) // 4, 1)
 print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
@@ -166,14 +166,13 @@ print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
         || { say "the GPU path is not the CPU path's task on this card: $RUN/check_task.txt, $RUN/check_physics.txt"; exit 1; }
     [ $r4 -eq 0 ] || { say "not even 1024 envs run on this card: $RUN/check_envs.txt"; exit 1; }
     ENVS=$(cat "$RUN/envs")
-    say "preflight 4/5: the physics this run steps on, $ENVS envs"
-    if [ "$(cat "$RUN/physics")" = warp ]; then
-        echo jax > "$RUN/physics"        # right, and now it must be faster too
-        step $PY -m rl.mjx_check warp --speed --envs "$ENVS" --out "$RUN/physics" 2>&1 | tee -a "$RUN/preflight.txt"
-    fi
+    # Warp wherever it is C MuJoCo's physics (step 3), untimed: gpu5's RTX 3090 stepped it
+    # 2.82x JAX's speed (14,300 env-steps/s training), and timing both batches cost ~7 min
+    # and once sent a run to JAX on a crash of the timing itself (gpu6, 2026-10-10).
+    # `python -m rl.mjx_check warp --speed --envs N` still times them, by hand.
     say "physics: $(cat "$RUN/physics")"
     rm -rf out/_preflight
-    say "preflight 5/5: a short training run that saves and resumes (its log: $RUN/preflight.txt)"
+    say "preflight 4/4: a short training run that saves and resumes (its log: $RUN/preflight.txt)"
     PHY=$(cat "$RUN/physics")
     { step $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$PHY" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} \
       && step $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$PHY" --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
