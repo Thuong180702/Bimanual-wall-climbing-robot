@@ -963,6 +963,63 @@ at CLONE_RATIO of PPO's own gradient norm. Resumed on gpu6 (64 envs, CPU) it too
 from 10.7 sigma off over those 125 rows to 1.3 in three updates; the rollout table shows
 it as clone/rows, clone/off_sigma, clone/scale. The measurements: out/gpu6_diag.
 
+**gpu7: one row learnt, two stopped by the row below in view (2026-10-10).** gpu7 (ce8db5d,
+fresh, Warp, 17-19k fps) cloned the 0.20 m climb from 12.9M, passed family 3's gate at 26M --
+the first run to climb from the hang -- and family 4's by 162M. Then family 3 sat at ~50 % to
+173M: ADR had moved it to two rows and 0.25 m at once (28M), and per wall it climbed one row
+24/24 and 23/24, two rows 0/24 at either spacing, every time both hooks on the middle row to the
+timeout, letting go and re-taking it in place, never touching the row above (0/12). Not the
+reward (the start row never lowers the route cost), not the estimator (the middle row read as
+the held one 88 % of hand-steps, 47 mm median), not the physics: from a clean hang on the
+middle row, 0/16 as it is, 8-11/16 with the start row taken out of the near-rung OBSERVATION
+only (still there to touch), and on a single rung that far from the wall 10/16, 0/16 with a
+start row added to the observation only. Moving it from the second near slot to the third
+(rungs ordered toward the goal) did not help (0/16): the policy never climbed with a rung below
+it in view -- from the hang there is none -- so it did not, and with no success there, 145M
+steps taught it nothing. Taking such rows out of the observation (rungs further from the goal
+than the held one) was no fix: two rows 7/16 at 0.20, but family 4 16/16 -> 10/16.
+So the second row is taught as the first was, by climbs to clone (`rsi.TAUGHT`, `rsi.teach`):
+the policy's own 2-row climbs from the hang, recorded with the rows below both its hands out of
+its view (0.20 m 26/64 of the attempts, 0.25 m 2/64; the fastest kept, 5.8 s and 7.7 s), become
+climbs of the fixture after the found ones (whose 999 rows and starts are unchanged, so a run's
+books carry over). Starts, books and frontiers are per climb (`climb`, `label`: '0.2 m x2'), a
+start is drawn on a family-3 wall of its climb's rows and spacing once the tops let both in,
+Clone clones past the gate wherever a start is not passed, and the starts keep SHARE_HI until
+every start the tops let in has passed. A row is a start's only if an episode begun there sees
+each hook within SEEN (0.08 m; `startable`): the taught climbs are fast, and where one hook
+reaches with the other off its seat, or neither bears load, a start knows nothing a climb
+carries -- 130-234 mm off on 14 of their 288 rows, gpu5's mistake had they stayed. Cloned
+offline into gpu7's policy (out/gpu7_diag/bc_probe2c, the teacher's mean as target -- its
+sampled steps, cloned, took family 1 from 13/16 to 5/16): every 0.2 m x2 start finished 1-4/6
+(0/6 before), the climb's own hang 2/6, two rows from the hang 5/16 (0/16); 0.25 m x2 its last
+start 5/6 (3/6). Resumed on gpu7 (64 envs, CPU) the run clones those 274 rows past the gate,
+8.3 -> 5.3 sigma in two updates. The measurements: out/gpu7_diag.
+
+**ADR could not take a count back from its last top (2026-10-10).** A parameter at its last top
+was never probed again (`rl.walls.draw` probed only those below theirs), so it could never step
+back: gpu7's family 3 sat at two rows, its last, climbing them 0/24 for 145M steps; only its
+spacing was probed, on walls of one row or two (~50 %, inside the dead band), so family 3 held
+at 50 % and the gate kept families 5-9 locked the whole time. Now every parameter is probed at
+its top, its last too; a move clears the family's other probes, so a family moves one
+parameter a window (28M had moved rows and spacing in one); and family 3's climbs over more
+rows are offered by spacing alone (`rsi.allowed`), so the policy meets ADR's next row ready
+and a step back does not take its references away. Counts with a last top this low: family 2's
+gaps (2), 3's rows (2), 6's tiers (2).
+
+**Every family against the failures so far (audit, 2026-10-10, out/audit).** Reward hills and
+pumps (gpu1-gpu3): the barrier test walks all nine benchmark lessons' routes with both hands
+(worst 0.0 mm) and the no-pump test balances the books -- both pass. An exploration gap a
+reference has to bridge (gpu4, gpu6): family 3's are cloned; families 5-9 have none and have
+never trained (gpu2's family 8: 0 % at 16M), so a stall there is expected to need one -- a family
+stuck STUCK_STEPS no longer holds the rest back, and a count ADR cannot hold steps back now. An
+estimator a start begins wrong (gpu5): every rsi row is checked at build (`startable`) and in the
+preflight (mjx_check task). The row below in view (gpu7): along each family's route at its last
+tops, a rung leading away from the goal within 5 cm of the next hold's distance -- family 3 16 of
+56 holds, family 6 7 of 69 (its tiers), every other family 0; family 4 measured on two steps
+(gpu7 at 173M: 9-10/16, 6-7/16 with those rungs out of view) does not have it. Family 6 is the
+next to need taught climbs, once it climbs one tier. A shared GPU (gpu6, 9k env-steps/s for
+14.3k): gpu_run.sh now says so at the start (memory in use, load).
+
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
 the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines

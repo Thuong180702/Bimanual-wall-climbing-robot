@@ -647,8 +647,8 @@ class Walls(Curriculum):
         self.rng = np.random.default_rng(seed)
         self.checker = None
         self.rsi_pending, self.rsi_lag = [], min(self.lag, episode_steps(rsi.TIMEOUT))
-        ref = rsi.load()
-        self.rsi_start = None if ref is None else ref['start']    # fixture row -> its start
+        self.ref = rsi.load()
+        self.rsi_start = None if self.ref is None else self.ref['start']    # fixture row -> its start
 
     def _load(self, walls):
         """a checkpoint's tops and probes, each family's only if its ranges are the ones
@@ -714,9 +714,14 @@ class Walls(Curriculum):
         bank = self.W.draw(self.checker, dict(zip(self.active, self.weights())), self.tops,
                            self.rng, BANK)
         if self.enabled:                 # some of family 3's start partway up a climb (rl.rsi)
-            bank = rsi.mix(bank, self.rng, self.tops[3]['spacing'],
-                           rsi.SHARE if 3 in self.cleared else rsi.SHARE_HI, self.starts)
+            bank = rsi.mix(bank, self.rng, self.tops[3], rsi.SHARE_HI if self.learning() else rsi.SHARE,
+                           self.starts)
         env.env_method('set_bank', bank)
+
+    def learning(self):
+        """still to learn from rl.rsi's starts: family 3 has not passed its gate, or a start of a
+        climb its tops let in is not passed (gpu7: the gate passed on one row, two at 0 %)"""
+        return 3 not in self.cleared or (self.ref is not None and len(rsi.unpassed(self.starts, self.ref, self.tops[3])) > 0)
 
     def _on_training_start(self):
         """every env onto a wall of the bank before the first step. SB3's learn() has
@@ -769,6 +774,12 @@ class Walls(Curriculum):
         new = int(new) if isinstance(first, int) else round(float(new), 6)
         if new != t:
             self.tops[f][name] = new
+            # the family's other probes were drawn with this one where it was: they vote again
+            # from here, so a family moves one parameter a window (gpu7, 28M: family 3's rows
+            # and its spacing in the same window, one row at 0.20 to two at 0.25 at once)
+            for k in self.probes:
+                if k.split(':')[0] == str(f):
+                    self.probes[k] = []
             record('adr', timesteps=int(self.num_timesteps), family=f, param=name,
                    top=[t, new], rate=rate, progress=self.progress())
             print(f"[adr] family {f} {name}: top {t:g} -> {new:g} "
@@ -825,12 +836,12 @@ class Clone(BaseCallback):
     """Behaviour cloning of rl.rsi's reference climbs, where the policy does not finish
     them: every PPO optimizer step also pulls the policy's MEAN action at the fixture rows
     of each start not yet passed (rl.rsi.unpassed, from Walls' books) toward the climb's
-    own action there (rl.rsi.actions), observed as an episode started at that row
+    own action there (rl.rsi's `action`), observed as an episode started at that row
     observes it. Its gradient is added to PPO's after SB3 clips it, scaled to CLONE_RATIO
     of that one's norm on the actor's weights: a fixed share of every step whatever the
-    two losses' scales, so PPO keeps most of it. On only while family 3 is in the pool and
-    has not passed its gate, and only at rows the books say fail: a start passed is the
-    policy's own business. Demonstration-augmented policy gradient
+    two losses' scales, so PPO keeps most of it. On while family 3 is in the pool, and only
+    at rows the books say fail, its gate passed or not (gpu7 passed it on one row with two
+    at 0 %): a start passed is the policy's own business. Demonstration-augmented policy gradient
     (Rajeswaran et al. 2018, DAPG; Nair et al. 2018, the Q-filter's "only where the
     demonstration is better").
 
@@ -854,9 +865,9 @@ class Clone(BaseCallback):
         super().__init__()
         self.cur = cur
         self.ref = rsi.load()
-        self.act = None if self.ref is None else rsi.actions(self.ref).astype(np.float32)
+        self.act = None if self.ref is None else self.ref['action'].astype(np.float32)
         self.obs = None          # raw observations [fixture row, CLONE_DRAWS, dim]...
-        self.seen = set()        # ...of these climbs' rows (spacings), made when first wanted
+        self.seen = set()        # ...of these climbs' rows, made when first wanted
         self.batch = batch       # the observing batch, built then
         self.rows = np.zeros(0, int)
         self.rng = np.random.default_rng(0)
@@ -866,27 +877,28 @@ class Clone(BaseCallback):
     def wanted(self):
         """the fixture rows to clone now"""
         c = self.cur
-        if self.ref is None or not c.enabled or 3 not in c.active or 3 in c.cleared:
+        if self.ref is None or not c.enabled or 3 not in c.active:
             return np.zeros(0, int)
-        return rsi.unpassed(c.starts, self.ref, c.tops[3]['spacing'])
+        return rsi.unpassed(c.starts, self.ref, c.tops[3])
 
-    def observe(self, spacing):
-        """(its fixture rows, [rows, CLONE_DRAWS, dim]): each row of the `spacing` climb observed
-        as an episode started there observes it (rl.rsi.mix's walls, the episode's own sensor
-        noise each draw), on JAX MJX -- a reset needs no physics, and this batch never steps"""
+    def observe(self, climb):
+        """(its fixture rows, [rows, CLONE_DRAWS, dim]): each row of climb `climb` observed as an
+        episode started there observes it (rl.rsi.mix's walls, the episode's own sensor noise
+        each draw), on JAX MJX -- a reset needs no physics, and this batch never steps"""
         import jax
         import jax.numpy as jp
         from . import mjx_task as mt, walls as W
         if self.batch is None:
             self.batch = mt.Batch(CLONE_CHUNK, bank=CLONE_CHUNK, impl='jax')
         b, L = self.batch, len(mt.LESSON_KEYS)
-        rows = np.nonzero(np.isclose(self.ref['spacing'], spacing))[0]
+        rows = np.nonzero(self.ref['climb'] == climb)[0]
+        top = dict(rows=int(self.ref['climb_rows'][climb]), spacing=float(self.ref['climb_spacing'][climb]))
         js = np.repeat(rows, CLONE_DRAWS)
         key, out = jax.random.PRNGKey(int(rows[0])), []
         for i in range(0, len(js), CLONE_CHUNK):
             part = js[i:i + CLONE_CHUNK]
             pad = np.r_[part, np.full(CLONE_CHUNK - len(part), part[-1])]
-            b.set_bank([dict(W.sample(3, dict(rows=1, spacing=float(spacing)), self.rng, 'spacing'),
+            b.set_bank([dict(W.sample(3, top, self.rng, ('rows', 'spacing')),
                              family=3 + rsi.BOOK, probe=None, probe_val=0.0, d0_row=L + int(j),
                              timeout=rsi.TIMEOUT) for j in pad])
             key, k = jax.random.split(key)
@@ -902,15 +914,15 @@ class Clone(BaseCallback):
             self.logger.record('clone/scale', scale)
             self.log.clear()
         rows = self.wanted()
-        for s in set(self.ref['spacing'][rows].tolist()) - self.seen:
+        for c in set(self.ref['climb'][rows].tolist()) - self.seen:
             t = time.time()
-            j, o = self.observe(s)
+            j, o = self.observe(c)
             if self.obs is None:
                 self.obs = np.zeros((len(self.ref['start']), CLONE_DRAWS, o.shape[-1]), np.float32)
             self.obs[j] = o
-            self.seen.add(s)
-            print(f"[clone] the {s:.2f} m climb's {len(j)} rows observed {CLONE_DRAWS} times each "
-                  f"({time.time() - t:.0f} s)", flush=True)
+            self.seen.add(c)
+            print(f"[clone] the {rsi.label(self.ref, c)} climb's {len(j)} rows observed {CLONE_DRAWS} "
+                  f"times each ({time.time() - t:.0f} s)", flush=True)
         if bool(len(rows)) != bool(len(self.rows)):     # on or off; how many: clone/rows
             print(f"[clone] cloning the reference at {len(rows)} fixture rows "
                   f"(starts not passed){'' if len(rows) else ': off'}", flush=True)
@@ -1151,11 +1163,10 @@ class Checkpoint(BaseCallback):
                 base.capped = base.substeps = 0
             guard = self.guard()
             # rl.rsi's frontier: s into each climb of the latest start not yet passed
-            fr = ({str(k): v for k, v in rsi.where(self.cur.starts, self.cur.tops[3]['spacing']).items()}
-                  if isinstance(self.cur, Walls) else {})
+            fr = rsi.where(self.cur.starts, self.cur.tops[3]) if isinstance(self.cur, Walls) else {}
             if fr:
                 ends += " | starts' frontier " + ", ".join(
-                    f"{k} m {'all passed' if v is None else f'{v:g} s'}" for k, v in fr.items())
+                    f"{k} {'all passed' if v is None else f'{v:g} s'}" for k, v in fr.items())
             record('checkpoint', timesteps=int(self.model.num_timesteps),
                    updates=int(self.model.num_timesteps // (self.model.n_steps * self.model.n_envs)),
                    pool=self.cur.active,
@@ -1345,8 +1356,9 @@ def order_check(FakeModel, FakeEnv):
 
 def walls_check(FakeModel, FakeEnv):
     """ADR on the generated walls: a top moves only on a full WALL_WINDOW of probes drawn at
-    it, up on a pass, down on a fail, never past its ends; the families enter in order;
-    and the tops survive state.json"""
+    it, up on a pass, down on a fail, never past its ends, at its last top as anywhere, one
+    parameter of a family a window; the families enter in order; and the tops survive
+    state.json"""
     from .walls import FAMILIES
     WW = WALL_WINDOW
     w = Walls(lag=0)
@@ -1375,6 +1387,19 @@ def walls_check(FakeModel, FakeEnv):
         probe(1, 'shift', True, WW)
     assert w.tops[1]['shift'] == FAMILIES[1][0][3], "went past the last top"
     assert w.active[:2] == [1, 2], f"family 2 never entered after family 1 was passed: {w.active}"
+    # a top at its last value is still probed, and comes down on a failed window (gpu7: two
+    # rows, its last, 0 % for 145M steps and never probed); a move clears the family's
+    # other probes, so it moves one parameter a window
+    last3 = {'rows': FAMILIES[3][0][3], 'spacing': 0.25}
+    drawn = w.W.draw(w.W.Checker(), {3: 1.0}, {**w.tops, 3: last3}, np.random.default_rng(0), 200)
+    assert any(l['probe'] == 'rows' for l in drawn), "a parameter at its last top is never probed"
+    w.tops[3] = dict(last3)
+    probe(3, 'spacing', True, WW - 1)
+    probe(3, 'rows', False, WW)
+    assert w.tops[3]['rows'] == FAMILIES[3][0][3] - 1, f"a failed window at the last top did not step back: {w.tops[3]}"
+    assert w.probes.get('3:spacing') == [], "a move left the family's other probes counting"
+    probe(3, 'spacing', True, 1)
+    assert w.tops[3]['spacing'] == 0.25, "two parameters moved on one window"
     st = json.loads(json.dumps(w.state()))
     r = Walls(st['active'], st['history'], st['walls'])
     assert r.tops == w.tops and r.active == w.active, "tops did not survive state.json"
@@ -1471,17 +1496,18 @@ def walls_check(FakeModel, FakeEnv):
         "episodes started partway up a climb counted toward family 3's gate or its ADR"
     if rsi.load() is not None:           # and the bank mixes them into family 3's walls only
         lays = [dict(family=f) for f in (1, 3) * 50]
-        mixed = rsi.mix(lays, np.random.default_rng(0), top=0.50, share=1.0)
+        mixed = rsi.mix(lays, np.random.default_rng(0), top=dict(rows=2, spacing=0.50), share=1.0)
         assert all(m['family'] == (3 + rsi.BOOK if l['family'] == 3 else l['family'])
                    for l, m in zip(lays, mixed)) and min(m.get('d0_row', 99) for m in mixed) >= len(LESSONS)
-        assert rsi.mix(lays, np.random.default_rng(0), top=0.10, share=1.0) == lays, \
+        assert rsi.mix(lays, np.random.default_rng(0), top=dict(rows=1, spacing=0.10), share=1.0) == lays, \
             "a start was mixed into walls lower than its own climb"
         # ...each booked by its start as it ends, and drawn toward the latest start along
         # its climb not yet passed (gpu4's: 4.8 s into the 0.20 m climb), cut to rsi.TIMEOUT
         ref = rsi.load()
-        sp, rows_of = ref['start_spacing'], lambda j: np.nonzero(ref['start'] == j)[0]
+        sc, rows_of = ref['start_climb'], lambda j: np.nonzero(ref['start'] == j)[0]
         row0 = lambda j: int(rows_of(j)[0])
-        c20 = np.nonzero(np.isclose(sp, 0.20))[0]
+        k20 = int(np.nonzero((ref['climb_spacing'] == 0.20) & (ref['climb_rows'] == 1))[0][0])
+        c20, top20 = np.nonzero(sc == k20)[0], dict(rows=1, spacing=0.20)
         f = int(c20[24])
         eps = [dict(reason='success' if j > f else 'timeout', lesson=3 + rsi.BOOK, probe=-1,
                     probe_val=0.0, start=int(rows_of(j)[k % len(rows_of(j))]), steps=100)
@@ -1489,10 +1515,11 @@ def walls_check(FakeModel, FakeEnv):
         g.locals = {'infos': eps, 'dones': [True] * len(eps)}
         g._on_step()
         assert len(g.starts[int(c20[0])]) == rsi.START_MIN, "the climb's first start (row 0) was not booked"
-        assert rsi.frontier(g.starts, sp, c20) == {0.2: f} and rsi.where(g.starts, 0.20) == {0.2: 4.8}, \
-            f"the frontier is not the latest start failing: {rsi.frontier(g.starts, sp, c20)}"
-        draws = rsi.mix([dict(family=3)] * 2000, np.random.default_rng(1), top=0.20, share=1.0,
-                        books=g.starts)
+        assert rsi.frontier(g.starts, sc, c20) == {k20: f} and rsi.where(g.starts, top20)['0.2 m'] == 4.8, \
+            f"the frontier is not the latest start failing: {rsi.frontier(g.starts, sc, c20)}"
+        rest = {int(j): [True] * rsi.START_MIN for j in np.nonzero(sc != k20)[0]}   # the other climbs passed
+        draws = rsi.mix([dict(family=3)] * 2000, np.random.default_rng(1), top=top20, share=1.0,
+                        books={**g.starts, **rest})
         rows = np.array([m['d0_row'] - len(LESSONS) for m in draws])
         js = ref['start'][rows]
         near = np.mean((js <= f) & (js >= f - rsi.BACK))
@@ -1503,11 +1530,31 @@ def walls_check(FakeModel, FakeEnv):
         assert all(m['timeout'] < g.W.TIMEOUT for m in draws), "a start's wall kept the 60 s timeout"
         # a start not yet booked is drawn as one at the frontier: cold books are drawn evenly,
         # not from the climb's last starts down (gpu4's resume: 13-25M steps to reach 4.8 s)
-        assert np.allclose(rsi.weights({}, sp, c20), 1 / len(c20)), "cold books drew the last starts first"
+        assert np.allclose(rsi.weights({}, sc, c20), 1 / len(c20)), "cold books drew the last starts first"
         part = {j: v for j, v in g.starts.items() if j != int(c20[50])}
-        assert rsi.weights(part, sp, c20)[50] > 0.1, "a start not yet booked was drawn as a passed one"
+        assert rsi.weights(part, sc, c20)[50] > 0.1, "a start not yet booked was drawn as a passed one"
         g.starts[int(c20[40])] = [False] * rsi.START_WINDOW      # one slips behind the frontier:
-        assert rsi.frontier(g.starts, sp, c20)[0.2] == int(c20[40]), "a start that slipped is not drawn first"
+        assert rsi.frontier(g.starts, sc, c20)[k20] == int(c20[40]), "a start that slipped is not drawn first"
+        # a climb over two rows (rsi.TAUGHT) is a climb of its own: its starts on family-3 walls
+        # of its rows and spacing, only once the tops let them in
+        two = [int(c) for c in np.nonzero(ref['climb_rows'] == 2)[0]]
+        for c in two:
+            s2 = float(ref['climb_spacing'][c])
+            drawn = rsi.mix([dict(family=3)] * 400, np.random.default_rng(2), top=dict(rows=2, spacing=s2), share=1.0)
+            mine = [m for m in drawn if sc[ref['start'][m['d0_row'] - len(LESSONS)]] == c]
+            assert mine and all(len(m['rungs']) == 3 and abs(m['rungs'][1][1][2] - m['rungs'][0][1][2] - s2) < 1e-9
+                                for m in mine), f"the {rsi.label(ref, c)} climb's starts drawn on other walls"
+            low = rsi.mix([dict(family=3)] * 400, np.random.default_rng(2), top=dict(rows=1, spacing=s2), share=1.0)
+            assert any(sc[ref['start'][m['d0_row'] - len(LESSONS)]] == c for m in low), \
+                "a 2-row climb's start held back by ADR's one row (it is offered by spacing alone)"
+            less = rsi.mix([dict(family=3)] * 400, np.random.default_rng(2), top=dict(rows=2, spacing=s2 - 0.05), share=1.0)
+            assert all('d0_row' not in m or sc[ref['start'][m['d0_row'] - len(LESSONS)]] != c for m in less), \
+                "a climb drawn before family 3's spacing reached it"
+        # the starts keep SHARE_HI of family 3's walls past its gate while one of them is not passed
+        h2 = Walls(cleared=[1, 2, 3])
+        assert h2.learning(), "family 3 passed, its starts unbooked, and they fell to SHARE"
+        h2.starts = {int(j): [True] * rsi.START_MIN for j in range(len(sc))}
+        assert not h2.learning(), "family 3 passed and every start too, still SHARE_HI"
         # with the real lags: a quick success waits out rsi.TIMEOUT (not the family's 60 s)
         # for the failures begun before it
         q = Walls()
@@ -1697,27 +1744,29 @@ def guard_check(FakeModel, FakeEnv, feed):
 
 def clone_check():
     """Clone: the reference's actions line up with its rows; it clones the rows of the starts
-    not passed; on a real (tiny) PPO it pulls the mean to them with CLONE_RATIO of PPO's own
-    gradient; it follows the optimizer through a rollback and a resume; and it is off once
-    family 3 has passed."""
+    not passed, of the climbs family 3's tops let in, its gate passed or not; on a real (tiny)
+    PPO it pulls the mean to them with CLONE_RATIO of PPO's own gradient; it follows the
+    optimizer through a rollback and a resume; and it is off once every start has passed."""
     import tempfile
     import torch
     from stable_baselines3.common.vec_env import DummyVecEnv
     from .climb_task import ACT_SCALE
     ref = rsi.load()
     if ref is not None:
-        act = rsi.actions(ref)
-        for s in rsi.CLIMBS:
-            j = np.nonzero(np.isclose(ref['spacing'], s))[0]
-            assert np.abs(ref['ctrl'][j[1:]] - ref['ctrl'][j[:-1]] - ACT_SCALE * act[j[:-1]]).max() < 1e-9, \
-                f"the {s} m climb's reference actions are not its rows' steps"
-        st, sp = ref['start'], ref['spacing']
-        c20 = np.unique(st[np.isclose(sp, 0.20)])
-        books = {int(j): [j > c20[24]] * rsi.START_MIN for j in c20}      # gpu6: passed from 4.88 s
-        assert (rsi.unpassed(books, ref, 0.20) == np.nonzero(np.isin(st, c20[:25]))[0]).all(), \
+        for c in range(len(rsi.CLIMBS)):     # the found climbs' (a taught one's: its teacher's mean)
+            j = np.nonzero(ref['climb'] == c)[0]
+            assert np.abs(ref['ctrl'][j[1:]] - ref['ctrl'][j[:-1]] - ACT_SCALE * ref['action'][j[:-1]]).max() < 1e-9, \
+                f"the {rsi.label(ref, c)} climb's reference actions are not its rows' steps"
+        st, sp, rw = ref['start'], ref['spacing'], ref['rows']
+        c20 = np.unique(st[(sp == 0.20) & (rw == 1)])
+        books = {int(j): [True] * rsi.START_MIN for j in np.unique(st)}    # the other climbs passed...
+        books.update({int(j): [j > c20[24]] * rsi.START_MIN for j in c20})   # ...gpu6's from 4.88 s
+        assert (rsi.unpassed(books, ref, dict(rows=1, spacing=0.20)) == np.nonzero(np.isin(st, c20[:25]))[0]).all(), \
             "not the rows of the starts not passed"
-        assert len(rsi.unpassed({}, ref, 0.10)) == 0 and \
-            set(sp[rsi.unpassed({}, ref, 0.25)].tolist()) == {0.20, 0.25}, "not the climbs the top lets in"
+        one = rsi.unpassed({}, ref, dict(rows=1, spacing=0.25))
+        assert len(rsi.unpassed({}, ref, dict(rows=1, spacing=0.10))) == 0 and \
+            set(sp[one].tolist()) == {0.20, 0.25}, "not the climbs the spacing lets in"
+        assert set(rw[one].tolist()) == set(ref['climb_rows'].tolist()), "a climb over two rows not cloned at one"
 
     class Toy(gym.Env):
         observation_space = gym.spaces.Box(-5.0, 5.0, (3,), np.float32)
@@ -1730,16 +1779,17 @@ def clone_check():
             return np.random.randn(3).astype(np.float32), float(np.random.randn()), False, False, {}
 
     class Cur:
-        enabled, active, cleared, starts, tops = True, [1, 2, 3], [1, 2], {}, {3: {'spacing': 0.20}}
+        enabled, active, cleared, starts, tops = True, [1, 2, 3], [1, 2, 3], {}, {3: {'rows': 1, 'spacing': 0.20}}
 
     venv = VecNormalize(DummyVecEnv([Toy]), norm_reward=False)
     m = PPO('MlpPolicy', venv, n_steps=64, batch_size=16, verbose=0, seed=0)
     c = Clone(Cur())
-    c.ref = dict(spacing=np.full(8, 0.20), start=np.arange(8) // 2)     # 8 rows, 4 starts
+    c.ref = dict(start=np.arange(8) // 2, climb=np.zeros(8, int), start_climb=np.zeros(4, int),   # 8 rows,
+                 climb_spacing=np.array([0.20]), climb_rows=np.array([1]), startable=np.ones(8, bool))   # 4 starts
     c.act = np.random.default_rng(1).uniform(-0.8, 0.8, (8, 2)).astype(np.float32)
     g = np.random.default_rng(2)            # a row's observations: its state, plus sensor noise
     c.obs = (g.normal(size=(8, 1, 3)) + 0.1 * g.normal(size=(8, CLONE_DRAWS, 3))).astype(np.float32)
-    c.seen = {0.20}
+    c.seen = {0}
     c.init_callback(m)
     calls = []
     c.add, add = (lambda: (calls.append(1), add())[1]), c.add
@@ -1779,12 +1829,12 @@ def clone_check():
         assert k > 0 and c.hooked is m2.policy.optimizer, "the cloning did not follow a resume"
         m2.learn(64, callback=[c], reset_num_timesteps=False)
         assert len(calls) - n == 2 * k, "the cloning hooked one optimizer twice"
-    Cur.cleared = [1, 2, 3]
+    Cur.starts = {j: [True] * rsi.START_MIN for j in range(4)}      # every start passed
     c._on_rollout_start()
-    assert len(c.rows) == 0, "cloning on after family 3 passed its gate"
+    assert len(c.rows) == 0, "cloning on with every start passed"
     print(f"clone test: the reference's actions are its rows' steps; the starts not passed are "
           f"cloned at {CLONE_RATIO:g}x PPO's gradient, |mu - a| {before:.2f} -> {after:.2f} "
-          f"on a toy; it follows a rollback and a resume, and stops once family 3 passes. OK")
+          f"on a toy, family 3's gate passed; it follows a rollback and a resume, and stops once every start has passed. OK")
 
 
 def main():

@@ -336,8 +336,9 @@ class MjxClimb:
             # rl.rsi's starts after the lessons' hangs (a wall's d0_row picks one): each
             # state forwarded on the wall it was found on, its clock at 0; the effort and
             # fight baselines stay the secured hang's (lesson 1's), as on every wall
-            sp, inv = np.unique(ref['spacing'], return_inverse=True)   # one wall per spacing
-            sl = {k: v[inv] for k, v in self.rows([rsi.wall(float(x)) for x in sp]).items()}
+            c = ref['climb']                                            # one wall per climb
+            sl = {k: v[c] for k, v in self.rows([rsi.wall(float(s), int(r)) for s, r in
+                                                  zip(ref['climb_spacing'], ref['climb_rows'])]).items()}
             base = mjx.make_data(self.mx)
             ds = jax.jit(jax.vmap(lambda p, qt, sz, wp, wq, q, v, c: mjx.forward(
                 self._slot_model(p, qt, sz, wp, wq), base.replace(qpos=q, qvel=v, ctrl=c, time=jp.zeros(())))))(
@@ -646,9 +647,10 @@ class MjxClimb:
                            buf_true=jp.concatenate([buf_true[1:], base[None]]),
                            buf_est=jp.concatenate([buf_est[1:], base_est[None]])), true, sen
 
-    def _obs(self, T, st, sen):
-        """climb_task._obs, from what the sensors read (`sen`) and the map"""
-        m = self._map(st)
+    def _obs(self, T, st, sen, m=None):
+        """climb_task._obs, from what the sensors read (`sen`) and the map (`m`: another one,
+        rl.rsi.teach's)"""
+        m = self._map(st) if m is None else m
         g = m.goals
         thr = st.est_thr
         return jp.concatenate([

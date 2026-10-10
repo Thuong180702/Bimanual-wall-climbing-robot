@@ -67,9 +67,9 @@ def show(name, names):
     starts = (st.get('walls') or {}).get('starts')
     if starts is not None and tops:        # where along each climb its starts are learnt from
         from . import rsi
-        fr = rsi.where({int(j): v for j, v in starts.items()}, tops['3']['spacing'])
+        fr = rsi.where({int(j): v for j, v in starts.items()}, tops['3'])
         print(f"  {'starts frontier':>22}   " + ", ".join(
-            f"{s:g} m climb {'all passed' if v is None else f'from {v:g} s'}" for s, v in fr.items()))
+            f"{s} climb {'all passed' if v is None else f'from {v:g} s'}" for s, v in fr.items()))
 
 
 def main():

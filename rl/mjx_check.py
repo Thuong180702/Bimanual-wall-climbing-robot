@@ -51,7 +51,7 @@ WALLS_RUN = os.path.join(os.path.dirname(__file__), 'fixtures', 'gpu4')
 # m an rl.rsi start may see a hook from where it is: the 0.20 m climb from the hang sees
 # its free hook 28-44 mm off around the catch, 60 at most (out/gpu5_diag/ahrs_path.py);
 # its starts, 72 at most since 2026-10-09, up to 0.3 m before
-RSI_SEEN = 0.1
+RSI_SEEN = 0.1       # rl.rsi.SEEN (0.08, on its own noise draws): no start begins on a row past it
 
 
 def _task(k, xml=None, seed=0):
@@ -215,14 +215,15 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
     ref = rsi.load()
     if ref is not None:
         reset, L, W0, far = jax.jit(task.reset), len(LESSON_KEYS), task.tables.walls, 0.0
-        for j in range(0, len(ref['spacing']), 7):
-            new = task.rows([dict(rsi.wall(float(ref['spacing'][j])), family=3 + rsi.BOOK, d0_row=L + j)])
+        for j in np.nonzero(ref['startable'])[0][::7]:     # the rows a start may begin from
+            new = task.rows([dict(rsi.wall(float(ref['spacing'][j]), int(ref['rows'][j])),
+                                  family=3 + rsi.BOOK, d0_row=L + j)])
             T = task.tables._replace(walls=W0._replace(**{f: getattr(W0, f).at[:1].set(jp.asarray(v))
                                                           for f, v in new.items()}))
             st, _ = reset(T, 0, jax.random.PRNGKey(j))
             err = float(np.linalg.norm(np.asarray(st.est_thr) - np.asarray(task._throat_true(st.d)), axis=1).max())
             far = max(far, err)
-            assert err < RSI_SEEN, (f"rl.rsi's row {j} (the {ref['spacing'][j]:.2f} m climb): "
+            assert err < RSI_SEEN, (f"rl.rsi's row {j} (the {rsi.label(ref, ref['climb'][j])} climb): "
                                     f"a hook seen {err * 1000:.0f} mm from where it is as the episode starts")
         print(f"task: rl.rsi's starts: each hook seen at most {far * 1000:.0f} mm from where it is")
     print("task: OK -- the JAX task is ClimbTask's, observation by observation")
@@ -848,7 +849,7 @@ def _warp_right(lessons=(1, 2, 7, 8), episodes=24):
     for f, t in json.load(open(os.path.join(WALLS_RUN, 'best_state.json')))['walls']['tops'].items():
         tops[int(f)].update(t)
     lays = rsi.mix(W.draw(W.Checker(), {1: 1.0, 2: 1.0, 3: 1.0}, tops, np.random.default_rng(0), episodes),
-                   np.random.default_rng(1), tops[3]['spacing'], share=1.0)
+                   np.random.default_rng(1), tops[3], share=1.0)
     runs = {}
     for impl in ('jax', 'warp'):
         bb = bw if impl == 'warp' else Batch(episodes, task=MjxClimb(episodes))

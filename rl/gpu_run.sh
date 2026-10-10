@@ -98,6 +98,13 @@ say() { echo "[gpu_run $(date '+%F %T')] $*" | tee -a "$RUN/gpu_run.log"; }
   nvidia-smi
   $PY -c "import importlib.metadata as m; print('\n'.join(sorted(f\"{d.metadata['Name']}=={d.version}\" for d in m.distributions())))"
 } >> "$RUN/provenance.txt" 2>&1
+# gpu6 (2026-10-10) shared its card from the start -- 5.2 GB used, 100 % busy, 270 W before it
+# began -- and ran 9k env-steps/s against gpu5's 14.3k on the same card; nothing said so. Another
+# container's processes do not show in nvidia-smi from inside this one; its memory and load do
+read -r used util <<< "$(nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ',')"
+if [ "${used:-0}" -gt 1000 ] || [ "${util:-0}" -gt 20 ]; then
+    say "WARNING: before this run the GPU already has ${used} MiB in use and is ${util} % busy -- another job shares it and training will be slower. Stop it, or take another box"
+fi
 
 # ---- 1. preflight ---------------------------------------------------------------
 # the card is in the stamp: a run carried to another box (its .tgz unpacked there)

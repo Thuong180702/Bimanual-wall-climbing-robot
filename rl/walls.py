@@ -132,10 +132,11 @@ def _front():
 
 
 def _draw(rng, spec, top, probe):
-    """one parameter: its top when it is the one probed, else uniform below it"""
+    """one parameter: its top when it is the one probed (or one of a tuple of them: rl.rsi's
+    climbs, every parameter at its own value), else uniform below it"""
     name, lo, _, _, _ = spec
     t = top[name]
-    if probe == name:
+    if probe == name or (isinstance(probe, tuple) and name in probe):
         return t
     return int(rng.integers(lo, t + 1)) if isinstance(lo, int) else float(rng.uniform(lo, t))
 
@@ -234,9 +235,10 @@ def sample(family, top, rng, probe=None):
         walls.append(('wall_back', np.array([xb - 0.06, 0.30, 1.0]), np.array([1.0, 0.0, 0.0])))
         goals, goal_rungs = [np.array([xb, HY + d, Z0]), np.array([xb, -HY + d, Z0])], [1]
     rungs = [(f'rung_g{i}', c, a, h, R) for i, (_, c, a, h) in enumerate(rungs)]
+    one = probe if isinstance(probe, str) else None     # rl.rsi's tuple of them probes nothing
     lay = dict(rungs=rungs, walls=walls, goals=np.asarray(goals, float),
-               goal_rungs=goal_rungs, timeout=TIMEOUT, family=family, probe=probe,
-               probe_val=float(p[probe]) if probe else 0.0)
+               goal_rungs=goal_rungs, timeout=TIMEOUT, family=family, probe=one,
+               probe_val=float(p[one]) if one else 0.0)
     return mirror(lay) if rng.random() < 0.5 else lay
 
 
@@ -316,14 +318,18 @@ class Checker:
 
 def draw(checker, weights, tops, rng, n, probe_p=0.5):
     """n usable walls: a family by `weights` ({family: weight}), and with probability
-    probe_p one of its parameters not yet at its last top put exactly at its current top"""
+    probe_p one of its parameters put exactly at its current top -- at its last top too:
+    one never probed again can never come back down. gpu7 (2026-10-10) took family 3 to two
+    rows, its last, and climbed two rows 0/24 for 145M steps; only the spacing was probed,
+    on walls of one row or two, ~50 %, inside ADR's dead band -- family 3 held at 50 % and
+    every family after it locked"""
     fams = list(weights)
     w = np.asarray([weights[f] for f in fams], float)
     out = []
     while len(out) < n:
         f = fams[rng.choice(len(fams), p=w / w.sum())]
-        free = [s[0] for s in FAMILIES[f] if tops[f][s[0]] < s[3]]
-        probe = free[rng.integers(len(free))] if free and rng.random() < probe_p else None
+        free = [s[0] for s in FAMILIES[f]]
+        probe = free[rng.integers(len(free))] if rng.random() < probe_p else None
         for _ in range(50):
             lay = sample(f, tops[f], rng, probe)
             if checker.ok(lay):
