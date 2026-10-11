@@ -77,19 +77,38 @@ FAMILIES = {
 # each of these has passed (train_ppo.Walls), so an upgrade never comes before what it
 # upgrades, and a family stuck at 0 % holds back its upgrades and nothing else -- gpu1's
 # family 3 kept 4-9 locked for 90M steps, and only 5 and 6 climb up. Fixed with the
-# families, before any training; numbered order is a valid order, so with nothing stuck
-# the families enter 1, 2, ..., 9 exactly as before.
+# families, before any training. The next family in is the lowest-numbered one whose
+# needs have passed (`ORDER`, with nothing stuck): 1, 2, 3, 4, 6, 5, 7, 8, 9.
+#
+# 5's step up is 6's, not 3's (2026-10-11): family 3's rows stand OUT from the wall, and the
+# step up over the break is diagonal, in the wall's own plane, past the end of the start
+# row -- a tier of family 6, 0.35-0.50 m up. gpu8 entered 5 after 3 and 4, as numbered, and
+# stayed at 0 % for 50M steps, its hook never more than 8 cm up; 6 at its first tops the same
+# (rl.rsi, STEPS6). From 6's at 0.50 m, 5 is 6's step up and 4's down with a row between.
 NEEDS = {1: (),
          2: (1,),        # gaps in the row: a traverse that changes rungs
          3: (1,),        # rows above: a traverse's re-grip, reached upward
          4: (2,),        # down a staircase: each step is another rung across a gap
-         5: (3, 4),      # over a break: up a row, along it, down again
+         5: (4, 6),      # over a break: 6's step up a row, along it, 4's down again
          6: (2, 3),      # tiers of short rungs: up, and across the gaps between them
          7: (1,),        # the corner: from the front row onto the side rung, level
          8: (1,),        # the wall behind: onto the back rung, level
          9: (2,)}        # a gap past the static reach: crossed by swinging
-assert set(NEEDS) == set(FAMILIES) and all(p < f for f, ps in NEEDS.items() for p in ps), \
-    "every family's needs come before it in the numbered order"
+
+
+def _order(needs):
+    """the order families enter with nothing stuck: each time the lowest-numbered one whose
+    needs are all in (train_ppo.Curriculum's own rule)"""
+    out = []
+    while len(out) < len(needs):
+        out.append(next(f for f in sorted(needs) if f not in out and set(needs[f]) <= set(out)))
+    return out
+
+
+assert set(NEEDS) == set(FAMILIES) and all(p in NEEDS for ps in NEEDS.values() for p in ps), \
+    "every family's needs are families"
+ORDER = _order(NEEDS)                # raises StopIteration on a cycle: no family could ever enter
+assert ORDER == [1, 2, 3, 4, 6, 5, 7, 8, 9], ORDER
 
 
 # where each benchmark lesson sits in its family (rl.lessons draws them): every value

@@ -216,8 +216,8 @@ def check_task(lessons=(1, 1.5, 7), steps=260):
     if ref is not None:
         reset, L, W0, far = jax.jit(task.reset), len(LESSON_KEYS), task.tables.walls, 0.0
         for j in np.nonzero(ref['startable'])[0][::7]:     # the rows a start may begin from
-            new = task.rows([dict(rsi.wall(float(ref['spacing'][j]), int(ref['rows'][j])),
-                                  family=3 + rsi.BOOK, d0_row=L + j)])
+            c = ref['climb'][j]
+            new = task.rows([dict(rsi.climb_wall(ref, c), family=int(rsi.family(ref)[c]) + rsi.BOOK, d0_row=L + j)])
             T = task.tables._replace(walls=W0._replace(**{f: getattr(W0, f).at[:1].set(jp.asarray(v))
                                                           for f, v in new.items()}))
             st, _ = reset(T, 0, jax.random.PRNGKey(j))
@@ -849,7 +849,7 @@ def _warp_right(lessons=(1, 2, 7, 8), episodes=24):
     for f, t in json.load(open(os.path.join(WALLS_RUN, 'best_state.json')))['walls']['tops'].items():
         tops[int(f)].update(t)
     lays = rsi.mix(W.draw(W.Checker(), {1: 1.0, 2: 1.0, 3: 1.0}, tops, np.random.default_rng(0), episodes),
-                   np.random.default_rng(1), tops[3], share=1.0)
+                   np.random.default_rng(1), {3: tops[3]}, share=1.0)
     runs = {}
     for impl in ('jax', 'warp'):
         bb = bw if impl == 'warp' else Batch(episodes, task=MjxClimb(episodes))

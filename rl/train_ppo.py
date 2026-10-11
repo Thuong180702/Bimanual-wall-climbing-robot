@@ -455,6 +455,13 @@ class Curriculum(BaseCallback):
         """the lessons the guard holds a best checkpoint to: all of the pool"""
         return list(self.active)
 
+    def capped(self, lesson):
+        """draws only MIN_SHARE of the steps (`weights`): `stalled` with nothing to learn it from
+        (Walls: no rl.rsi climbs). A family at 0 % takes need 1.0, the most of anything: gpu8's
+        family 5, stuck from 69M, took ~56 % of the steps for 50M of them and family 1 fell from
+        96 % to 73 %; with 6 beside it, both stuck, ~72 %"""
+        return self.stalled(lesson)
+
     def warming(self):
         """is the newest lesson still failing? -- for the log line only; the draw
         weights come from every lesson's rate (`weights`). Once it has passed
@@ -501,7 +508,7 @@ class Curriculum(BaseCallback):
         need, lens = [], []
         for lesson in self.active:
             n, r = self.rate(lesson)
-            need.append(max(1.0 - r, MIN_SHARE) if n else 1.0)
+            need.append(MIN_SHARE if self.capped(lesson) else max(1.0 - r, MIN_SHARE) if n else 1.0)
             v = [x for x in self.lens.get(lesson, [])[-self.window:] if x > 0]
             lens.append(sum(v) / len(v) if v else None)
         known = [x for x in lens if x is not None]
@@ -646,7 +653,8 @@ class Walls(Curriculum):
         self._load(walls)
         self.rng = np.random.default_rng(seed)
         self.checker = None
-        self.rsi_pending, self.rsi_lag = [], min(self.lag, episode_steps(rsi.TIMEOUT))
+        self.rsi_pending = {f: [] for f in rsi.TOP}
+        self.rsi_lag = {f: min(self.lag, episode_steps(rsi.timeout(f))) for f in rsi.TOP}
         self.ref = rsi.load()
         self.rsi_start = None if self.ref is None else self.ref['start']    # fixture row -> its start
 
@@ -713,15 +721,23 @@ class Walls(Curriculum):
             self.checker = self.W.Checker()
         bank = self.W.draw(self.checker, dict(zip(self.active, self.weights())), self.tops,
                            self.rng, BANK)
-        if self.enabled:                 # some of family 3's start partway up a climb (rl.rsi)
-            bank = rsi.mix(bank, self.rng, self.tops[3], rsi.SHARE_HI if self.learning() else rsi.SHARE,
-                           self.starts)
+        if self.enabled:                 # some of families 3's and 6's start partway up a climb (rl.rsi)
+            bank = rsi.mix(bank, self.rng, self.rsi_tops(),
+                           {f: rsi.SHARE_HI if self.learning(f) else rsi.SHARE for f in rsi.TOP}, self.starts)
         env.env_method('set_bank', bank)
 
-    def learning(self):
-        """still to learn from rl.rsi's starts: family 3 has not passed its gate, or a start of a
+    def capped(self, lesson):
+        """stalled, and no rl.rsi climb of its own to learn from: one with references is being taught"""
+        return self.stalled(lesson) and not (self.ref is not None and lesson in rsi.family(self.ref).tolist())
+
+    def rsi_tops(self):
+        """{family: its tops} of the families in the pool with rl.rsi's climbs: theirs are drawn"""
+        return {f: self.tops[f] for f in rsi.TOP if f in self.active}
+
+    def learning(self, f=3):
+        """still to learn from rl.rsi's starts: family f has not passed its gate, or a start of a
         climb its tops let in is not passed (gpu7: the gate passed on one row, two at 0 %)"""
-        return 3 not in self.cleared or (self.ref is not None and len(rsi.unpassed(self.starts, self.ref, self.tops[3])) > 0)
+        return f not in self.cleared or (self.ref is not None and len(rsi.unpassed(self.starts, self.ref, {f: self.tops[f]})) > 0)
 
     def _on_training_start(self):
         """every env onto a wall of the bank before the first step. SB3's learn() has
@@ -743,14 +759,16 @@ class Walls(Curriculum):
         # of its own: its episodes end by rsi.TIMEOUT, half the families' 60 s (~6M steps
         # at 4096 envs), and the frontier waits on it once per start
         for info, done in zip(self.locals['infos'], self.locals['dones']):
-            if done and info.get('lesson') == 3 + rsi.BOOK and info.get('start', -1) >= 0:
+            f = info.get('lesson', 0) - rsi.BOOK
+            if done and f in rsi.TOP and info.get('start', -1) >= 0:
                 t0 = self.clock - (info.get('steps') or 0)
                 if t0 >= self.since:
-                    heapq.heappush(self.rsi_pending, (t0, int(self.rsi_start[info['start']]),
-                                                      info['reason'] == 'success'))
-        while self.rsi_pending and self.rsi_pending[0][0] <= self.clock - self.rsi_lag:
-            _, j, ok = heapq.heappop(self.rsi_pending)
-            self._push(self.starts, j, ok)
+                    heapq.heappush(self.rsi_pending[f], (t0, int(self.rsi_start[info['start']]),
+                                                         info['reason'] == 'success'))
+        for f, q in self.rsi_pending.items():           # each family's behind its own timeout
+            while q and q[0][0] <= self.clock - self.rsi_lag[f]:
+                _, j, ok = heapq.heappop(q)
+                self._push(self.starts, j, ok)
         return out
 
     def _count(self, ep):
@@ -793,7 +811,7 @@ class Walls(Curriculum):
 
     def restore(self, state):
         super().restore(state)
-        self.rsi_pending.clear()
+        self.rsi_pending = {f: [] for f in rsi.TOP}
         self._load(state.get('walls'))
 
 
@@ -839,9 +857,9 @@ class Clone(BaseCallback):
     own action there (rl.rsi's `action`), observed as an episode started at that row
     observes it. Its gradient is added to PPO's after SB3 clips it, scaled to CLONE_RATIO
     of that one's norm on the actor's weights: a fixed share of every step whatever the
-    two losses' scales, so PPO keeps most of it. On while family 3 is in the pool, and only
-    at rows the books say fail, its gate passed or not (gpu7 passed it on one row with two
-    at 0 %): a start passed is the policy's own business. Demonstration-augmented policy gradient
+    two losses' scales, so PPO keeps most of it. On for each family with climbs (3, 6) while
+    it is in the pool, and only at rows the books say fail, its gate passed or not (gpu7
+    passed it on one row with two at 0 %): a start passed is the policy's own business. Demonstration-augmented policy gradient
     (Rajeswaran et al. 2018, DAPG; Nair et al. 2018, the Q-filter's "only where the
     demonstration is better").
 
@@ -877,9 +895,9 @@ class Clone(BaseCallback):
     def wanted(self):
         """the fixture rows to clone now"""
         c = self.cur
-        if self.ref is None or not c.enabled or 3 not in c.active:
+        if self.ref is None or not c.enabled or not c.rsi_tops():
             return np.zeros(0, int)
-        return rsi.unpassed(c.starts, self.ref, c.tops[3])
+        return rsi.unpassed(c.starts, self.ref, c.rsi_tops())
 
     def observe(self, climb):
         """(its fixture rows, [rows, CLONE_DRAWS, dim]): each row of climb `climb` observed as an
@@ -887,20 +905,17 @@ class Clone(BaseCallback):
         each draw), on JAX MJX -- a reset needs no physics, and this batch never steps"""
         import jax
         import jax.numpy as jp
-        from . import mjx_task as mt, walls as W
+        from . import mjx_task as mt
         if self.batch is None:
             self.batch = mt.Batch(CLONE_CHUNK, bank=CLONE_CHUNK, impl='jax')
         b, L = self.batch, len(mt.LESSON_KEYS)
         rows = np.nonzero(self.ref['climb'] == climb)[0]
-        top = dict(rows=int(self.ref['climb_rows'][climb]), spacing=float(self.ref['climb_spacing'][climb]))
         js = np.repeat(rows, CLONE_DRAWS)
         key, out = jax.random.PRNGKey(int(rows[0])), []
         for i in range(0, len(js), CLONE_CHUNK):
             part = js[i:i + CLONE_CHUNK]
             pad = np.r_[part, np.full(CLONE_CHUNK - len(part), part[-1])]
-            b.set_bank([dict(W.sample(3, top, self.rng, ('rows', 'spacing')),
-                             family=3 + rsi.BOOK, probe=None, probe_val=0.0, d0_row=L + int(j),
-                             timeout=rsi.TIMEOUT) for j in pad])
+            b.set_bank([dict(rsi.start_wall(self.ref, climb, self.rng), d0_row=L + int(j)) for j in pad])
             key, k = jax.random.split(key)
             _, o = b._reset(b.task.tables, jp.asarray(L + np.arange(CLONE_CHUNK)), jax.random.split(k, CLONE_CHUNK))
             out.append(np.asarray(o)[:len(part)])
@@ -1163,7 +1178,7 @@ class Checkpoint(BaseCallback):
                 base.capped = base.substeps = 0
             guard = self.guard()
             # rl.rsi's frontier: s into each climb of the latest start not yet passed
-            fr = rsi.where(self.cur.starts, self.cur.tops[3]) if isinstance(self.cur, Walls) else {}
+            fr = rsi.where(self.cur.starts, self.cur.rsi_tops()) if isinstance(self.cur, Walls) else {}
             if fr:
                 ends += " | starts' frontier " + ", ".join(
                     f"{k} {'all passed' if v is None else f'{v:g} s'}" for k, v in fr.items())
@@ -1422,6 +1437,11 @@ def walls_check(FakeModel, FakeEnv):
     r.model = FakeModel(FakeEnv())
     r.restore(old)                                       # a rollback onto a legacy best, too
     assert r.tops[3] == first_tops()[3] and 3 not in r.hist and r.tops[1] == w.tops[1], "a legacy rollback"
+    assert set(r.rsi_pending) == set(rsi.TOP), "a rollback lost a family's start books"
+    r.locals = {'infos': [dict(reason='success', lesson=f + rsi.BOOK, probe=-1, probe_val=0.0, start=0, steps=0)
+                          for f in rsi.TOP], 'dones': [True] * len(rsi.TOP)}
+    r._on_step()                                         # ...and they still take its episodes
+    assert all(len(q) == 1 for q in r.rsi_pending.values()), f"after a rollback: {r.rsi_pending}"
     step = min(st / (b - a) / len(ps) for ps in FAMILIES.values() for _, _, a, b, st in ps)
     assert 0.01 < step, f"a pool's success (0.01) can outrank a step of a top ({step:.3f})"
     off = Walls(enabled=False, lag=0)
@@ -1478,14 +1498,26 @@ def walls_check(FakeModel, FakeEnv):
     ep(9, True, WW)
     assert g.active == [1, 2, 3, 4, 7, 8, 9] and 3 in g.active, f"opened an upgrade of a stuck family: {g.active}"
     ep(3, True, WW)                                      # the stuck one passes after all:
-    assert g.active[-1] == 5, g.active                   # its upgrades open, in order
-    ep(5, True, WW)
-    assert g.active[-1] == 6, g.active
+    assert g.active[-1] == 6, g.active                   # its upgrades open, 6 first: 5's
+    ep(5, True, WW)                                      # step up is 6's (rl.walls.NEEDS)
+    assert g.active[-1] == 6, f"5 opened before 6, its step up, passed: {g.active}"
+    ep(6, True, WW)
+    assert g.active[-1] == 5, g.active
     ep(3, False, WW)                                     # ...and once passed, it holds the pool
-    ep(6, True, WW)                                      # like any other when it slips
+    ep(5, True, WW)                                      # like any other when it slips
     g.num_timesteps = 3 * STUCK_STEPS
-    ep(6, True)
+    ep(5, True)
     assert 3 in g.cleared and not g.stalled(3), "a family that has passed was treated as stuck"
+    # a stuck family draws MIN_SHARE of the steps, not a 0 %'s whole need, unless rl.rsi has
+    # climbs of its own to teach it (gpu8: 5 stuck took ~56 % of the steps for 50M)
+    w = Walls(active=[1, 5], cleared=[1], entered={1: 0, 5: 0}, lag=0)
+    w.num_timesteps = STUCK_STEPS
+    assert w.stalled(5) and w.capped(5) and w.weights()[1] < 0.15, f"a stuck family drew {w.weights()[1]:.0%}"
+    if w.ref is not None:
+        w6 = Walls(active=[1, 3, 6], cleared=[1], entered={1: 0, 3: 0, 6: 0}, lag=0)
+        w6.num_timesteps = STUCK_STEPS
+        assert w6.stalled(3) and not w6.capped(3) and (6 in rsi.family(w6.ref).tolist()) != w6.capped(6), \
+            "a stuck family with rl.rsi's climbs to learn from was capped"
     # rl.rsi's episodes, started partway up a climb, are a book of their own: a window of
     # them all passed moves neither family 3's rate nor its tops
     rate3, tops3 = g.rate(3), dict(g.tops[3])
@@ -1496,17 +1528,17 @@ def walls_check(FakeModel, FakeEnv):
         "episodes started partway up a climb counted toward family 3's gate or its ADR"
     if rsi.load() is not None:           # and the bank mixes them into family 3's walls only
         lays = [dict(family=f) for f in (1, 3) * 50]
-        mixed = rsi.mix(lays, np.random.default_rng(0), top=dict(rows=2, spacing=0.50), share=1.0)
+        mixed = rsi.mix(lays, np.random.default_rng(0), {3: dict(rows=2, spacing=0.50)}, share=1.0)
         assert all(m['family'] == (3 + rsi.BOOK if l['family'] == 3 else l['family'])
                    for l, m in zip(lays, mixed)) and min(m.get('d0_row', 99) for m in mixed) >= len(LESSONS)
-        assert rsi.mix(lays, np.random.default_rng(0), top=dict(rows=1, spacing=0.10), share=1.0) == lays, \
+        assert rsi.mix(lays, np.random.default_rng(0), {3: dict(rows=1, spacing=0.10)}, share=1.0) == lays, \
             "a start was mixed into walls lower than its own climb"
         # ...each booked by its start as it ends, and drawn toward the latest start along
         # its climb not yet passed (gpu4's: 4.8 s into the 0.20 m climb), cut to rsi.TIMEOUT
         ref = rsi.load()
         sc, rows_of = ref['start_climb'], lambda j: np.nonzero(ref['start'] == j)[0]
         row0 = lambda j: int(rows_of(j)[0])
-        k20 = int(np.nonzero((ref['climb_spacing'] == 0.20) & (ref['climb_rows'] == 1))[0][0])
+        k20 = int(np.nonzero((ref['climb_spacing'] == 0.20) & (ref['climb_rows'] == 1) & (rsi.family(ref) == 3))[0][0])
         c20, top20 = np.nonzero(sc == k20)[0], dict(rows=1, spacing=0.20)
         f = int(c20[24])
         eps = [dict(reason='success' if j > f else 'timeout', lesson=3 + rsi.BOOK, probe=-1,
@@ -1515,10 +1547,10 @@ def walls_check(FakeModel, FakeEnv):
         g.locals = {'infos': eps, 'dones': [True] * len(eps)}
         g._on_step()
         assert len(g.starts[int(c20[0])]) == rsi.START_MIN, "the climb's first start (row 0) was not booked"
-        assert rsi.frontier(g.starts, sc, c20) == {k20: f} and rsi.where(g.starts, top20)['0.2 m'] == 4.8, \
+        assert rsi.frontier(g.starts, sc, c20) == {k20: f} and rsi.where(g.starts, {3: top20})['0.2 m'] == 4.8, \
             f"the frontier is not the latest start failing: {rsi.frontier(g.starts, sc, c20)}"
         rest = {int(j): [True] * rsi.START_MIN for j in np.nonzero(sc != k20)[0]}   # the other climbs passed
-        draws = rsi.mix([dict(family=3)] * 2000, np.random.default_rng(1), top=top20, share=1.0,
+        draws = rsi.mix([dict(family=3)] * 2000, np.random.default_rng(1), {3: top20}, share=1.0,
                         books={**g.starts, **rest})
         rows = np.array([m['d0_row'] - len(LESSONS) for m in draws])
         js = ref['start'][rows]
@@ -1540,16 +1572,38 @@ def walls_check(FakeModel, FakeEnv):
         two = [int(c) for c in np.nonzero(ref['climb_rows'] == 2)[0]]
         for c in two:
             s2 = float(ref['climb_spacing'][c])
-            drawn = rsi.mix([dict(family=3)] * 400, np.random.default_rng(2), top=dict(rows=2, spacing=s2), share=1.0)
+            drawn = rsi.mix([dict(family=3)] * 400, np.random.default_rng(2), {3: dict(rows=2, spacing=s2)}, share=1.0)
             mine = [m for m in drawn if sc[ref['start'][m['d0_row'] - len(LESSONS)]] == c]
             assert mine and all(len(m['rungs']) == 3 and abs(m['rungs'][1][1][2] - m['rungs'][0][1][2] - s2) < 1e-9
                                 for m in mine), f"the {rsi.label(ref, c)} climb's starts drawn on other walls"
-            low = rsi.mix([dict(family=3)] * 400, np.random.default_rng(2), top=dict(rows=1, spacing=s2), share=1.0)
+            low = rsi.mix([dict(family=3)] * 400, np.random.default_rng(2), {3: dict(rows=1, spacing=s2)}, share=1.0)
             assert any(sc[ref['start'][m['d0_row'] - len(LESSONS)]] == c for m in low), \
                 "a 2-row climb's start held back by ADR's one row (it is offered by spacing alone)"
-            less = rsi.mix([dict(family=3)] * 400, np.random.default_rng(2), top=dict(rows=2, spacing=s2 - 0.05), share=1.0)
+            less = rsi.mix([dict(family=3)] * 400, np.random.default_rng(2), {3: dict(rows=2, spacing=s2 - 0.05)}, share=1.0)
             assert all('d0_row' not in m or sc[ref['start'][m['d0_row'] - len(LESSONS)]] != c for m in less), \
                 "a climb drawn before family 3's spacing reached it"
+        # family 6's climbs (rsi.STEPS6) only on family 6's walls once its rise lets them in, each
+        # on the one wall it was found on, the way round it was found, cut to its own timeout
+        six = np.nonzero(rsi.family(ref) == 6)[0]
+        if len(six):
+            assert rsi.mix(lays, np.random.default_rng(0), {3: dict(rows=1, spacing=0.10), 6: dict(rise=0.50)},
+                           share=1.0) == lays, "a family-6 start was mixed into another family's walls"
+            low6 = [dict(family=6)] * 200
+            assert rsi.mix(low6, np.random.default_rng(0), {6: dict(rise=0.25)}, share=1.0) == low6, \
+                "a family-6 start drawn before its rise reached it"
+            for rise in (0.30, 0.40):                # each rise lets in the climbs no higher than it
+                got = rsi.mix(low6, np.random.default_rng(0), {6: dict(rise=rise)}, share=1.0)
+                cs = [int(sc[ref['start'][m['d0_row'] - len(LESSONS)]]) for m in got]
+                want = six[ref['climb_spacing'][six] <= rise + 1e-9].tolist()
+                assert sorted(set(cs)) == want, f"at rise {rise} family 6's climbs drawn {sorted(set(cs))}, not {want}"
+            for m, c in zip(got, cs):
+                w = rsi.climb_wall(ref, c)
+                assert m['family'] == 6 + rsi.BOOK and m['timeout'] == rsi.TIMEOUT6 and np.allclose(m['goals'], w['goals']) \
+                    and np.sign(m['goals'][0, 1]) == ref['climb_side'][c], f"the {rsi.label(ref, c)} climb's start on another wall"
+            assert rsi.mix(low6, np.random.default_rng(0), {3: dict(rows=2, spacing=0.50)}, share=1.0) == low6, \
+                "family 6's walls got starts with family 6 out of the pool"
+            h6 = Walls(cleared=[1, 2, 3, 6])
+            assert h6.learning(6), "family 6 passed, its starts unbooked, and they fell to SHARE"
         # the starts keep SHARE_HI of family 3's walls past its gate while one of them is not passed
         h2 = Walls(cleared=[1, 2, 3])
         assert h2.learning(), "family 3 passed, its starts unbooked, and they fell to SHARE"
@@ -1563,11 +1617,11 @@ def walls_check(FakeModel, FakeEnv):
                                    start=row0(7) + 3, steps=10)], 'dones': [True]}
         q._on_step()
         q.locals = {'infos': [{}], 'dones': [False]}
-        for _ in range(q.rsi_lag - 11):
+        for _ in range(q.rsi_lag[3] - 11):
             q._on_step()
-        assert 7 not in q.starts and q.rsi_lag < q.lag, "a start booked before its cohort could end"
+        assert 7 not in q.starts and q.rsi_lag[3] < q.lag, "a start booked before its cohort could end"
         q._on_step()
-        assert q.starts.get(7) == [True], f"a start not booked {q.rsi_lag} ticks after it began: {q.starts}"
+        assert q.starts.get(7) == [True], f"a start not booked {q.rsi_lag[3]} ticks after it began: {q.starts}"
     st = json.loads(json.dumps(g.state()))
     r = Walls(st['active'], st['history'], st['walls'], cleared=st['cleared'], entered=st['entered'])
     assert r.cleared == g.cleared and r.entered == g.entered, "the gate's books did not survive state.json"
@@ -1753,7 +1807,8 @@ def clone_check():
     from .climb_task import ACT_SCALE
     ref = rsi.load()
     if ref is not None:
-        for c in range(len(rsi.CLIMBS)):     # the found climbs' (a taught one's: its teacher's mean)
+        for c in [*range(len(rsi.CLIMBS)), *np.nonzero(rsi.family(ref) == 6)[0]]:   # the found climbs' (a
+                                                                                    # taught one's: its teacher's mean)
             j = np.nonzero(ref['climb'] == c)[0]
             assert np.abs(ref['ctrl'][j[1:]] - ref['ctrl'][j[:-1]] - ACT_SCALE * ref['action'][j[:-1]]).max() < 1e-9, \
                 f"the {rsi.label(ref, c)} climb's reference actions are not its rows' steps"
@@ -1761,10 +1816,10 @@ def clone_check():
         c20 = np.unique(st[(sp == 0.20) & (rw == 1)])
         books = {int(j): [True] * rsi.START_MIN for j in np.unique(st)}    # the other climbs passed...
         books.update({int(j): [j > c20[24]] * rsi.START_MIN for j in c20})   # ...gpu6's from 4.88 s
-        assert (rsi.unpassed(books, ref, dict(rows=1, spacing=0.20)) == np.nonzero(np.isin(st, c20[:25]))[0]).all(), \
+        assert (rsi.unpassed(books, ref, {3: dict(rows=1, spacing=0.20)}) == np.nonzero(np.isin(st, c20[:25]))[0]).all(), \
             "not the rows of the starts not passed"
-        one = rsi.unpassed({}, ref, dict(rows=1, spacing=0.25))
-        assert len(rsi.unpassed({}, ref, dict(rows=1, spacing=0.10))) == 0 and \
+        one = rsi.unpassed({}, ref, {3: dict(rows=1, spacing=0.25)})
+        assert len(rsi.unpassed({}, ref, {3: dict(rows=1, spacing=0.10)})) == 0 and \
             set(sp[one].tolist()) == {0.20, 0.25}, "not the climbs the spacing lets in"
         assert set(rw[one].tolist()) == set(ref['climb_rows'].tolist()), "a climb over two rows not cloned at one"
 
@@ -1780,6 +1835,7 @@ def clone_check():
 
     class Cur:
         enabled, active, cleared, starts, tops = True, [1, 2, 3], [1, 2, 3], {}, {3: {'rows': 1, 'spacing': 0.20}}
+        rsi_tops = Walls.rsi_tops
 
     venv = VecNormalize(DummyVecEnv([Toy]), norm_reward=False)
     m = PPO('MlpPolicy', venv, n_steps=64, batch_size=16, verbose=0, seed=0)

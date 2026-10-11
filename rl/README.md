@@ -169,11 +169,13 @@ record is read against `walls.LEGACY` (gpu1's family 3 went from 0.30 back to 0.
   had: the next family joins when every family in the pool is passed 70 % of the time
   over its last 200 walls (`WALL_WINDOW`). Nothing ever leaves the pool, and the steps
   go where the failures are. A family enters only once the families it is made of
-  have passed (`walls.NEEDS`: 5, over a break, needs 3 and 4; 6, the tiers, 2 and 3;
-  4, 7, 8 and 9 need no climbing up), fixed with the families; the numbered order
-  satisfies it, so with nothing stuck they enter 1..9 as before. A family that has not
+  have passed (`walls.NEEDS`: 5, over a break, needs 4 and 6 -- its step up is 6's, in
+  the wall's plane, not 3's out from it (gpu8); 6, the tiers, 2 and 3; 4, 7, 8 and 9 need
+  no climbing up), fixed with the families; with nothing stuck they enter 1, 2, 3, 4, 6,
+  5, 7, 8, 9 (`walls.ORDER`). A family that has not
   passed once in 50M steps (`STUCK_STEPS`) is never dropped: it stays in the pool with
-  the steps its failures draw and its upgrades stay locked, and it stops holding back
+  the steps its failures draw -- MIN_SHARE once it has no rl.rsi climb to learn from
+  (`Walls.capped`) -- and its upgrades stay locked, and it stops holding back
   only the families that do not build on it. One that has passed holds the pool back
   whenever it slips below the gate again.
 - *Inside a family, automatic domain randomization* (OpenAI et al. 2019, "Solving
@@ -1019,6 +1021,35 @@ tops, a rung leading away from the goal within 5 cm of the next hold's distance 
 (gpu7 at 173M: 9-10/16, 6-7/16 with those rungs out of view) does not have it. Family 6 is the
 next to need taught climbs, once it climbs one tier. A shared GPU (gpu6, 9k env-steps/s for
 14.3k): gpu_run.sh now says so at the start (memory in use, load).
+
+**gpu8: the step up in the wall's own plane was never taught (2026-10-11).** gpu8 (eb25530,
+fresh) passed families 1-4 by 69M -- family 3 at two rows of 0.35 m, 21/24 -- and then sat at
+0 % on family 5 for 50M steps and on 6 for 43M (162M, every checkpoint 0/200). The same in
+both, measured at 120M and 162M (out/gpu8_diag): the policy goes to the start row's end and
+hangs there to the timeout, its hook never more than 2-11 cm up (family 5's row 35-50 cm up,
+6's tier 30 cm), no hand ever on the rung above in 112 episodes. Not the reward: lifting there
+is downhill all the way (0.0 mm of hill, 12 walls) and the bank pays the grab. Not the map:
+the lidar has every rung from the first step. Family 3's rows stand OUT 0.20 m from the wall,
+so the one climb it taught is not this one: up and diagonally on, in the wall's plane, past the
+end of the rung below -- 6's tier, and the step up over 5's break. Family 3 in gpu1-gpu6 again,
+so the same fix: CEM found the climb on family 6's first wall (`rsi.wall6`, one tier 0.30 m up;
+out/climb_demo/plan_chain.py PLAN=f6, HILL=2), 12 phases, 40 s, a hill of 10 mm. It fits only
+its own wall, so its starts run on that wall, mirrored for the climb found the other way
+(PLAN=f6m, `climb_side`); 0.40 m warm-started from them (f6r40, f6mr40). Replayed open loop in
+MJX each of the four finishes from every start tested (26-27 a climb, the hang included) --
+the mirrored two only after their last two phases were searched again (f6mr30end, f6mr40end):
+the right hook had come down on its seat's edge (0.040 against 0.002), and MJX finished 9/27
+and 6/27 of their starts. Booked as family 6 + 100, cloned where not passed (`rsi.STEPS6`). And 5 now needs 6 (`walls.NEEDS`): families enter 1, 2, 3, 4, 6,
+5, 7, 8, 9. A family stuck with nothing to learn it from draws MIN_SHARE of the steps
+(`Walls.capped`): at 0 % it had drawn need 1.0, the most of anything -- 5 took ~56 % of
+gpu8's steps for 50M of them, and family 1 fell from 96 % to 73 %.
+
+Building the family-6 starts showed an rsi start's map was its first frame's alone: with both
+hooks at the start row's end behind the arms, the lidar had not that end in view, and the hooks
+were seen 0.35-0.60 m along the rung, clipped to the span it had (97 of 887 rows past
+`rsi.SEEN`). An rsi start now also has what the hang it began from saw (`MjxClimb.start`):
+family 6 at most 72 mm off, none past SEEN; family 3's two-row climbs 5 -> 0 and 9 -> 6 rows.
+`rsi.build_fixture` writes the fixture before measuring it: `_seen`'s batch begins from the file.
 
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
