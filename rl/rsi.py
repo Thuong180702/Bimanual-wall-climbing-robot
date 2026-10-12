@@ -109,8 +109,8 @@ BOOK = 100           # its episodes report family + BOOK
 SEEN = 0.08          # m: a row is a start's only if each hook is seen at most this far from
                      # where it is when an episode begins there (`_seen`; rl.mjx_check task holds
                      # every start under 0.1 on noise draws of its own, 2 cm of them above this).
-                     # The found climbs see 78 mm at most (family 6's 72, since a start has
-                     # what its hang saw: MjxClimb.start); the taught ones, fast, reach for a
+                     # The found climbs see 78 mm at most (family 6's 78, since a start has
+                     # its hooks' rungs end to end: MjxClimb.start); the taught ones, fast, reach for a
                      # rung with one hook loaded off its seat or none (0.25 m x2: up to 187 mm
                      # off for 0.2 s), where a climb from the hang carries what it knew and a
                      # start knows nothing -- gpu5 learnt to finish on such a view (2026-10-09)

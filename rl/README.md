@@ -1047,9 +1047,20 @@ gpu8's steps for 50M of them, and family 1 fell from 96 % to 73 %.
 Building the family-6 starts showed an rsi start's map was its first frame's alone: with both
 hooks at the start row's end behind the arms, the lidar had not that end in view, and the hooks
 were seen 0.35-0.60 m along the rung, clipped to the span it had (97 of 887 rows past
-`rsi.SEEN`). An rsi start now also has what the hang it began from saw (`MjxClimb.start`):
+`rsi.SEEN`). An rsi start now has the rungs its hooks are on end to end (`MjxClimb.start`):
 family 6 at most 72 mm off, none past SEEN; family 3's two-row climbs 5 -> 0 and 9 -> 6 rows.
 `rsi.build_fixture` writes the fixture before measuring it: `_seen`'s batch begins from the file.
+
+**gpu9 stalled on a compile (2026-10-12).** gpu9 (97cdaf4) sat at 0 % GPU from 12.98M steps, family
+3 entering and the step recompiling for 3 rung slots: XLA's "Very slow compile" on a reduce fusion,
+18+ min and counting (gpu8: 131 s for the same recompile). Its preflight had shown it already --
+one kernel 16m23s while the short training run built its env -- and passed. The first fix above had
+put a second `lidar.visible`, from the hang, into every reset, and so into every step: a second copy
+of the step's largest reduction (4 lidars x 6 rungs x 32 cells x 64 occluders x 3 x 3 a env, ~1.8e9
+elements at 4096 envs; 234 -> 268 reduces in the step's HLO). An rsi start now marks the rungs its
+hooks are on as seen end to end instead -- the same estimates on every fixture row (family 6 at most
+78 mm, none past SEEN), the step back to 235 reduces -- and gpu_run.sh says so when the preflight
+logs a very slow compile. Packages were the same; the box (driver 610.57) was new.
 
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,

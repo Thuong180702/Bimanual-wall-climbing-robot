@@ -684,19 +684,20 @@ class MjxClimb:
         at `d`, when it is not to be read from it (Warp)"""
         w = self.wall(T, lesson)
         thr = self._throat_true(d)
-        look = lambda dd: lidar.visible(jp, self.rig, dd.site_xpos, dd.site_xmat, w.rung_c, w.rung_a, w.rung_h,
-                                        w.slot_size[:, 0], w.rung_valid)
-        seen = look(d)                                               # what it sees from the hang
-        # ...and an rl.rsi start, partway up a climb, has seen what the climb saw from its hang
-        # (lesson 1's secured one, every generated wall's) as well: from its own first frame
-        # alone the map can lack the very rung it holds -- family 6's climb, both hooks at the
-        # start row's end behind the arms, had them placed 0.35-0.60 m along it, clipped to
-        # the span seen (2026-10-11). A climb sees more on the way; this is what it saw first
-        rsi_start = w.d0_row >= len(LESSON_KEYS)
-        hang = jax.tree_util.tree_map(lambda x: x[LESSON_KEYS.index(1)], T.d0)
-        seen = jp.where(rsi_start, seen | look(hang), seen)
+        seen = lidar.visible(jp, self.rig, d.site_xpos, d.site_xmat, w.rung_c, w.rung_a, w.rung_h,
+                             w.slot_size[:, 0], w.rung_valid)       # what it sees from the hang
+        on, idx = zip(*[self._nearest_rung(w, thr[s])[:2] for s in (0, 1)])
+        idx = jp.stack(idx)                                                  # climb_task._hung
+        # ...and an rl.rsi start, partway up a climb, has the rungs its hooks are on end to end,
+        # as a climb that got there has seen them on its way: from its own first frame alone
+        # the map can lack the very rung it holds -- family 6's climb, both hooks at the start
+        # row's end behind the arms, had them placed 0.35-0.60 m along it, clipped to the
+        # span seen (2026-10-11). Not a second lidar.visible from the hang: that doubled the
+        # step's largest reduction (4 lidars x rungs x cells x occluders, ~1.8e9 elements
+        # at 4096 envs), and gpu9's GPU compiles of it stalled 16-18+ min (2026-10-12)
+        held = ((jp.arange(N_RUNG)[:, None] == idx[None]) & jp.stack(on)[None]).any(-1) & w.rung_valid
+        seen = jp.where(w.d0_row >= len(LESSON_KEYS), seen | held[:, None], seen)
         mc, ma, mh, mg = self._noisy_map(w, ep['map'], lidar.extent(jp, seen, w.rung_h))
-        idx = jp.stack([self._nearest_rung(w, thr[s])[1] for s in (0, 1)])   # climb_task._hung
         u = jp.clip(((thr - mc[idx]) * ma[idx]).sum(-1), -mh[idx], mh[idx])
         con, on = self._contact(d) if con is None else con
         z2 = jp.zeros(2)
@@ -710,6 +711,7 @@ class MjxClimb:
         # (2026-10-09) finished from 4.80 s on that and 0/12 there with the true attitude
         # or after the climb itself from the hang. So it starts where a climb's filter
         # has got to by then: the torso's attitude (2-3 deg off along the 0.20 m climb)
+        rsi_start = w.d0_row >= len(LESSON_KEYS)
         st = State(d=d, lesson=lesson, ctrl=ctrl, key=key, no_grip_t=ngt,
                    Rf=jp.where(rsi_start, d.xmat[self.torso], jp.eye(3)), anchor=anchor, hold_idx=idx,
                    hold_pt=mc[idx] + u[:, None] * ma[idx],

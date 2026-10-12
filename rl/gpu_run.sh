@@ -186,6 +186,10 @@ print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
         >> "$RUN/preflight.txt" 2>&1 \
         || { say "a short training run did not save and resume: $RUN/preflight.txt"; exit 1; }
     rm -rf out/_preflight
+    # gpu9 (2026-10-12) passed with one XLA kernel 16 min to compile here, and its training then
+    # sat 18+ min at 0 % GPU on a recompile: a step graph XLA compiles that slowly is a bug to fix
+    grep -q "Very slow compile" "$RUN/preflight.txt" \
+        && say "WARNING: XLA reported a very slow GPU compile in the preflight ($RUN/preflight.txt): a recompile in training may stall the same way"
     stamp="$(git rev-parse HEAD) $ENVS $WALLS $card"
     echo "$stamp" > "$RUN/preflight.ok"
     say "preflight passed"
