@@ -1062,6 +1062,35 @@ hooks are on as seen end to end instead -- the same estimates on every fixture r
 78 mm, none past SEEN), the step back to 235 reduces -- and gpu_run.sh says so when the preflight
 logs a very slow compile. Packages were the same; the box (driver 610.57) was new.
 
+**gpu9 at 122M: family 4 capped, family 6's last catch outside its rows (2026-10-12).**
+gpu9 (b7bf78f) ran 122M steps in 2.2 h. It had no rollbacks and no slow compile; families
+1-3 sat at 78-94 %.
+
+*Family 4.* Its first climb down is found by exploration, and when varies a lot. The steps
+from entry to the first 10 % were 26M in gpu7, 40M in gpu8 and 69M in gpu9. gpu9's had not
+come by STUCK_STEPS: family 4 was stalled at 77.8M at 0.5 %, and family 6 entered, as
+designed. But the stalled cap (gpu8's fix above) then cut family 4 from 74 % of the steps
+to 8 %. It found its climb at ~93M anyway and sat at ~40 % from 103M on. A stalled family
+is now capped only under WARM_RATE: past it, it has its own successes to learn from.
+
+*Family 6.* It learns its references from their ends back.
+- From 100M to 122M, -y's last 2.8 s went from 4-34 % to 96-98 %. A probe from 33-35 s
+  (out/gpu9_diag/f6_starts.py) finished 9/9 with the mean and 8/9 sampled.
+- +y stayed at 45 % on its last start, and the mean finished 0/9 from 33-35 s. It reached
+  t1b on time, slipped off and went back to t1a.
+- The +y climb's last hand crosses the gap in its last 1.1 s: in the air 0.42 m from its
+  goal at the last row, and onto t1b ~0.6 s after it. With the rows ending MARGIN (1 s)
+  before success, that catch was no start and was never cloned.
+- -y's crossing, searched again (f6mr30end), falls inside its rows.
+
+Family 6's rows now end MARGIN6 (0.2 s) before success: 4 more starts a climb, the catch and
+the seat in them. Every new row is startable but one (0.40 m, 81 mm), and the reference
+finishes open loop in MJX from all 32 of the last 8 starts.
+
+Since those starts moved every family-6 start after the first climb, a checkpoint now records
+the fixture it kept its books on (`rsi.signature`). A resume on another fixture starts every
+book over: about 10M steps, every start at the frontier until it has START_MIN episodes.
+
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
 the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines

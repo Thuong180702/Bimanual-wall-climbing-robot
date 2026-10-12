@@ -459,8 +459,11 @@ class Curriculum(BaseCallback):
         """draws only MIN_SHARE of the steps (`weights`): `stalled` with nothing to learn it from
         (Walls: no rl.rsi climbs). A family at 0 % takes need 1.0, the most of anything: gpu8's
         family 5, stuck from 69M, took ~56 % of the steps for 50M of them and family 1 fell from
-        96 % to 73 %; with 6 beside it, both stuck, ~72 %"""
-        return self.stalled(lesson)
+        96 % to 73 %; with 6 beside it, both stuck, ~72 %.
+        Only under WARM_RATE: one passing some walls has its own successes to learn from. gpu9's
+        family 4 first passed one 69M steps in (gpu7's 26M, gpu8's 40M), stalled at 50M, and
+        capped went from 74 % of the steps to 8 % and sat at ~40 % for 20M of them"""
+        return self.stalled(lesson) and self.rate(lesson)[1] < WARM_RATE
 
     def warming(self):
         """is the newest lesson still failing? -- for the log line only; the draw
@@ -650,13 +653,14 @@ class Walls(Curriculum):
         self.needs = W.NEEDS
         super().__init__(list(W.FAMILIES), active, history, enabled,
                          episode_steps(W.TIMEOUT) if lag is None else lag, cleared, entered)
+        self.ref = rsi.load()
+        self.rsi_start = None if self.ref is None else self.ref['start']    # fixture row -> its start
+        self.rsi_sig = None if self.ref is None else rsi.signature(self.ref)
         self._load(walls)
         self.rng = np.random.default_rng(seed)
         self.checker = None
         self.rsi_pending = {f: [] for f in rsi.TOP}
         self.rsi_lag = {f: min(self.lag, episode_steps(rsi.timeout(f))) for f in rsi.TOP}
-        self.ref = rsi.load()
-        self.rsi_start = None if self.ref is None else self.ref['start']    # fixture row -> its start
 
     def _load(self, walls):
         """a checkpoint's tops and probes, each family's only if its ranges are the ones
@@ -673,8 +677,14 @@ class Walls(Curriculum):
                 self.tops[int(f)].update(t)
         self.probes = {k: list(v) for k, v in (w.get('probes') or {}).items()
                        if int(k.split(':')[0]) not in moved}
-        # rl.rsi's book per start, {fixture row: [success, ...]}: where its frontier is
+        # rl.rsi's book per start, {start: [success, ...]}: where its frontier is. By start
+        # number, so only on the fixture they were kept on (rl.rsi.signature): gpu9's family-6
+        # climbs gained rows at their ends (MARGIN6) and every start after the first moved
         self.starts = {int(j): list(v) for j, v in (w.get('starts') or {}).items()}
+        if self.starts and w.get('rsi') != self.rsi_sig:
+            print(f"[rsi] the fixture's starts changed since this checkpoint ({w.get('rsi')} -> "
+                  f"{self.rsi_sig}): every start's book starts over")
+            self.starts = {}
         for f in sorted(moved):
             self.hist.pop(f, None)
             if w.get('tops'):
@@ -728,7 +738,7 @@ class Walls(Curriculum):
 
     def capped(self, lesson):
         """stalled, and no rl.rsi climb of its own to learn from: one with references is being taught"""
-        return self.stalled(lesson) and not (self.ref is not None and lesson in rsi.family(self.ref).tolist())
+        return super().capped(lesson) and not (self.ref is not None and lesson in rsi.family(self.ref).tolist())
 
     def rsi_tops(self):
         """{family: its tops} of the families in the pool with rl.rsi's climbs: theirs are drawn"""
@@ -807,7 +817,7 @@ class Walls(Curriculum):
         return dict(super().state(), walls=dict(
             tops={str(f): t for f, t in self.tops.items()}, probes=self.probes,
             spec={str(f): self.W.spec(f) for f in self.W.FAMILIES},
-            starts={str(j): v[-rsi.START_WINDOW:] for j, v in self.starts.items()}))
+            starts={str(j): v[-rsi.START_WINDOW:] for j, v in self.starts.items()}, rsi=self.rsi_sig))
 
     def restore(self, state):
         super().restore(state)
@@ -1415,9 +1425,17 @@ def walls_check(FakeModel, FakeEnv):
     assert w.probes.get('3:spacing') == [], "a move left the family's other probes counting"
     probe(3, 'spacing', True, 1)
     assert w.tops[3]['spacing'] == 0.25, "two parameters moved on one window"
+    w.starts = {0: [True] * rsi.START_WINDOW}
     st = json.loads(json.dumps(w.state()))
     r = Walls(st['active'], st['history'], st['walls'])
     assert r.tops == w.tops and r.active == w.active, "tops did not survive state.json"
+    if w.ref is not None:                # rl.rsi's books, by start: only on the fixture they were kept on
+        assert r.starts == w.starts, "the start books did not survive state.json"
+        for sig in ('another fixture', None):                # None: a checkpoint from before the record
+            other = json.loads(json.dumps(st))
+            other['walls']['rsi'] = sig
+            assert Walls(other['active'], other['history'], other['walls']).starts == {}, \
+                f"start books kept on {sig!r} read against this fixture's starts"
     # ...but only against the ranges they were grown over: a family whose ranges changed
     # starts over -- tops, probes, books -- and a checkpoint from before the ranges were
     # recorded (gpu1 to 102.9M) is read against LEGACY's
@@ -1513,6 +1531,9 @@ def walls_check(FakeModel, FakeEnv):
     w = Walls(active=[1, 5], cleared=[1], entered={1: 0, 5: 0}, lag=0)
     w.num_timesteps = STUCK_STEPS
     assert w.stalled(5) and w.capped(5) and w.weights()[1] < 0.15, f"a stuck family drew {w.weights()[1]:.0%}"
+    w.hist[5] = [True] * (WW // 4) + [False] * (WW - WW // 4)     # ...until it passes some (gpu9's 4)
+    assert w.stalled(5) and not w.capped(5) and w.weights()[1] > 0.3, \
+        f"a stuck family passing {w.rate(5)[1]:.0%} of its walls still capped at {w.weights()[1]:.0%}"
     if w.ref is not None:
         w6 = Walls(active=[1, 3, 6], cleared=[1], entered={1: 0, 3: 0, 6: 0}, lag=0)
         w6.num_timesteps = STUCK_STEPS

@@ -105,6 +105,11 @@ START_MIN = 10       # ...at least this many before it can count as passed...
 PASS = 0.7           # ...at this rate (train_ppo.UNLOCK_AT, the families' gate)
 EVERY = 5            # control steps a start spans along a climb (rows: one a control step)
 MARGIN = 25          # control steps (1 s) before the climb's success: the last start
+MARGIN6 = 5          # ...family 6's (0.2 s): its last hand's catch and seat are its last second.
+                     # gpu9 (122M) finished the -y climb from 34.2 s, its catch inside the rows,
+                     # and the +y one 45 % from its last start: L in the air 0.42 m from its goal
+                     # there, the catch ~0.6 s on -- no start, nothing cloned. Its mean reached
+                     # t1b on time from 33-35 s, slipped off and went back to t1a, 0/9
 BOOK = 100           # its episodes report family + BOOK
 SEEN = 0.08          # m: a row is a start's only if each hook is seen at most this far from
                      # where it is when an episode begins there (`_seen`; rl.mjx_check task holds
@@ -254,6 +259,14 @@ def load():
         return None
     z = np.load(FILE)
     return {k: z[k] for k in z.files}
+
+
+def signature(ref):
+    """the fixture's starts and their states, hashed: a run's books are by start number, and
+    hold only for the fixture they were kept on (train_ppo.Walls drops them otherwise)"""
+    import hashlib
+    return hashlib.sha1(b''.join(np.ascontiguousarray(ref[k]).tobytes()
+                                 for k in ('start', 'climb', 'qpos'))).hexdigest()[:16]
 
 
 def label(ref, c):
@@ -468,7 +481,7 @@ def build_fixture():
             print(f"rsi: no {path}: family 6's {rise:.2f} m climb (side {side}) left out")
             continue
         states, won, hill = _replay6(rise, side, path)
-        keep = states[:won - MARGIN]
+        keep = states[:won - MARGIN6]
         rows += [dict(st, spacing=rise, rows=1, start=j0 + k // EVERY, climb=len(climbs)) for k, st in enumerate(keep)]
         climbs.append((rise, 1, 6, side))
         j0 = rows[-1]['start'] + 1
