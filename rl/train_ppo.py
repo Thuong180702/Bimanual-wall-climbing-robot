@@ -1558,13 +1558,13 @@ def walls_check(FakeModel, FakeEnv):
     ep(5, True)
     assert 3 in g.cleared and not g.stalled(3), "a family that has passed was treated as stuck"
     # a stuck family draws MIN_SHARE of the steps, not a 0 %'s whole need, unless rl.rsi has
-    # climbs of its own to teach it (gpu8: 5 stuck took ~56 % of the steps for 50M)
-    w = Walls(active=[1, 5], cleared=[1], entered={1: 0, 5: 0}, lag=0)
+    # climbs of its own to teach it (gpu8: 5 stuck took ~56 % of the steps for 50M; 7 has none)
+    w = Walls(active=[1, 7], cleared=[1], entered={1: 0, 7: 0}, lag=0)
     w.num_timesteps = STUCK_STEPS
-    assert w.stalled(5) and w.capped(5) and w.weights()[1] < 0.15, f"a stuck family drew {w.weights()[1]:.0%}"
-    w.hist[5] = [True] * (WW // 4) + [False] * (WW - WW // 4)     # ...until it passes some (gpu9's 4)
-    assert w.stalled(5) and not w.capped(5) and w.weights()[1] > 0.3, \
-        f"a stuck family passing {w.rate(5)[1]:.0%} of its walls still capped at {w.weights()[1]:.0%}"
+    assert w.stalled(7) and w.capped(7) and w.weights()[1] < 0.15, f"a stuck family drew {w.weights()[1]:.0%}"
+    w.hist[7] = [True] * (WW // 4) + [False] * (WW - WW // 4)     # ...until it passes some (gpu9's 4)
+    assert w.stalled(7) and not w.capped(7) and w.weights()[1] > 0.3, \
+        f"a stuck family passing {w.rate(7)[1]:.0%} of its walls still capped at {w.weights()[1]:.0%}"
     if w.ref is not None:
         # a family's need is its share of the STEPS with its rl.rsi starts in: gpu10's family 6
         # (need 1.0, starts 284 steps, the hang 1460) drew ~16 % of them beside family 9's ~40 %
@@ -1682,7 +1682,7 @@ def walls_check(FakeModel, FakeEnv):
             assert h6.learning(6), "family 6 passed, its starts unbooked, and they fell to SHARE"
         # families 8's and 9's found climbs (rsi.STEPS8, STEPS9) the same: their own walls only, once
         # their tops let them in, the way round each was found, cut to their own timeouts
-        for fam, top, below in ((8, 'behind', 0.30), (9, 'gap', 0.50)):
+        for fam, top, below in ((8, 'behind', 0.30), (9, 'gap', 0.50), (5, 'break', 1.70)):
             mine = np.nonzero(rsi.family(ref) == fam)[0]
             if not len(mine):
                 continue
@@ -1691,7 +1691,8 @@ def walls_check(FakeModel, FakeEnv):
                 f"a family-{fam} start drawn before its {top} reached it"
             got = rsi.mix(lowf, np.random.default_rng(0), {fam: g.W.first_tops()[fam]}, share=1.0)
             cs = [int(sc[ref['start'][m['d0_row'] - len(LESSONS)]]) for m in got]
-            assert sorted(set(cs)) == sorted(mine.tolist()), f"family {fam}'s climbs at its first tops drawn {sorted(set(cs))}"
+            first = mine[ref['climb_spacing'][mine] <= g.W.first_tops()[fam][top] + 1e-9]
+            assert sorted(set(cs)) == sorted(first.tolist()), f"family {fam}'s climbs at its first tops drawn {sorted(set(cs))}"
             chk = g.W.Checker()
             for m, c in zip(got, cs):
                 w = rsi.climb_wall(ref, c)
@@ -1704,7 +1705,8 @@ def walls_check(FakeModel, FakeEnv):
             wf.num_timesteps = STUCK_STEPS
             assert wf.stalled(fam) and not wf.capped(fam) and wf.share(fam) == rsi.SHARE6_HI, \
                 f"family {fam} with its climbs capped, or its hang drawn as often as a short one's"
-        assert rsi.timeout(9) == rsi.TIMEOUT6 and rsi.timeout(8) == rsi.TIMEOUT, "a family's starts cut to another's timeout"
+        assert rsi.timeout(9) == rsi.timeout(5) == rsi.TIMEOUT6 and rsi.timeout(8) == rsi.TIMEOUT, \
+            "a family's starts cut to another's timeout"
         # family 4's step down (rsi.TAUGHT4) the same: its walls only, from its first drop, each way
         # round on its own wall, cut to rsi.TIMEOUT (gpu9 only ever stepped down toward -y)
         four = np.nonzero(rsi.family(ref) == 4)[0]
@@ -1938,7 +1940,7 @@ def clone_check():
     from .climb_task import ACT_SCALE
     ref = rsi.load()
     if ref is not None:
-        for c in [*range(len(rsi.CLIMBS)), *np.nonzero(np.isin(rsi.family(ref), (6, 8, 9)))[0]]:   # found (a
+        for c in [*range(len(rsi.CLIMBS)), *np.nonzero(np.isin(rsi.family(ref), (5, 6, 8, 9)))[0]]:   # found (a
                                                                                     # taught one's: its teacher's mean)
             j = np.nonzero(ref['climb'] == c)[0]
             assert np.abs(ref['ctrl'][j[1:]] - ref['ctrl'][j[:-1]] - ACT_SCALE * ref['action'][j[:-1]]).max() < 1e-9, \
