@@ -195,6 +195,16 @@ print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
     say "preflight passed"
 fi
 
+pack() {
+    tar czf "out/$NAME.tgz" -C out "$NAME"
+    # its full path: ~/.local/bin is on PATH only in shells started after gpu_setup.sh
+    croc=$(command -v croc || echo "$HOME/.local/bin/croc")
+    say "packed: out/$NAME.tgz ($(du -h "out/$NAME.tgz" | cut -f1)). Send it home with"
+    say "    $croc send out/$NAME.tgz        and at home:  CROC_SECRET=<the code it prints> croc --yes"
+    say "    (croc $($croc --version 2>&1 | awk '{print $3}') here: the one at home must be the same -- brew upgrade croc)"
+    say "then at home: tar xzf $NAME.tgz -C out && python -m rl.curve --name $NAME && python -m rl.plot --name $NAME"
+}
+
 # ---- 2. train -------------------------------------------------------------------
 nvidia-smi --query-gpu=timestamp,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw,clocks.sm \
     --format=csv -l 60 >> "$RUN/gpu.csv" 2>/dev/null &
@@ -209,6 +219,13 @@ while :; do
     [ "$need" -gt 0 ] || { say "step budget reached: $have"; break; }
     resume=; [ -f "$RUN/state.json" ] && resume=--resume
     net=; [ -z "$resume" ] && [ -n "${NET:-}" ] && net="--net $NET"
+    # gpu9 (2026-10-12): the card fell off the bus at 176.6M ('GPU is lost' in gpu.csv, cuInit
+    # failing), and the restart, forced onto --backend mjx, trained on the CPU at 90 env-steps/s
+    # for 7.5 h -- an update every 22 min, inside STALL. The preflight's own GPU check, every start:
+    $PY -m rl.hardware 2>&1 | grep -q "via JAX" || {
+        say "JAX cannot use the GPU any more ($(nvidia-smi -L 2>&1 | head -1)): not training on the CPU." \
+            "Reboot the box or take another, then carry the run on from its .tgz"
+        pack; exit 1; }
     say "train: $have steps so far, $need to go, $(( left / 60 )) min left, $ENVS envs"
     t0=$(date +%s)
     $PY -m rl.train_ppo --name "$NAME" --backend mjx --physics "$(cat "$RUN/physics" 2>/dev/null || echo jax)" \
@@ -243,15 +260,6 @@ while :; do
     sleep 60
 done
 kill $MON 2>/dev/null
-pack() {
-    tar czf "out/$NAME.tgz" -C out "$NAME"
-    # its full path: ~/.local/bin is on PATH only in shells started after gpu_setup.sh
-    croc=$(command -v croc || echo "$HOME/.local/bin/croc")
-    say "packed: out/$NAME.tgz ($(du -h "out/$NAME.tgz" | cut -f1)). Send it home with"
-    say "    $croc send out/$NAME.tgz        and at home:  CROC_SECRET=<the code it prints> croc --yes"
-    say "    (croc $($croc --version 2>&1 | awk '{print $3}') here: the one at home must be the same -- brew upgrade croc)"
-    say "then at home: tar xzf $NAME.tgz -C out && python -m rl.curve --name $NAME && python -m rl.plot --name $NAME"
-}
 
 # ---- 3. score the best checkpoint on the full robot -----------------------------
 [ "${SCORE:-1}" = 1 ] || { say "SCORE=0: not scoring; carry on with the same name"; pack; exit 0; }
