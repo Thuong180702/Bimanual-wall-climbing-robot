@@ -867,7 +867,7 @@ class Clone(BaseCallback):
     own action there (rl.rsi's `action`), observed as an episode started at that row
     observes it. Its gradient is added to PPO's after SB3 clips it, scaled to CLONE_RATIO
     of that one's norm on the actor's weights: a fixed share of every step whatever the
-    two losses' scales, so PPO keeps most of it. On for each family with climbs (3, 6) while
+    two losses' scales, so PPO keeps most of it. On for each family with climbs (3, 4, 6) while
     it is in the pool, and only at rows the books say fail, its gate passed or not (gpu7
     passed it on one row with two at 0 %): a start passed is the policy's own business. Demonstration-augmented policy gradient
     (Rajeswaran et al. 2018, DAPG; Nair et al. 2018, the Q-filter's "only where the
@@ -1585,7 +1585,8 @@ def walls_check(FakeModel, FakeEnv):
         # not from the climb's last starts down (gpu4's resume: 13-25M steps to reach 4.8 s)
         assert np.allclose(rsi.weights({}, sc, c20), 1 / len(c20)), "cold books drew the last starts first"
         part = {j: v for j, v in g.starts.items() if j != int(c20[50])}
-        assert rsi.weights(part, sc, c20)[50] > 0.1, "a start not yet booked was drawn as a passed one"
+        w = rsi.weights(part, sc, c20)
+        assert np.isclose(w[50], w.max()) and w[50] > 2 * w[60], "a start not yet booked was drawn as a passed one"
         g.starts[int(c20[40])] = [False] * rsi.START_WINDOW      # one slips behind the frontier:
         assert rsi.frontier(g.starts, sc, c20)[k20] == int(c20[40]), "a start that slipped is not drawn first"
         # a climb over two rows (rsi.TAUGHT) is a climb of its own: its starts on family-3 walls
@@ -1625,6 +1626,28 @@ def walls_check(FakeModel, FakeEnv):
                 "family 6's walls got starts with family 6 out of the pool"
             h6 = Walls(cleared=[1, 2, 3, 6])
             assert h6.learning(6), "family 6 passed, its starts unbooked, and they fell to SHARE"
+        # family 4's step down (rsi.TAUGHT4) the same: its walls only, from its first drop, each way
+        # round on its own wall, cut to rsi.TIMEOUT (gpu9 only ever stepped down toward -y)
+        four = np.nonzero(rsi.family(ref) == 4)[0]
+        if len(four):
+            low4 = [dict(family=4)] * 200
+            assert rsi.mix(lays, np.random.default_rng(0), {3: dict(rows=1, spacing=0.10), 4: dict(drop=0.45)},
+                           share=1.0) == lays, "a family-4 start was mixed into another family's walls"
+            assert rsi.mix(low4, np.random.default_rng(0), {4: dict(drop=0.25)}, share=1.0) == low4, \
+                "a family-4 start drawn before its drop reached it"
+            got = rsi.mix(low4, np.random.default_rng(0), {4: g.W.first_tops()[4]}, share=1.0)
+            cs = [int(sc[ref['start'][m['d0_row'] - len(LESSONS)]]) for m in got]
+            assert sorted(set(cs)) == sorted(four.tolist()), f"family 4's climbs at its first tops drawn {sorted(set(cs))}"
+            assert sorted(set(ref['climb_side'][four].tolist())) == [-1, 1], "family 4 is taught one way round only"
+            chk = g.W.Checker()
+            for m, c in zip(got, cs):
+                w = rsi.climb_wall(ref, c)
+                assert m['family'] == 4 + rsi.BOOK and m['timeout'] == rsi.TIMEOUT and np.allclose(m['goals'], w['goals']) \
+                    and np.sign(m["goals"][0, 1]) == ref["climb_side"][c] and chk.ok(w), \
+                    f"the {rsi.label(ref, c)} climb's start on another wall"
+            w4 = Walls(active=[1, 2, 4], cleared=[1, 2], entered={1: 0, 2: 0, 4: 0}, lag=0)
+            w4.num_timesteps = STUCK_STEPS
+            assert w4.stalled(4) and not w4.capped(4) and w4.learning(4), "family 4 with its climbs capped or not taught"
         # the starts keep SHARE_HI of family 3's walls past its gate while one of them is not passed
         h2 = Walls(cleared=[1, 2, 3])
         assert h2.learning(), "family 3 passed, its starts unbooked, and they fell to SHARE"
