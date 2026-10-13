@@ -142,27 +142,48 @@ EOF
     # ERROR: pthread_create failed', the physics check aborted at its first compile).
     # A check that still dies beside the others runs again alone before it counts.
     say "preflight 3/4: at once -- the JAX task against ClimbTask, MJX physics against C," \
-        "MJX's Warp backend against both, and $ENVS envs in one batch (halved until it fits)"
+        "MJX's Warp backend against both, and $ENVS envs in one batch (halved until it fits)," \
+        "then step 4's short training run on Warp in its place"
     read -ra quarter <<< "$($PY -c "import os; c = sorted(os.sched_getaffinity(0)); n = max(len(c) // 4, 1)
 print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
     pin=; taskset -c "${quarter[0]}" true 2>/dev/null && pin=1    # no taskset, or not allowed: unpinned
     on() { local q=${quarter[$1]}; shift; if [ -n "$pin" ]; then step taskset -c "$q" "$@"; else step "$@"; fi; }
-    check() { local i=$1; shift; on "$i" $PY -m rl.mjx_check "$@" 2>&1 | tee "$RUN/check_$1.txt"; }
-    again() { say "the $1 check died beside the others: again, alone"; step $PY -m rl.mjx_check "$@" 2>&1 | tee "$RUN/check_$1.txt"; }
+    # every line a check prints, stamped with its seconds in: where the preflight's time goes
+    # (gpu9's box: step 3 took 19.7 min and nothing said which check, or which part of it)
+    stamped() { local t0=$SECONDS; while IFS= read -r l; do printf '[%4ss] %s\n' $(( SECONDS - t0 )) "$l"; done; }
+    check() { local i=$1; shift; on "$i" $PY -m rl.mjx_check "$@" 2>&1 | stamped | tee "$RUN/check_$1.txt"; }
+    again() { say "the $1 check died beside the others: again, alone"; step $PY -m rl.mjx_check "$@" 2>&1 | stamped | tee "$RUN/check_$1.txt"; }
     fit() {
         local n=$ENVS
-        until on 3 $PY -m rl.mjx_task --envs "$n" --steps 10 >> "$RUN/check_envs.txt" 2>&1; do
+        until on 3 $PY -m rl.mjx_task --envs "$n" --steps 10 2>&1 | stamped >> "$RUN/check_envs.txt"; do
             [ "$n" -gt 1024 ] || return 1
             n=$(( n / 2 )); say "that batch does not run here: trying ENVS=$n"
         done
         echo "$n" > "$RUN/envs"
     }
+    # step 4, a short training run that saves and resumes, on physics $1, launched by the rest
+    # (`on 3` beside the checks, or `step` alone)
+    short() {
+        local phy=$1; shift
+        rm -rf out/_preflight
+        { "$@" $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$phy" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} \
+          && "$@" $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$phy" --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
+            2>&1 | stamped > "$RUN/short_$phy.txt"
+        local r=$?
+        rm -rf out/_preflight
+        return $r
+    }
     echo jax > "$RUN/physics"            # JAX unless Warp proves itself, and if it never finishes
     : > "$RUN/check_envs.txt"
+    rm -f "$RUN"/short_*.txt
     check 0 task & p1=$!
     check 1 physics & p2=$!
     check 2 warp --out "$RUN/physics" & p3=$!
-    fit & p4=$!
+    # the fit's quarter then runs step 4 on Warp, what every card but one has trained on, while
+    # the checks still run (gpu9's box: step 4 took 9.4 min after step 3's 19.7): exit 2 the
+    # fit failed, 3 the short run did. It counts only if step 3 then says Warp; else it runs
+    # again alone on what step 3 says, as a check that dies beside the others does
+    { fit || exit 2; short warp on 3 || exit 3; } & p4=$!
     wait $p1; r1=$?; wait $p2; r2=$?; wait $p4; r4=$?; wait $p3; r3=$?
     [ $r1 -eq 0 ] || { again task; r1=$?; }
     [ $r2 -eq 0 ] || { again physics; r2=$?; }
@@ -171,21 +192,21 @@ print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
     grep -E "control-steps/s|build \+ compile" "$RUN/check_envs.txt"
     [ $r1 -eq 0 ] && [ $r2 -eq 0 ] \
         || { say "the GPU path is not the CPU path's task on this card: $RUN/check_task.txt, $RUN/check_physics.txt"; exit 1; }
-    [ $r4 -eq 0 ] || { say "not even 1024 envs run on this card: $RUN/check_envs.txt"; exit 1; }
+    [ $r4 -ne 2 ] || { say "not even 1024 envs run on this card: $RUN/check_envs.txt"; exit 1; }
     ENVS=$(cat "$RUN/envs")
     # Warp wherever it is C MuJoCo's physics (step 3), untimed: gpu5's RTX 3090 stepped it
     # 2.82x JAX's speed (14,300 env-steps/s training), and timing both batches cost ~7 min
     # and once sent a run to JAX on a crash of the timing itself (gpu6, 2026-10-10).
     # `python -m rl.mjx_check warp --speed --envs N` still times them, by hand.
     say "physics: $(cat "$RUN/physics")"
-    rm -rf out/_preflight
-    say "preflight 4/4: a short training run that saves and resumes (its log: $RUN/preflight.txt)"
     PHY=$(cat "$RUN/physics")
-    { step $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$PHY" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} \
-      && step $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$PHY" --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
-        >> "$RUN/preflight.txt" 2>&1 \
-        || { say "a short training run did not save and resume: $RUN/preflight.txt"; exit 1; }
-    rm -rf out/_preflight
+    if [ "$PHY" = warp ] && [ $r4 -eq 0 ]; then
+        say "preflight 4/4: a short training run on warp saved and resumed, beside step 3 ($RUN/short_warp.txt)"
+    else
+        say "preflight 4/4: a short training run that saves and resumes, on $PHY, alone (its log: $RUN/short_$PHY.txt)"
+        short "$PHY" step || { say "a short training run did not save and resume: $RUN/short_$PHY.txt"; exit 1; }
+    fi
+    cat "$RUN"/short_*.txt >> "$RUN/preflight.txt"
     # gpu9 (2026-10-12) passed with one XLA kernel 16 min to compile here, and its training then
     # sat 18+ min at 0 % GPU on a recompile: a step graph XLA compiles that slowly is a bug to fix
     grep -q "Very slow compile" "$RUN/preflight.txt" \
