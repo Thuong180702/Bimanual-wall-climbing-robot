@@ -242,8 +242,10 @@ while :; do
     net=; [ -z "$resume" ] && [ -n "${NET:-}" ] && net="--net $NET"
     # gpu9 (2026-10-12): the card fell off the bus at 176.6M ('GPU is lost' in gpu.csv, cuInit
     # failing), and the restart, forced onto --backend mjx, trained on the CPU at 90 env-steps/s
-    # for 7.5 h -- an update every 22 min, inside STALL. The preflight's own GPU check, every start:
-    $PY -m rl.hardware 2>&1 | grep -q "via JAX" || {
+    # for 7.5 h -- an update every 22 min, inside STALL. The preflight's own GPU check, every start,
+    # its whole output first: piped, `grep -q` left at the first line and the next print's broken
+    # pipe failed the pipeline (pipefail), and gpu10 (dfc5a31) stopped with its GPU fine
+    grep -q "via JAX" <<< "$($PY -m rl.hardware 2>&1)" || {
         say "JAX cannot use the GPU any more ($(nvidia-smi -L 2>&1 | head -1)): not training on the CPU." \
             "Reboot the box or take another, then carry the run on from its .tgz"
         pack; exit 1; }
