@@ -89,6 +89,17 @@ from 30.0 s 77-80 % (+y; books 15 %), where the books still put the frontiers at
 33.0 s. Family 6's climbs are ~37 s, 187 starts each; family 3's and 4's, 4-15 s and 30 s
 (3.1M steps) a lag, keep BACK: spread three times wider their hardest start, the one the
 frontier waits at, would be drawn a third as often (gpu4's: 1 time in 66 was never learnt).
+
+Families 8 and 9 (`STEPS8`, `STEPS9`, 2026-10-13): gpu10 had both at ~0 % for 50M+ steps.
+On family 8 its left hook reached the back rung and loaded it, and its right never followed.
+A free search (plan_chain.py) did the same: a hook holds a rung behind the robot only turned
+round, its tip toward the back wall. Pressed on the rung's front with its back face, it
+"holds" 127 N and nothing once the other hand lets go. That grip is the arm raised sideways
+over the head (shoulder abduction ~3 rad, flexion -2.8 -> -0.4) and nothing a search's noise
+finds from the hang. Least squares found it clear of every rung and wall, with the right
+still seated on the start row, and it seeded the search (TURN, IKQ). The move is 16 s, its
+open loop 27/27 on Warp. Family 9 (gap 0.55) is a climber's crossing at 0.83 m hook to hook,
+static, ~40 s, each way round.
 """
 import os
 import numpy as np
@@ -111,22 +122,31 @@ STEPS6 = {(r, side): os.path.join(HERE, 'fixtures', f'climb_f6{"m" if side < 0 e
 TAUGHT4 = {(d, side): os.path.join(HERE, 'fixtures', f'climb_f4{"m" if side < 0 else ""}_d{round(d * 100)}.npz')
            for d in (0.30,) for side in (1, -1)}
 GAP4 = 0.10          # m on past the start row's end that `wall4`'s step starts: family 4's first top
-TOP = {3: 'spacing', 4: 'drop', 6: 'rise'}   # the top a family's climbs are offered by (`allowed`): their height
+# (behind, side) -> family 8's found move onto the back rung `behind` (`wall8`), and (gap, side) ->
+# family 9's across one gap (`wall9`), side 1 toward +y: setpoints as CLIMBS' (plan_chain.py PLAN=f8,
+# f9g55 / f9mg55). Family 8's one way round only: both its rows run full length, and mirrored
+# its wall is the same wall
+STEPS8 = {(b, 1): os.path.join(HERE, 'fixtures', f'climb_f8_b{round(b * 100)}.npz') for b in (0.35,)}
+STEPS9 = {(g, side): os.path.join(HERE, 'fixtures', f'climb_f9{"m" if side < 0 else ""}_g{round(g * 100)}.npz')
+          for g in (0.55,) for side in (1, -1)}
+LONG = (6, 9)        # families whose found climbs take ~40 s: TIMEOUT6 and BACK6
+SLOW = (6, 8, 9)     # families whose hang runs to its 60 s timeout until learnt: SHARE6_HI
+TOP = {3: 'spacing', 4: 'drop', 6: 'rise', 8: 'behind', 9: 'gap'}   # the top a family's climbs are offered by (`allowed`): their height
 SHARE = 0.25         # of the bank's family-3 walls once family 3 has passed its gate and every
 SHARE_HI = 0.75      # start its tops let in has, and until then. From the hang family 3 teaches
                      # nothing until the starts' frontier reaches it: gpu4 gave it 44 % of all
                      # steps for 0 %, the starts 6 %. A quarter stays from the hang, for its
                      # gate and ADR. (gpu7 passed the gate on one row with two rows at 0 %.)
-SHARE6_HI = 0.95     # ...family 6's: its hang runs 60 s to a timeout until the frontier is near
+SHARE6_HI = 0.95     # ...SLOW families': the hang runs 60 s to a timeout until the frontier is near
                      # it, five starts' worth -- at 0.75, 63 % of gpu10's family-6 steps (150-215M)
                      # went to the hang's timeouts. One in twenty still gives its gate ~650 a 10M
 TIMEOUT = 30.0       # s an episode from a start may run: twice the longest rest of a climb
                      # (14.2 s, 0.20 m from the hang). A start not finished by then is not
                      # going to be; gpu4's failed starts idled out the family's 60 s.
-TIMEOUT6 = 60.0      # ...family 6's (`timeout`): its found climbs take ~40 s from the hang
+TIMEOUT6 = 60.0      # ...LONG families' (`timeout`): their found climbs take ~40 s from the hang
 FOCUS = 0.75         # of the starts drawn: at each climb's frontier...
 BACK = 2             # ...the frontier start and the BACK before it, evenly: BACK + 1 a lag
-BACK6 = 8            # ...family 6's (above)
+BACK6 = 8            # ...LONG families' (above)
 START_WINDOW = 20    # a start's book: its last episodes...
 START_MIN = 10       # ...at least this many before it can count as passed...
 PASS = 0.7           # ...at this rate (train_ppo.UNLOCK_AT, the families' gate)
@@ -196,6 +216,36 @@ def wall4(drop, side=1):
     return mirror(lay) if side < 0 else lay
 
 
+def wall8(behind, side=1):
+    """the wall family 8's move was found on (plan_chain.py PLAN=f8): rl.walls' family 8 with d = 0,
+    the back rung `behind` the start row at its height, both full length, the back wall 0.06 m
+    behind it, goals straight behind the hang"""
+    from .walls import _row, _front, mirror, X, Y0, Y1, Z0, HY, TIMEOUT
+    xb = X - behind
+    rungs = [_row(Y0, Y1, Z0), _row(Y0, Y1, Z0, x=xb)]
+    lay = dict(rungs=[(f'rung_g{i}', c, a, h, 0.015) for i, (_, c, a, h) in enumerate(rungs)],
+               walls=[_front(), ('wall_back', np.array([xb - 0.06, 0.30, 1.0]), np.array([1.0, 0.0, 0.0]))],
+               goals=np.array([[xb, HY, Z0], [xb, -HY, Z0]]), goal_rungs=[1],
+               timeout=TIMEOUT, family=8, probe=None, probe_val=0.0)
+    return mirror(lay) if side < 0 else lay
+
+
+def wall9(gap, side=1):
+    """the wall family 9's crossing was found on (plan_chain.py f9): rl.walls' family 9, the start
+    row from -0.52 to 0.21 m past the left hook, the far rung `gap` on, goals at the middle of
+    _goals_from's draws -- mirrored for `side` -1"""
+    from .walls import _row, _front, mirror, X, Z0, HY, SEAT, TIMEOUT
+    e = HY + 0.21
+    y0 = e + gap
+    yR = y0 + SEAT + 0.03
+    yL = yR + 0.31
+    rungs = [_row(-0.52, e, Z0), _row(y0, yL + SEAT + 0.08, Z0)]
+    lay = dict(rungs=[(f'rung_g{i}', c, a, h, 0.015) for i, (_, c, a, h) in enumerate(rungs)],
+               walls=[_front()], goals=np.array([[X, yL, Z0], [X, yR, Z0]]), goal_rungs=[1],
+               timeout=TIMEOUT, family=9, probe=None, probe_val=0.0)
+    return mirror(lay) if side < 0 else lay
+
+
 def family(ref):
     """each climb's family (a fixture from before family 6's: all 3)"""
     return ref['climb_family'] if 'climb_family' in ref else np.full(len(ref['climb_spacing']), 3)
@@ -203,7 +253,7 @@ def family(ref):
 
 def timeout(f):
     """s an episode from one of family f's starts may run"""
-    return TIMEOUT6 if f == 6 else TIMEOUT
+    return TIMEOUT6 if f in LONG else TIMEOUT
 
 
 def climb_wall(ref, c):
@@ -213,6 +263,10 @@ def climb_wall(ref, c):
         return wall6(s, int(ref['climb_side'][c]))
     if family(ref)[c] == 4:
         return wall4(s, int(ref['climb_side'][c]))
+    if family(ref)[c] == 8:
+        return wall8(s, int(ref['climb_side'][c]))
+    if family(ref)[c] == 9:
+        return wall9(s, int(ref['climb_side'][c]))
     return wall(s, int(ref['climb_rows'][c]))
 
 
@@ -331,11 +385,22 @@ def signature(ref):
                                  for k in ('start', 'climb', 'qpos'))).hexdigest()[:16]
 
 
+def kept(ref, sig):
+    """how many of `ref`'s starts a run's books, kept on the fixture signed `sig`, still hold for:
+    all of that fixture's, when it is the beginning of this one (climbs are only ever added after
+    the others, so theirs keep their numbers: families 8 and 9 joined gpu10 at 218.8M), else 0"""
+    ends = np.r_[np.nonzero(np.diff(ref['climb']))[0] + 1, len(ref['climb'])]
+    for n in ends[::-1]:
+        if signature({k: ref[k][:n] for k in ('start', 'climb', 'qpos')}) == sig:
+            return int(ref['start'][n - 1]) + 1
+    return 0
+
+
 def label(ref, c):
     """climb `c`'s name in the log: '0.2 m', or '0.2 m x2' over two rows; family 6's 'f6 0.3 m',
     'f6 0.3 m -y' the other way round (family 4's 'f4 ...' the same)"""
     s, r = float(ref['climb_spacing'][c]), int(ref['climb_rows'][c])
-    if family(ref)[c] in (4, 6):
+    if family(ref)[c] in (4, 6, 8, 9):
         return f"f{family(ref)[c]} {s:g} m" + (' -y' if ref['climb_side'][c] < 0 else '')
     return f"{s:g} m" + (f" x{r}" if r > 1 else '')
 
@@ -416,7 +481,7 @@ def mix(layouts, rng, tops, share=SHARE, books=None):
     sc, ok = ref['start_climb'], allowed(ref, tops)
     fam = family(ref)[sc[ok]]
     ok = {int(f): ok[fam == f] for f in np.unique(fam)}
-    p = {f: weights(books or {}, sc, o, BACK6 if f == 6 else BACK) for f, o in ok.items()}
+    p = {f: weights(books or {}, sc, o, BACK6 if f in LONG else BACK) for f, o in ok.items()}
     out = []
     for lay in layouts:
         f = lay.get('family')
@@ -448,16 +513,40 @@ def _replay6(rise, side, path):
                       f"family 6's {rise} m climb{' the other way' if side < 0 else ''}")
 
 
-def _replay_on(lesson, rungs, goal_rungs, goals, path, what):
+def _replay8(behind, side, path):
+    """family 8's move (`wall8`) on lesson 8 with its rungs and back wall as plan_chain.py's PLAN=f8"""
+    from .lessons import _ry, WALL_FRONT
+    lay = wall8(behind, side)
+    rungs = [_ry(n, float(c[1] - h), float(c[1] + h), float(c[2]), x=float(c[0]))
+             for n, (_, c, _, h, _) in zip(('start', 'back'), lay['rungs'])]
+    back = (f'    <geom name="wall_back"  type="box" material="wall" '
+            f'pos="{float(lay["walls"][1][1][0]) - 0.05:.4f} 0.00 0.50" size="0.05 4.00 3.00"/>')
+    return _replay_on(8, rungs, ['rung_back'], lay['goals'], path, f"family 8's {behind} m move back",
+                      walls=[WALL_FRONT, back])
+
+
+def _replay9(gap, side, path):
+    """family 9's crossing (`wall9`) on lesson 9 with its rungs as plan_chain.py's PLAN=f9g / f9mg"""
+    from .lessons import _ry
+    lay = wall9(gap, side)
+    rungs = [_ry(n, float(c[1] - h), float(c[1] + h), float(c[2]), x=float(c[0]))
+             for n, (_, c, _, h, _) in zip(('start', 'far'), lay['rungs'])]
+    return _replay_on(9, rungs, ['rung_far'], lay['goals'], path,
+                      f"family 9's {gap} m crossing{' the other way' if side < 0 else ''}")
+
+
+def _replay_on(lesson, rungs, goal_rungs, goals, path, what, walls=None):
     """a found climb (`path`: its setpoints) through ClimbTask.step on the simplified robot, on
-    lesson `lesson` with those rungs and goals -> (states, success step, live potential's hill)"""
+    lesson `lesson` with those rungs and goals (and `walls`, else the lesson's) -> (states, success
+    step, live potential's hill)"""
     import tempfile
     from . import lessons
     from .climb_task import ClimbTask, ACT_SCALE
     from .mjx_scene import lesson_layout, build
     saved = lessons.LESSONS[lesson]
     lessons.LESSONS[lesson] = dict(saved, rungs=rungs, goal_rungs=goal_rungs,
-                                   goals=np.asarray(goals).tolist(), timeout=90.0)
+                                   goals=np.asarray(goals).tolist(), timeout=90.0,
+                                   **({'walls': walls} if walls else {}))
     try:
         ll = lesson_layout(lesson)
         ll['lesson'] = lesson
@@ -565,6 +654,21 @@ def build_fixture():
         j0 = rows[-1]['start'] + 1
         print(f"rsi: family 4's {drop:.2f} m step (side {side:+d}, {z['run']}) succeeds at step {won} "
               f"({won * 0.04:.1f} s); {won - MARGIN6} rows; holds taken by the last: {z['grabs'][won - MARGIN6 - 1]}")
+    # families 8's and 9's found ones after all of those, as family 6's
+    for fam, steps, replay in ((8, STEPS8, _replay8), (9, STEPS9, _replay9)):
+        for (h, side), path in sorted(steps.items()):
+            if not os.path.exists(path):
+                print(f"rsi: no {path}: family {fam}'s {h:.2f} m climb (side {side}) left out")
+                continue
+            states, won, hill = replay(h, side, path)
+            keep = states[:won - MARGIN6]
+            rows += [dict(st, spacing=h, rows=1, start=j0 + k // EVERY, climb=len(climbs)) for k, st in enumerate(keep)]
+            climbs.append((h, 1, fam, side))
+            j0 = rows[-1]['start'] + 1
+            print(f"rsi: family {fam}'s {h:.2f} m climb (side {side:+d}) succeeds at step {won} ({won * 0.04:.1f} s); "
+                  f"{len(keep)} rows; holds taken by the last: {keep[-1]['grabs']}; live potential's hill {hill * 1000:.0f} mm")
+            assert hill <= HILL_MAX, (f"family {fam}'s {h:.2f} m climb climbs {hill:.2f} m of live potential "
+                                      f"before it pays (HILL_MAX {HILL_MAX})")
     climbs = [c if len(c) == 4 else c + (3, 0) for c in climbs]     # (height, rows, family, side)
     z = {k: np.array([r[k] for r in rows]) for k in rows[0]}
     first = np.unique(z['start'], return_index=True)[1]
@@ -600,7 +704,7 @@ if __name__ == '__main__':
     assert (z['start_climb'][z['start']] == z['climb']).all(), "a start spans two climbs"
     assert z['grabs'].max() >= 1, "no start has a hold taken: the starts never reach the row above"
     assert (np.bincount(z['start'], weights=z['startable']) > 0).mean() > 0.9, "most starts have no row to begin from"
-    for c in [*range(len(CLIMBS)), *np.nonzero(family(z) == 6)[0]]:   # a found climb's action is
+    for c in [*range(len(CLIMBS)), *np.nonzero(np.isin(family(z), (6, 8, 9)))[0]]:   # a found climb's action is
         j = np.nonzero(z['climb'] == c)[0]                              # the step to its next row
         err = np.abs(z['ctrl'][j[1:]] - z['ctrl'][j[:-1]] - ACT_SCALE * z['action'][j[:-1]]).max()
         assert err < 1e-9, f"climb {label(z, c)}: its actions are not its rows' steps ({err:g})"

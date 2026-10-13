@@ -686,9 +686,15 @@ class Walls(Curriculum):
         # climbs gained rows at their ends (MARGIN6) and every start after the first moved
         self.starts = {int(j): list(v) for j, v in (w.get('starts') or {}).items()}
         if self.starts and w.get('rsi') != self.rsi_sig:
-            print(f"[rsi] the fixture's starts changed since this checkpoint ({w.get('rsi')} -> "
-                  f"{self.rsi_sig}): every start's book starts over")
-            self.starts = {}
+            n = rsi.kept(self.ref, w.get('rsi')) if self.ref is not None and w.get('rsi') else 0
+            if n:
+                print(f"[rsi] the fixture gained climbs since this checkpoint ({w.get('rsi')} -> "
+                      f"{self.rsi_sig}): its first {n} starts' books kept, the new ones' start empty")
+                self.starts = {j: v for j, v in self.starts.items() if j < n}
+            else:
+                print(f"[rsi] the fixture's starts changed since this checkpoint ({w.get('rsi')} -> "
+                      f"{self.rsi_sig}): every start's book starts over")
+                self.starts = {}
         for f in sorted(moved):
             self.hist.pop(f, None)
             if w.get('tops'):
@@ -745,7 +751,7 @@ class Walls(Curriculum):
             return 0.0
         if not self.learning(f):
             return rsi.SHARE
-        return rsi.SHARE6_HI if f == 6 else rsi.SHARE_HI
+        return rsi.SHARE6_HI if f in rsi.SLOW else rsi.SHARE_HI
 
     def length(self, lesson):
         """mean steps of a wall of family `lesson` as the bank draws it: its share started partway
@@ -1674,6 +1680,31 @@ def walls_check(FakeModel, FakeEnv):
                 and rsi.BACK6 > rsi.BACK, "family 6's starts not drawn over BACK6 + 1 at its frontier"
             h6 = Walls(cleared=[1, 2, 3, 6])
             assert h6.learning(6), "family 6 passed, its starts unbooked, and they fell to SHARE"
+        # families 8's and 9's found climbs (rsi.STEPS8, STEPS9) the same: their own walls only, once
+        # their tops let them in, the way round each was found, cut to their own timeouts
+        for fam, top, below in ((8, 'behind', 0.30), (9, 'gap', 0.50)):
+            mine = np.nonzero(rsi.family(ref) == fam)[0]
+            if not len(mine):
+                continue
+            lowf = [dict(family=fam)] * 200
+            assert rsi.mix(lowf, np.random.default_rng(0), {fam: {top: below}}, share=1.0) == lowf, \
+                f"a family-{fam} start drawn before its {top} reached it"
+            got = rsi.mix(lowf, np.random.default_rng(0), {fam: g.W.first_tops()[fam]}, share=1.0)
+            cs = [int(sc[ref['start'][m['d0_row'] - len(LESSONS)]]) for m in got]
+            assert sorted(set(cs)) == sorted(mine.tolist()), f"family {fam}'s climbs at its first tops drawn {sorted(set(cs))}"
+            chk = g.W.Checker()
+            for m, c in zip(got, cs):
+                w = rsi.climb_wall(ref, c)
+                assert m['family'] == fam + rsi.BOOK and m['timeout'] == rsi.timeout(fam) \
+                    and np.allclose(m['goals'], w['goals']) and len(m['walls']) == len(w['walls']) and chk.ok(w), \
+                    f"the {rsi.label(ref, c)} climb's start on another wall"
+            assert rsi.mix(lays, np.random.default_rng(0), {3: dict(rows=1, spacing=0.10), fam: {top: 1.0}},
+                           share=1.0) == lays, f"a family-{fam} start was mixed into another family's walls"
+            wf = Walls(active=[1, 2, fam], cleared=[1, 2], entered={1: 0, 2: 0, fam: 0}, lag=0)
+            wf.num_timesteps = STUCK_STEPS
+            assert wf.stalled(fam) and not wf.capped(fam) and wf.share(fam) == rsi.SHARE6_HI, \
+                f"family {fam} with its climbs capped, or its hang drawn as often as a short one's"
+        assert rsi.timeout(9) == rsi.TIMEOUT6 and rsi.timeout(8) == rsi.TIMEOUT, "a family's starts cut to another's timeout"
         # family 4's step down (rsi.TAUGHT4) the same: its walls only, from its first drop, each way
         # round on its own wall, cut to rsi.TIMEOUT (gpu9 only ever stepped down toward -y)
         four = np.nonzero(rsi.family(ref) == 4)[0]
@@ -1720,6 +1751,14 @@ def walls_check(FakeModel, FakeEnv):
     assert r.hist.get(3 + rsi.BOOK) == g.hist[3 + rsi.BOOK][-WW:], "the starts' book did not survive state.json"
     assert r.starts == {j: v[-rsi.START_WINDOW:] for j, v in g.starts.items()}, \
         "the books per start did not survive state.json"
+    if rsi.load() is not None:           # a fixture that only gained climbs keeps the others' books
+        ref = rsi.load()
+        n = int(np.nonzero(np.diff(ref['climb']))[0][0]) + 1
+        sig0 = rsi.signature({k: ref[k][:n] for k in ('start', 'climb', 'qpos')})
+        last = len(ref['start_climb']) - 1
+        assert rsi.kept(ref, sig0) == int(ref['start'][n - 1]) + 1 and rsi.kept(ref, 'not a fixture') == 0
+        old = Walls(walls=dict(starts={'0': [True] * 20, str(last): [True] * 20}, rsi=sig0))
+        assert set(old.starts) == {0}, f"books kept {sorted(old.starts)}: a new climb's, or not the old ones'"
     # the guard reads the passed families' success as well as ADR's progress, capped at the
     # gate: at 80 % a family holds all of it, forgotten outright none
     h = Walls(lag=0)
@@ -1899,7 +1938,7 @@ def clone_check():
     from .climb_task import ACT_SCALE
     ref = rsi.load()
     if ref is not None:
-        for c in [*range(len(rsi.CLIMBS)), *np.nonzero(rsi.family(ref) == 6)[0]]:   # the found climbs' (a
+        for c in [*range(len(rsi.CLIMBS)), *np.nonzero(np.isin(rsi.family(ref), (6, 8, 9)))[0]]:   # found (a
                                                                                     # taught one's: its teacher's mean)
             j = np.nonzero(ref['climb'] == c)[0]
             assert np.abs(ref['ctrl'][j[1:]] - ref['ctrl'][j[:-1]] - ACT_SCALE * ref['action'][j[:-1]]).max() < 1e-9, \
