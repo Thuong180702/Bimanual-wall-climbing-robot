@@ -512,12 +512,16 @@ class Curriculum(BaseCallback):
         for lesson in self.active:
             n, r = self.rate(lesson)
             need.append(MIN_SHARE if self.capped(lesson) else max(1.0 - r, MIN_SHARE) if n else 1.0)
-            v = [x for x in self.lens.get(lesson, [])[-self.window:] if x > 0]
-            lens.append(sum(v) / len(v) if v else None)
+            lens.append(self.length(lesson))
         known = [x for x in lens if x is not None]
         fill = sum(known) / len(known) if known else 1.0
         w = [nd / (ln if ln is not None else fill) for nd, ln in zip(need, lens)]
         return [x / sum(w) for x in w]
+
+    def length(self, lesson):
+        """mean steps of `lesson`'s last episodes, None before any"""
+        v = [x for x in self.lens.get(lesson, [])[-self.window:] if x > 0]
+        return sum(v) / len(v) if v else None
 
     def score(self):
         """SUM of the success rates over the active lessons (Checkpoint.score says why)"""
@@ -731,10 +735,31 @@ class Walls(Curriculum):
             self.checker = self.W.Checker()
         bank = self.W.draw(self.checker, dict(zip(self.active, self.weights())), self.tops,
                            self.rng, BANK)
-        if self.enabled:                 # some of families 3's and 6's start partway up a climb (rl.rsi)
-            bank = rsi.mix(bank, self.rng, self.rsi_tops(),
-                           {f: rsi.SHARE_HI if self.learning(f) else rsi.SHARE for f in rsi.TOP}, self.starts)
+        if self.enabled:                 # some of families 3's, 4's and 6's start partway up a climb (rl.rsi)
+            bank = rsi.mix(bank, self.rng, self.rsi_tops(), {f: self.share(f) for f in rsi.TOP}, self.starts)
         env.env_method('set_bank', bank)
+
+    def share(self, f):
+        """the share of family f's walls rl.rsi.mix starts partway up one of its climbs"""
+        if not self.enabled or self.ref is None or f not in rsi.TOP:
+            return 0.0
+        if not self.learning(f):
+            return rsi.SHARE
+        return rsi.SHARE6_HI if f == 6 else rsi.SHARE_HI
+
+    def length(self, lesson):
+        """mean steps of a wall of family `lesson` as the bank draws it: its share started partway
+        up a climb runs as long as those (booked lesson + rsi.BOOK), the rest as from the hang.
+        The weights give each family its need's share of the STEPS by dividing by this; from the
+        hang alone, gpu10 (150-215M) gave family 6 (need 1.0, as family 9's) ~16 % of the steps
+        against family 9's ~40 %: three of four of its walls were 284-step starts weighed as
+        1460-step hangs. And 63 % of what it got went to the hang's 60 s timeouts, 6 % of all
+        steps to the starts it was learning from (rsi.SHARE6_HI)"""
+        own, s = super().length(lesson), self.share(lesson)
+        part = super().length(lesson + rsi.BOOK) if s else None
+        if own is None or part is None:
+            return own
+        return (1.0 - s) * own + s * part
 
     def capped(self, lesson):
         """stalled, and no rl.rsi climb of its own to learn from: one with references is being taught"""
@@ -1534,6 +1559,20 @@ def walls_check(FakeModel, FakeEnv):
     w.hist[5] = [True] * (WW // 4) + [False] * (WW - WW // 4)     # ...until it passes some (gpu9's 4)
     assert w.stalled(5) and not w.capped(5) and w.weights()[1] > 0.3, \
         f"a stuck family passing {w.rate(5)[1]:.0%} of its walls still capped at {w.weights()[1]:.0%}"
+    if w.ref is not None:
+        # a family's need is its share of the STEPS with its rl.rsi starts in: gpu10's family 6
+        # (need 1.0, starts 284 steps, the hang 1460) drew ~16 % of them beside family 9's ~40 %
+        s6 = Walls(active=[1, 6], cleared=[1], entered={1: 0, 6: 0}, lag=0)
+        s6.hist[1], s6.hist[6] = [True] * WW, [False] * WW
+        s6.lens = {1: [300] * WW, 6: [1460] * WW, 6 + rsi.BOOK: [284] * WW}
+        p1, p6 = s6.weights()
+        L6 = s6.length(6)
+        assert s6.share(6) == rsi.SHARE6_HI and abs(L6 - (0.05 * 1460 + 0.95 * 284)) < 1e-6, (s6.share(6), L6)
+        assert abs(p6 * L6 / (p6 * L6 + p1 * 300) - 1.0 / (1.0 + MIN_SHARE)) < 1e-9, \
+            f"family 6 drew {p6 * L6 / (p6 * L6 + p1 * 300):.0%} of the steps, not its need's share"
+        s6.cleared.add(6)
+        s6.starts = {int(j): [True] * rsi.START_MIN for j in range(len(s6.ref['start_climb']))}
+        assert s6.share(6) == rsi.SHARE and s6.share(1) == 0.0, "a family passed kept its starts' high share"
     if w.ref is not None:
         w6 = Walls(active=[1, 3, 6], cleared=[1], entered={1: 0, 3: 0, 6: 0}, lag=0)
         w6.num_timesteps = STUCK_STEPS

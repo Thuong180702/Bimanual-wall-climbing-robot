@@ -117,6 +117,9 @@ SHARE_HI = 0.75      # start its tops let in has, and until then. From the hang 
                      # nothing until the starts' frontier reaches it: gpu4 gave it 44 % of all
                      # steps for 0 %, the starts 6 %. A quarter stays from the hang, for its
                      # gate and ADR. (gpu7 passed the gate on one row with two rows at 0 %.)
+SHARE6_HI = 0.95     # ...family 6's: its hang runs 60 s to a timeout until the frontier is near
+                     # it, five starts' worth -- at 0.75, 63 % of gpu10's family-6 steps (150-215M)
+                     # went to the hang's timeouts. One in twenty still gives its gate ~650 a 10M
 TIMEOUT = 30.0       # s an episode from a start may run: twice the longest rest of a climb
                      # (14.2 s, 0.20 m from the hang). A start not finished by then is not
                      # going to be; gpu4's failed starts idled out the family's 60 s.
