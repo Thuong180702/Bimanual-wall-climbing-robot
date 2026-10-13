@@ -1624,6 +1624,15 @@ def walls_check(FakeModel, FakeEnv):
                     and np.sign(m['goals'][0, 1]) == ref['climb_side'][c], f"the {rsi.label(ref, c)} climb's start on another wall"
             assert rsi.mix(low6, np.random.default_rng(0), {3: dict(rows=2, spacing=0.50)}, share=1.0) == low6, \
                 "family 6's walls got starts with family 6 out of the pool"
+            # ...drawn at the BACK6 + 1 starts ending at its frontier (family 3 keeps BACK: `near`)
+            s6 = np.nonzero(sc == six[0])[0]
+            f6 = int(s6[100])
+            b6 = {int(j): [True] * rsi.START_MIN for j in np.nonzero(np.isin(sc, six))[0]}
+            b6.update({int(j): [bool(j > f6)] * rsi.START_MIN for j in s6})
+            js6 = ref['start'][[m['d0_row'] - len(LESSONS) for m in
+                                rsi.mix(low6, np.random.default_rng(3), {6: dict(rise=0.30)}, share=1.0, books=b6)]]
+            assert np.mean((js6 <= f6) & (js6 >= f6 - rsi.BACK6)) > 0.5 and (js6 == f6 - rsi.BACK6).any() \
+                and rsi.BACK6 > rsi.BACK, "family 6's starts not drawn over BACK6 + 1 at its frontier"
             h6 = Walls(cleared=[1, 2, 3, 6])
             assert h6.learning(6), "family 6 passed, its starts unbooked, and they fell to SHARE"
         # family 4's step down (rsi.TAUGHT4) the same: its walls only, from its first drop, each way

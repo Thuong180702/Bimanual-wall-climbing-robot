@@ -80,13 +80,15 @@ at 162M stepped down both ways (+y 12/13, -y 9/11). Which side a policy learns f
 chance; that it learns the other is not given. Each way round, gpu8's own step down on one
 wall (`wall4`), recorded as the two-row climbs are (`teach4`), booked as family 4 + BOOK.
 
-BACK (2026-10-13): a start's episode is booked only once every episode begun before it can
+BACK6 (2026-10-13): a start's episode is booked only once every episode begun before it can
 have ended, its family's timeout later -- family 6's 60 s, 6.2M steps at 4096 envs -- so the
 frontier moves at most BACK + 1 starts per lag. gpu9's family-6 frontier, at BACK 2, moved
 0.2 s of climb per 2.6M steps (-y) and per 5.4M (+y), the -y at ~80 % of that cap, and its
 policy at 179M finished from 29.0 s 70 % and 30.0 s 90 % (-y; the books: 30 %, 25 %) and
 from 30.0 s 77-80 % (+y; books 15 %), where the books still put the frontiers at 30.4 s and
-33.0 s.
+33.0 s. Family 6's climbs are ~37 s, 187 starts each; family 3's and 4's, 4-15 s and 30 s
+(3.1M steps) a lag, keep BACK: spread three times wider their hardest start, the one the
+frontier waits at, would be drawn a third as often (gpu4's: 1 time in 66 was never learnt).
 """
 import os
 import numpy as np
@@ -120,7 +122,8 @@ TIMEOUT = 30.0       # s an episode from a start may run: twice the longest rest
                      # going to be; gpu4's failed starts idled out the family's 60 s.
 TIMEOUT6 = 60.0      # ...family 6's (`timeout`): its found climbs take ~40 s from the hang
 FOCUS = 0.75         # of the starts drawn: at each climb's frontier...
-BACK = 8             # ...the frontier start and the BACK before it, evenly: BACK + 1 a lag (above)
+BACK = 2             # ...the frontier start and the BACK before it, evenly: BACK + 1 a lag
+BACK6 = 8            # ...family 6's (above)
 START_WINDOW = 20    # a start's book: its last episodes...
 START_MIN = 10       # ...at least this many before it can count as passed...
 PASS = 0.7           # ...at this rate (train_ppo.UNLOCK_AT, the families' gate)
@@ -382,15 +385,15 @@ def where(books, tops):
             for c, f in frontier(books, sc, allowed(ref, tops)).items()}   # 0.04 s: climb_task.CONTROL_DT
 
 
-def weights(books, climb, ok):
+def weights(books, climb, ok, back=BACK):
     """draw probabilities over the starts `ok`: FOCUS evenly over the starts to learn from
-    -- each climb's BACK + 1 ending at its frontier, and every start booked fewer than
+    -- each climb's `back` + 1 ending at its frontier, and every start booked fewer than
     START_MIN times -- and the rest evenly over every start"""
     ok = np.asarray(ok)
     hot = np.array([len(books.get(int(j), [])) < START_MIN for j in ok])
     for f in frontier(books, climb, ok).values():
         if f is not None:
-            hot |= (climb[ok] == climb[f]) & (ok <= f) & (ok >= f - BACK)
+            hot |= (climb[ok] == climb[f]) & (ok <= f) & (ok >= f - back)
     w = np.full(len(ok), (1.0 - FOCUS) / len(ok))
     w[hot] += FOCUS / max(hot.sum(), 1)
     return w / w.sum()
@@ -410,7 +413,7 @@ def mix(layouts, rng, tops, share=SHARE, books=None):
     sc, ok = ref['start_climb'], allowed(ref, tops)
     fam = family(ref)[sc[ok]]
     ok = {int(f): ok[fam == f] for f in np.unique(fam)}
-    p = {f: weights(books or {}, sc, o) for f, o in ok.items()}
+    p = {f: weights(books or {}, sc, o, BACK6 if f == 6 else BACK) for f, o in ok.items()}
     out = []
     for lay in layouts:
         f = lay.get('family')
