@@ -153,10 +153,12 @@ print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
     stamped() { local t0=$SECONDS; while IFS= read -r l; do printf '[%4ss] %s\n' $(( SECONDS - t0 )) "$l"; done; }
     check() { local i=$1; shift; on "$i" $PY -m rl.mjx_check "$@" 2>&1 | stamped | tee "$RUN/check_$1.txt"; }
     again() { say "the $1 check died beside the others: again, alone"; step $PY -m rl.mjx_check "$@" 2>&1 | stamped | tee "$RUN/check_$1.txt"; }
+    # beside the checks only ENVS itself: their memory is not the card's, and a batch that failed
+    # there was halved for good (gpu11's 3090, 2026-10-14: 4096 -> 1024); halved only alone
     fit() {
         local n=$ENVS
-        until on 3 $PY -m rl.mjx_task --envs "$n" --steps 10 2>&1 | stamped >> "$RUN/check_envs.txt"; do
-            [ "$n" -gt 1024 ] || return 1
+        until "$@" $PY -m rl.mjx_task --envs "$n" --steps 10 2>&1 | stamped >> "$RUN/check_envs.txt"; do
+            [ "$1" = step ] && [ "$n" -gt 1024 ] || return 1
             n=$(( n / 2 )); say "that batch does not run here: trying ENVS=$n"
         done
         echo "$n" > "$RUN/envs"
@@ -183,8 +185,10 @@ print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
     # the checks still run (gpu9's box: step 4 took 9.4 min after step 3's 19.7): exit 2 the
     # fit failed, 3 the short run did. It counts only if step 3 then says Warp; else it runs
     # again alone on what step 3 says, as a check that dies beside the others does
-    { fit || exit 2; short warp on 3 || exit 3; } & p4=$!
+    { fit on 3 || exit 2; short warp on 3 || exit 3; } & p4=$!
     wait $p1; r1=$?; wait $p2; r2=$?; wait $p4; r4=$?; wait $p3; r3=$?
+    [ $r4 -ne 2 ] || { say "$ENVS envs did not run beside the checks: again, alone"
+                      if fit step; then r4=3; else r4=2; fi; }   # 3: step 4 then runs alone
     [ $r1 -eq 0 ] || { again task; r1=$?; }
     [ $r2 -eq 0 ] || { again physics; r2=$?; }
     [ $r3 -eq 0 ] || again warp --out "$RUN/physics"   # a wrong Warp ends 0, saying jax
