@@ -339,11 +339,19 @@ class MjxClimb:
             c = ref['climb']                                            # one wall per climb
             sl = {k: v[c] for k, v in self.rows([rsi.climb_wall(ref, i)
                                                   for i in range(len(ref['climb_spacing']))]).items()}
+            # 256 starts at a time: all at once the forward's scratch grew with the starts
+            # (17.5k: 5 GiB, kept by XLA's pool), and four preflight processes building it
+            # together left gpu11's 3090 no room for 4096 envs (2026-10-14)
+            # (the last batch padded with the last start: one compile)
             base = mjx.make_data(self.mx)
-            ds = jax.jit(jax.vmap(lambda p, qt, sz, wp, wq, q, v, c: mjx.forward(
-                self._slot_model(p, qt, sz, wp, wq), base.replace(qpos=q, qvel=v, ctrl=c, time=jp.zeros(())))))(
-                *(jp.asarray(sl[k]) for k in ('slot_pos', 'slot_quat', 'slot_size', 'wall_pos', 'wall_quat')),
-                jp.asarray(ref['qpos']), jp.asarray(ref['qvel']), jp.asarray(ref['ctrl']))
+            fwd = jax.jit(jax.vmap(lambda p, qt, sz, wp, wq, q, v, c: mjx.forward(
+                self._slot_model(p, qt, sz, wp, wq), base.replace(qpos=q, qvel=v, ctrl=c, time=jp.zeros(())))))
+            args = [sl[k] for k in ('slot_pos', 'slot_quat', 'slot_size', 'wall_pos', 'wall_quat')] + \
+                [ref['qpos'], ref['qvel'], ref['ctrl']]
+            n = len(ref['qpos'])
+            parts = [fwd(*(jp.asarray(a[np.minimum(np.arange(i, i + 256), n - 1)]) for a in args))
+                     for i in range(0, n, 256)]
+            ds = jax.tree_util.tree_map(lambda *x: jp.concatenate(x)[:n], *parts)
             r1, S = LESSON_KEYS.index(1), len(ref['spacing'])
             cat = lambda a, b: jp.concatenate([a, b])
             d0 = jax.tree_util.tree_map(cat, d0, ds)
