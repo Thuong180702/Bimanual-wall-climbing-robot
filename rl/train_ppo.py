@@ -749,12 +749,14 @@ class Walls(Curriculum):
         """the share of family f's walls rl.rsi.mix starts partway up one of its climbs"""
         if not self.enabled or self.ref is None or f not in rsi.TOP:
             return 0.0
-        if not self.learning(f):
+        # a family that has passed keeps three walls in four from the hang, new climbs of its own or
+        # not: gpu11, given harder climbs of families it had passed, drew their hangs too seldom and
+        # forgot the walls it climbed -- family 6 its one tier toward -y (309-348M, the hang 2 % of the
+        # steps; 8/12 -> 0/12), family 8 its back rung at 0.35 (348-364M, its hang walls 75 -> 25 %;
+        # 17/24 -> 7/24) -- while their starts kept passing. The new climbs are learnt from the rest
+        if f in self.cleared:
             return rsi.SHARE
-        # SHARE6_HI only before a SLOW family first passes: its hang is then 60 s to a timeout. Once it
-        # has, new climbs of its own kept it there, and gpu11 (309-348M, family 6's two tiers and new
-        # starts) drew its hang 2 % of the steps: family 6 forgot its one tier toward -y (8/12 -> 0/12)
-        return rsi.SHARE6_HI if f in rsi.SLOW and f not in self.cleared else rsi.SHARE_HI
+        return rsi.SHARE6_HI if f in rsi.SLOW else rsi.SHARE_HI
 
     def length(self, lesson):
         """mean steps of a wall of family `lesson` as the bank draws it: its share started partway
@@ -777,11 +779,6 @@ class Walls(Curriculum):
     def rsi_tops(self):
         """{family: its tops} of the families in the pool with rl.rsi's climbs: theirs are drawn"""
         return {f: self.tops[f] for f in rsi.TOP if f in self.active}
-
-    def learning(self, f=3):
-        """still to learn from rl.rsi's starts: family f has not passed its gate, or a start of a
-        climb its tops let in is not passed (gpu7: the gate passed on one row, two at 0 %)"""
-        return f not in self.cleared or (self.ref is not None and len(rsi.unpassed(self.starts, self.ref, {f: self.tops[f]})) > 0)
 
     def _on_training_start(self):
         """every env onto a wall of the bank before the first step. SB3's learn() has
@@ -1593,7 +1590,7 @@ def walls_check(FakeModel, FakeEnv):
         assert s6.share(6) == rsi.SHARE and s6.share(1) == 0.0, "a family passed kept its starts' high share"
         j6 = int(np.nonzero(rsi.family(s6.ref)[s6.ref['start_climb']] == 6)[0][0])   # passed, then one of its
         s6.starts[j6] = [False] * rsi.START_MIN                                         # starts not yet
-        assert s6.learning(6) and s6.share(6) == rsi.SHARE_HI, \
+        assert s6.share(6) == rsi.SHARE, \
             f"a family passed, with a start not, drew its hang {1 - s6.share(6):.0%} of its walls"
     if w.ref is not None:
         w6 = Walls(active=[1, 3, 6], cleared=[1], entered={1: 0, 3: 0, 6: 0}, lag=0)
@@ -1695,7 +1692,7 @@ def walls_check(FakeModel, FakeEnv):
             assert np.mean((js6 <= f6) & (js6 >= f6 - rsi.BACK6)) > 0.5 and (js6 == f6 - rsi.BACK6).any() \
                 and rsi.BACK6 > rsi.BACK, "family 6's starts not drawn over BACK6 + 1 at its frontier"
             h6 = Walls(cleared=[1, 2, 3, 6])
-            assert h6.learning(6), "family 6 passed, its starts unbooked, and they fell to SHARE"
+            assert h6.share(6) == rsi.SHARE, "family 6 passed, its starts unbooked, and its hang drawn less"
         # families 8's and 9's found climbs (rsi.STEPS8, STEPS9) the same: their own walls only, once
         # their tops let them in, the way round each was found, cut to their own timeouts
         for fam, top, below in ((8, 'behind', 0.30), (9, 'gap', 0.50), (5, 'break', 1.70)):
@@ -1744,12 +1741,13 @@ def walls_check(FakeModel, FakeEnv):
                     f"the {rsi.label(ref, c)} climb's start on another wall"
             w4 = Walls(active=[1, 2, 4], cleared=[1, 2], entered={1: 0, 2: 0, 4: 0}, lag=0)
             w4.num_timesteps = STUCK_STEPS
-            assert w4.stalled(4) and not w4.capped(4) and w4.learning(4), "family 4 with its climbs capped or not taught"
-        # the starts keep SHARE_HI of family 3's walls past its gate while one of them is not passed
+            assert w4.stalled(4) and not w4.capped(4) and w4.share(4) == rsi.SHARE_HI, \
+                "family 4 with its climbs capped or not taught"
+        # past its gate family 3 keeps three walls in four from the hang, its starts passed or not
+        # (gpu7's SHARE_HI there, gpu11's families 6 and 8 forgot their hangs under it)
         h2 = Walls(cleared=[1, 2, 3])
-        assert h2.learning(), "family 3 passed, its starts unbooked, and they fell to SHARE"
-        h2.starts = {int(j): [True] * rsi.START_MIN for j in range(len(sc))}
-        assert not h2.learning(), "family 3 passed and every start too, still SHARE_HI"
+        assert h2.share(3) == rsi.SHARE, "family 3 passed, its starts unbooked, and its hang drawn less"
+        assert Walls(cleared=[1, 2]).share(3) == rsi.SHARE_HI, "family 3 not passed, its starts drawn at SHARE"
         # with the real lags: a quick success waits out rsi.TIMEOUT (not the family's 60 s)
         # for the failures begun before it
         q = Walls()

@@ -204,11 +204,12 @@ STEPS5 = {(b, side): os.path.join(HERE, 'fixtures', f'climb_f5{"m" if side < 0 e
 LONG = (5, 6, 9)     # families whose found climbs take ~40 s or more: TIMEOUT6 and BACK6
 SLOW = (5, 6, 8, 9)  # families whose hang runs to its 60 s timeout until learnt: SHARE6_HI
 TOP = {3: 'spacing', 4: 'drop', 5: 'break', 6: 'rise', 7: 'side', 8: 'behind', 9: 'gap'}   # the top a family's climbs are offered by (`allowed`): their height
-SHARE = 0.25         # of the bank's family-3 walls once family 3 has passed its gate and every
-SHARE_HI = 0.75      # start its tops let in has, and until then. From the hang family 3 teaches
-                     # nothing until the starts' frontier reaches it: gpu4 gave it 44 % of all
-                     # steps for 0 %, the starts 6 %. A quarter stays from the hang, for its
-                     # gate and ADR. (gpu7 passed the gate on one row with two rows at 0 %.)
+SHARE = 0.25         # of a family's walls started partway up once it has passed its gate, new
+SHARE_HI = 0.75      # climbs of its own or not (train_ppo.Walls.share), and until then. From the hang
+                     # family 3 teaches nothing until the starts' frontier reaches it: gpu4 gave it
+                     # 44 % of all steps for 0 %, the starts 6 %. A quarter stays from the hang, for
+                     # its gate and ADR. Past the gate three in four: gpu11's families 6 and 8, given
+                     # harder climbs and fewer hangs, forgot the walls they had passed.
 SHARE6_HI = 0.95     # ...SLOW families': the hang runs 60 s to a timeout until the frontier is near
                      # it, five starts' worth -- at 0.75, 63 % of gpu10's family-6 steps (150-215M)
                      # went to the hang's timeouts. One in twenty still gives its gate ~650 a 10M
