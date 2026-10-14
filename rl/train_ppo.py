@@ -1558,13 +1558,14 @@ def walls_check(FakeModel, FakeEnv):
     ep(5, True)
     assert 3 in g.cleared and not g.stalled(3), "a family that has passed was treated as stuck"
     # a stuck family draws MIN_SHARE of the steps, not a 0 %'s whole need, unless rl.rsi has
-    # climbs of its own to teach it (gpu8: 5 stuck took ~56 % of the steps for 50M; 7 has none)
-    w = Walls(active=[1, 7], cleared=[1], entered={1: 0, 7: 0}, lag=0)
+    # climbs of its own to teach it (gpu8: 5 stuck took ~56 % of the steps for 50M; 2 has none,
+    # 7 since rl.rsi's TAUGHT7)
+    w = Walls(active=[1, 2], cleared=[1], entered={1: 0, 2: 0}, lag=0)
     w.num_timesteps = STUCK_STEPS
-    assert w.stalled(7) and w.capped(7) and w.weights()[1] < 0.15, f"a stuck family drew {w.weights()[1]:.0%}"
-    w.hist[7] = [True] * (WW // 4) + [False] * (WW - WW // 4)     # ...until it passes some (gpu9's 4)
-    assert w.stalled(7) and not w.capped(7) and w.weights()[1] > 0.3, \
-        f"a stuck family passing {w.rate(7)[1]:.0%} of its walls still capped at {w.weights()[1]:.0%}"
+    assert w.stalled(2) and w.capped(2) and w.weights()[1] < 0.15, f"a stuck family drew {w.weights()[1]:.0%}"
+    w.hist[2] = [True] * (WW // 4) + [False] * (WW - WW // 4)     # ...until it passes some (gpu9's 4)
+    assert w.stalled(2) and not w.capped(2) and w.weights()[1] > 0.3, \
+        f"a stuck family passing {w.rate(2)[1]:.0%} of its walls still capped at {w.weights()[1]:.0%}"
     if w.ref is not None:
         # a family's need is its share of the STEPS with its rl.rsi starts in: gpu10's family 6
         # (need 1.0, starts 284 steps, the hang 1460) drew ~16 % of them beside family 9's ~40 %
@@ -1636,7 +1637,7 @@ def walls_check(FakeModel, FakeEnv):
         assert rsi.frontier(g.starts, sc, c20)[k20] == int(c20[40]), "a start that slipped is not drawn first"
         # a climb over two rows (rsi.TAUGHT) is a climb of its own: its starts on family-3 walls
         # of its rows and spacing, only once the tops let them in
-        two = [int(c) for c in np.nonzero(ref['climb_rows'] == 2)[0]]
+        two = [int(c) for c in np.nonzero((ref['climb_rows'] == 2) & (rsi.family(ref) == 3))[0]]   # not 6's two tiers
         for c in two:
             s2 = float(ref['climb_spacing'][c])
             drawn = rsi.mix([dict(family=3)] * 400, np.random.default_rng(2), {3: dict(rows=2, spacing=s2)}, share=1.0)
@@ -1940,8 +1941,7 @@ def clone_check():
     from .climb_task import ACT_SCALE
     ref = rsi.load()
     if ref is not None:
-        for c in [*range(len(rsi.CLIMBS)), *np.nonzero(np.isin(rsi.family(ref), (5, 6, 8, 9)))[0]]:   # found (a
-                                                                                    # taught one's: its teacher's mean)
+        for c in rsi.found(ref):                         # found (a taught one's: its teacher's mean)
             j = np.nonzero(ref['climb'] == c)[0]
             assert np.abs(ref['ctrl'][j[1:]] - ref['ctrl'][j[:-1]] - ACT_SCALE * ref['action'][j[:-1]]).max() < 1e-9, \
                 f"the {rsi.label(ref, c)} climb's reference actions are not its rows' steps"
