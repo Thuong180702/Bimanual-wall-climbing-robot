@@ -79,3 +79,9 @@ followed by the number that forced it, and several of them overturned an idea th
 looked obviously right first — including a pinned-base reach calculation that was
 wrong by 2x, and a "fix" for hand crossing that quietly made the hands overlap
 instead.
+
+## License
+
+Copyright (c) 2026 Thuong Nguyen Van. All rights reserved — public to read, run and
+review, not to reuse or publish from without permission ([`LICENSE`](LICENSE)). To cite
+it, see [`CITATION.cff`](CITATION.cff).

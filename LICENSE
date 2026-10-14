@@ -1,0 +1,29 @@
+Copyright (c) 2026 Thuong Nguyen Van. All rights reserved.
+
+This repository -- the source code, the robot design (CAD, URDF, scenes), the reward
+and sensor models, the training curriculum, and the documentation -- is the original,
+unpublished work of Thuong Nguyen Van, and is the subject of a scientific paper in
+preparation.
+
+It is made public so that it can be read, run and checked. You may view it, clone it,
+and run it on your own machines for personal study, evaluation or peer review.
+
+Without the author's prior written permission, you may NOT:
+
+  1. redistribute it, in whole or in part, modified or not;
+  2. use it, or work derived from it, in any product, service or commercial activity;
+  3. publish, submit or present it, or results, figures, designs or methods derived from
+     it, in any paper, thesis, preprint, patent application or other publication.
+
+Any reference to this work must cite it as given in CITATION.cff.
+
+Third-party material keeps its own license. The message definitions in
+slam/livox_ros_driver/msg/ follow Livox's livox_ros_driver (MIT License). Vendor CAD
+(CubeMars, Livox) and the Mid-360 scan pattern are not included in this repository;
+the tools in cad/tools/ and rl/ fetch them from their owners.
+
+THE WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO
+EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM
+THE WORK OR ITS USE.
+
+Contact for permission: nvthuong180702@gmail.com

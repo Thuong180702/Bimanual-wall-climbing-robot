@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you refer to this work, please cite it as below."
+title: "Bimanual wall-climbing robot"
+abstract: "A 24.2 kg two-armed robot that hangs from wall rungs by hooked hands, in MuJoCo, and a PPO policy that learns to climb with it."
+authors:
+  - family-names: "Nguyen Van"
+    given-names: "Thuong"
+    email: "nvthuong180702@gmail.com"
+date-released: 2026-09-01
+repository-code: "https://github.com/Thuong180702/Bimanual-wall-climbing-robot"
+license-url: "https://github.com/Thuong180702/Bimanual-wall-climbing-robot/blob/main/LICENSE"
+type: software
