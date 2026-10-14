@@ -713,6 +713,11 @@ def check_warp(envs=None, out=None, speed=False):
         except AssertionError as e:
             return decide('jax', f"Warp is not C MuJoCo's physics here: {e}")
         except Exception as e:                # an import, a kernel, a shape: not usable
+            # but out of memory is the card's neighbours, not Warp (gpu11, 2026-10-14: the
+            # batch fit beside it took the card and this said 'jax'): fail, so gpu_run.sh
+            # runs it again alone
+            if 'RESOURCE_EXHAUSTED' in str(e) or 'out of memory' in str(e).lower():
+                raise
             return decide('jax', f"Warp did not run: {type(e).__name__}: {e}")
         if not envs:
             return decide('warp', "Warp is right; not timed yet (--speed)")
