@@ -751,7 +751,10 @@ class Walls(Curriculum):
             return 0.0
         if not self.learning(f):
             return rsi.SHARE
-        return rsi.SHARE6_HI if f in rsi.SLOW else rsi.SHARE_HI
+        # SHARE6_HI only before a SLOW family first passes: its hang is then 60 s to a timeout. Once it
+        # has, new climbs of its own kept it there, and gpu11 (309-348M, family 6's two tiers and new
+        # starts) drew its hang 2 % of the steps: family 6 forgot its one tier toward -y (8/12 -> 0/12)
+        return rsi.SHARE6_HI if f in rsi.SLOW and f not in self.cleared else rsi.SHARE_HI
 
     def length(self, lesson):
         """mean steps of a wall of family `lesson` as the bank draws it: its share started partway
@@ -1588,6 +1591,10 @@ def walls_check(FakeModel, FakeEnv):
         s6.cleared.add(6)
         s6.starts = {int(j): [True] * rsi.START_MIN for j in range(len(s6.ref['start_climb']))}
         assert s6.share(6) == rsi.SHARE and s6.share(1) == 0.0, "a family passed kept its starts' high share"
+        j6 = int(np.nonzero(rsi.family(s6.ref)[s6.ref['start_climb']] == 6)[0][0])   # passed, then one of its
+        s6.starts[j6] = [False] * rsi.START_MIN                                         # starts not yet
+        assert s6.learning(6) and s6.share(6) == rsi.SHARE_HI, \
+            f"a family passed, with a start not, drew its hang {1 - s6.share(6):.0%} of its walls"
     if w.ref is not None:
         w6 = Walls(active=[1, 3, 6], cleared=[1], entered={1: 0, 3: 0, 6: 0}, lag=0)
         w6.num_timesteps = STUCK_STEPS
