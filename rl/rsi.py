@@ -48,8 +48,10 @@ walked down through every start the policy already finishes from, BACK + 1 of th
 TIMEOUT lag: for gpu4, 41 of them, 13-25M steps simulated before it reached 4.8 s; 6-9M now.
 
 Where the books say the policy does not finish, rl.train_ppo.Clone also clones the climb's own
-action at every row (`action`, `unpassed`): gpu6 (2026-10-10, 61M steps) finished every row
-from 4.88 s and none before, 0/64 at 4.84 s, the catch there 7-8 sigma of its noise away.
+action there (`action`): gpu6 (2026-10-10, 61M steps) finished every row from 4.88 s and none
+before, 0/64 at 4.84 s, the catch there 7-8 sigma of its noise away. Only at each climb's
+frontier and the BACK starts before it (`cloned`, 2026-10-14): every start not passed was
+gpu11's family 5 entering, 2786 rows, and a rollback.
 
 Two rows (`TAUGHT`, `teach`): gpu7 (2026-10-10, 173M steps) climbed one row 24/24 and two
 0/24, stopped on the middle row by the start row in its view (see `teach`). Those climbs are
@@ -627,9 +629,27 @@ def allowed(ref, tops):
 
 def unpassed(books, ref, tops):
     """the startable fixture rows of every start not yet passed in `books`, over the climbs
-    the tops `tops` let in: where the policy does not finish the climb (rl.train_ppo.Clone)"""
+    the tops `tops` let in: where the policy does not finish the climb (rl.train_ppo.Walls.learning)"""
     bad = [int(j) for j in allowed(ref, tops) if not passed(books.get(int(j), []))]
     return np.nonzero(np.isin(ref['start'], bad) & ref['startable'])[0]
+
+
+def cloned(books, ref, tops):
+    """the startable fixture rows of the starts at each climb's frontier and the BACK (BACK6, LONG
+    families) before it not yet passed: where the policy learns its climbs now, the window `weights`
+    focuses on (rl.train_ppo.Clone). Not every start not passed (`unpassed`): a family that has just
+    entered has all of them, family 5's 2786 rows in gpu11 at 258M, its references' actions 2.8
+    sigma off the policy's mean, and in 12M steps families 8, 3, 4 and 6 fell 93 -> 2, 70 -> 34,
+    80 -> 59, 73 -> 46 % to a rollback. Family 6's ~2000 at 33M took 3 and 4 down 20-30 points;
+    13-75 rows (200-250M) took nothing; gpu6's catch was 60 rows behind its frontier"""
+    ok, sc, fam = allowed(ref, tops), ref['start_climb'], family(ref)
+    hot = []
+    for c, f in frontier(books, sc, ok).items():
+        if f is None:
+            continue
+        back = BACK6 if fam[c] in LONG else BACK
+        hot += [int(j) for j in ok[(sc[ok] == c) & (ok <= f) & (ok >= f - back)] if not passed(books.get(int(j), []))]
+    return np.nonzero(np.isin(ref['start'], hot) & ref['startable'])[0]
 
 
 def passed(h):

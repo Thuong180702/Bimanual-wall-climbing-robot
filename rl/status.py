@@ -68,11 +68,14 @@ def show(name, names):
     if starts is not None and tops:        # where along each climb its starts are learnt from
         from . import rsi
         ref = rsi.load()
-        if ref is not None and st['walls'].get('rsi') != rsi.signature(ref):
+        sig = st['walls'].get('rsi')
+        # as a resume reads them (train_ppo.Walls): a fixture that only gained climbs keeps the books
+        n = None if ref is None or sig == rsi.signature(ref) else rsi.kept(ref, sig) if sig else 0
+        if n == 0:
             print(f"  {'starts frontier':>22}   - (its books are by another rl.rsi fixture's starts; "
                   "a resume starts them over)")
             return
-        fr = rsi.where({int(j): v for j, v in starts.items()},
+        fr = rsi.where({int(j): v for j, v in starts.items() if n is None or int(j) < n},
                        {int(f): t for f, t in tops.items() if int(f) in rsi.TOP and int(f) in st['active']})
         print(f"  {'starts frontier':>22}   " + ", ".join(
             f"{s} climb {'all passed' if v is None else f'from {v:g} s'}" for s, v in fr.items()))

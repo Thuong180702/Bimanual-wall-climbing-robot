@@ -886,6 +886,12 @@ CLONE_RATIO = 0.3    # the cloning gradient's norm, this times PPO's own on the 
                      # on gpu6 (64 envs, CPU): the mean 10.7 sigma off the reference over its
                      # 125 rows, 1.3 three updates later; the first update's KL 3.5 against
                      # 1.4 for PPO alone, the next ones PPO's own (1.0: 5.4, then 0.9 sigma)
+CLONE_OFF = 2.5      # ...and times min(1, CLONE_OFF / off), `off` the minibatch's mean |mu - a| / sigma
+                     # over the 17 joints: far off it pulls gently, harder as it closes. gpu11 at 258M
+                     # (family 5 in, 2786 rows 2.8 off at 0.36 std) lost families 8, 3, 4 and 6 in 12M
+                     # steps; resumed at 309M with 151 new rows 12.8 off, one update's KL was 4.8
+                     # against 0.38 for PPO alone, 0.42 at ratio 0.05. Every clone that did no harm
+                     # (30-60M, 200-250M) ran 0.4-0.9 off: below this, unchanged
 CLONE_BATCH = 512    # reference rows' observations a PPO minibatch step clones
 CLONE_DRAWS = 16     # sensor-noise draws observed at each fixture row
 CLONE_CHUNK = 1024   # resets at a time while observing them
@@ -894,10 +900,12 @@ CLONE_CHUNK = 1024   # resets at a time while observing them
 class Clone(BaseCallback):
     """Behaviour cloning of rl.rsi's reference climbs, where the policy does not finish
     them: every PPO optimizer step also pulls the policy's MEAN action at the fixture rows
-    of each start not yet passed (rl.rsi.unpassed, from Walls' books) toward the climb's
+    of the starts not yet passed at each climb's frontier (rl.rsi.cloned, from Walls'
+    books: the frontier and the BACK before it -- all of a family's starts not passed
+    flooded it when family 5 entered gpu11, a rollback 50M steps later) toward the climb's
     own action there (rl.rsi's `action`), observed as an episode started at that row
     observes it. Its gradient is added to PPO's after SB3 clips it, scaled to CLONE_RATIO
-    of that one's norm on the actor's weights: a fixed share of every step whatever the
+    of that one's norm on the actor's weights (less while far off: CLONE_OFF): a fixed share of every step whatever the
     two losses' scales, so PPO keeps most of it. On for each family with climbs (3, 4, 6) while
     it is in the pool, and only at rows the books say fail, its gate passed or not (gpu7
     passed it on one row with two at 0 %): a start passed is the policy's own business. Demonstration-augmented policy gradient
@@ -938,7 +946,7 @@ class Clone(BaseCallback):
         c = self.cur
         if self.ref is None or not c.enabled or not c.rsi_tops():
             return np.zeros(0, int)
-        return rsi.unpassed(c.starts, self.ref, c.rsi_tops())
+        return rsi.cloned(c.starts, self.ref, c.rsi_tops())
 
     def observe(self, climb):
         """(its fixture rows, [rows, CLONE_DRAWS, dim]): each row of climb `climb` observed as an
@@ -1016,11 +1024,11 @@ class Clone(BaseCallback):
             norm = torch.sqrt(sum((d ** 2).sum() for d in g))
             if norm < 1e-12:
                 return
-            s = float(CLONE_RATIO * own / norm)
+            off = float((((mu - y) / pol.log_std.exp()) ** 2).sum(1).sqrt().mean())
+            s = float(CLONE_RATIO * min(1.0, CLONE_OFF / max(off, 1e-12)) * own / norm)
             for p, d in zip(ps, g):
                 p.grad.add_(d, alpha=s)
-            sd = pol.log_std.exp()
-            self.log.append((float((((mu - y) / sd) ** 2).sum(1).sqrt().mean()), s))
+            self.log.append((off, s))
 
 
 class AdaptiveLR(BaseCallback):
@@ -1932,7 +1940,7 @@ def guard_check(FakeModel, FakeEnv, feed):
 
 def clone_check():
     """Clone: the reference's actions line up with its rows; it clones the rows of the starts
-    not passed, of the climbs family 3's tops let in, its gate passed or not; on a real (tiny)
+    not passed at each climb's frontier, of the climbs family 3's tops let in, its gate passed or not; on a real (tiny)
     PPO it pulls the mean to them with CLONE_RATIO of PPO's own gradient; it follows the
     optimizer through a rollback and a resume; and it is off once every start has passed."""
     import tempfile
@@ -1951,6 +1959,14 @@ def clone_check():
         books.update({int(j): [j > c20[24]] * rsi.START_MIN for j in c20})   # ...gpu6's from 4.88 s
         assert (rsi.unpassed(books, ref, {3: dict(rows=1, spacing=0.20)}) == np.nonzero(np.isin(st, c20[:25]))[0]).all(), \
             "not the rows of the starts not passed"
+        hot = rsi.cloned(books, ref, {3: dict(rows=1, spacing=0.20)})      # cloned: the frontier's window
+        assert (hot == np.nonzero(np.isin(st, c20[25 - rsi.BACK - 1:25]) & ref['startable'])[0]).all(), \
+            "not the rows of the frontier and the BACK starts before it"
+        if (rsi.family(ref) == 5).any():                 # gpu11 at 258M: family 5 in, no start booked
+            f5 = {5: {'break': 1.80}}
+            n5, all5 = len(rsi.cloned({}, ref, f5)), len(rsi.unpassed({}, ref, f5))
+            assert 0 < n5 <= 2 * (rsi.BACK6 + 1) * rsi.EVERY < all5 / 10, \
+                f"a family just in cloned at {n5} of its {all5} rows not passed"
         one = rsi.unpassed({}, ref, {3: dict(rows=1, spacing=0.25)})
         assert len(rsi.unpassed({}, ref, {3: dict(rows=1, spacing=0.10)})) == 0 and \
             set(sp[one].tolist()) == {0.20, 0.25}, "not the climbs the spacing lets in"
@@ -1983,15 +1999,17 @@ def clone_check():
     calls = []
     c.add, add = (lambda: (calls.append(1), add())[1]), c.add
 
+    win = np.arange(8 - 2 * (rsi.BACK + 1), 8)            # the rows it clones: the frontier's window
+
     def off():
-        x = torch.as_tensor(venv.normalize_obs(c.obs.reshape(-1, 3)), dtype=torch.float32)
+        x = torch.as_tensor(venv.normalize_obs(c.obs[win].reshape(-1, 3)), dtype=torch.float32)
         with torch.no_grad():
             mu = m.policy.get_distribution(x).distribution.mean.numpy()
-        return float(np.abs(mu - np.repeat(c.act, CLONE_DRAWS, axis=0)).mean())
+        return float(np.abs(mu - np.repeat(c.act[win], CLONE_DRAWS, axis=0)).mean())
     before = off()
     m.learn(64 * 40, callback=[c])
     after = off()
-    assert len(c.rows) == 8 and after < 0.5 * before, \
+    assert (c.rows == win).all() and after < 0.5 * before, \
         f"cloning did not pull the mean to the reference: |mu - a| {before:.3f} -> {after:.3f}"
     pol = m.policy
     ps = [p for mod in (pol.mlp_extractor.policy_net, pol.action_net) for p in mod.parameters()]
@@ -2004,6 +2022,15 @@ def clone_check():
     add()
     added = float(torch.sqrt(sum(((p.grad - w) ** 2).sum() for p, w in zip(ps, was))))
     assert abs(added - CLONE_RATIO * own) <= 1e-4 * own, f"cloning added {added:g} to PPO's {own:g}"
+    near, c.act = c.act, c.act + 20.0                   # the reference far off: it pulls gently
+    for p, w in zip(ps, was):
+        p.grad = w.clone()
+    add()
+    far = float(torch.sqrt(sum(((p.grad - w) ** 2).sum() for p, w in zip(ps, was))))
+    off_far = c.log[-1][0]
+    c.act = near
+    assert off_far > CLONE_OFF and abs(far - CLONE_RATIO * CLONE_OFF / off_far * own) <= 1e-4 * own, \
+        f"{off_far:.1f} sigma off, cloning added {far:g} to PPO's {own:g}"
     with tempfile.TemporaryDirectory() as d:        # a rollback keeps the optimizer, a resume does not
         m.save(os.path.join(d, 'm'))
         m.set_parameters(os.path.join(d, 'm.zip'), exact_match=True)
@@ -2021,8 +2048,8 @@ def clone_check():
     Cur.starts = {j: [True] * rsi.START_MIN for j in range(4)}      # every start passed
     c._on_rollout_start()
     assert len(c.rows) == 0, "cloning on with every start passed"
-    print(f"clone test: the reference's actions are its rows' steps; the starts not passed are "
-          f"cloned at {CLONE_RATIO:g}x PPO's gradient, |mu - a| {before:.2f} -> {after:.2f} "
+    print(f"clone test: the reference's actions are its rows' steps; the starts not passed at the frontier are "
+          f"cloned at {CLONE_RATIO:g}x PPO's gradient (less past {CLONE_OFF:g} sigma off), |mu - a| {before:.2f} -> {after:.2f} "
           f"on a toy, family 3's gate passed; it follows a rollback and a resume, and stops once every start has passed. OK")
 
 
