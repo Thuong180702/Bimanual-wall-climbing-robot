@@ -129,6 +129,12 @@ wall toward -y): 15/15 that way at 210M, 0/9 mirrored, every one a timeout. Fami
 again. gpu10's policy (215M) turns it both ways (22/24 at side 0.60). Its own move each way round
 on one wall (`wall7`), recorded as family 4's are (`teach7`), booked as family 7 + BOOK.
 
+Family 8 past 0.50 (`STEPS8B`, the same day): gpu11 climbed ADR to 0.45-0.50 on the 0.35 m climb
+alone (0.50 5/64 from the hang, 0.55 0/64; lesson 8 is 0.63). Found as 0.35's was, with a hill
+weight (HILL=2: without it the left arm's swing overhead climbed 1.7-4.3 m of live potential), at
+0.60 from IK poses and at 0.50, 0.55 and 0.70 from 0.60's climb: 16.8-17.4 s, hills 8-12 mm,
+open loop on Warp 25/29, 26/29, 26/29 and 23/28 of their starts.
+
 Family 3's wider two rows (`TAUGHT3`, the same day): at its last tops (2 rows, 0.45) gpu11 went
 from 41/48 at 100M to 34/48 at 200M and 226M on the same walls. All of the loss was two rows
 0.35-0.45 apart (11/15 -> 6/15, released), where no climb was offered: TAUGHT's two rows stop at
@@ -181,6 +187,11 @@ TAUGHT6 = {(r, side): os.path.join(HERE, 'fixtures', f'climb_f6x2{"m" if side < 
 # f9g55 / f9mg55). Family 8's one way round only: both its rows run full length, and mirrored
 # its wall is the same wall
 STEPS8 = {(b, 1): os.path.join(HERE, 'fixtures', f'climb_f8_b{round(b * 100)}.npz') for b in (0.35,)}
+# ...and past 0.50 (2026-10-14), after every climb before them so a run's books are kept: gpu11 rose to
+# 0.45 on 0.35's alone, 0.50 5/64 and 0.55 0/64 from the hang, lesson 8 at 0.63. plan_chain f8b60 with
+# TURN, HILL=2 and IKQ from ik_f8.py at 0.60 (hill 12 mm; without HILL 1.7-4.3 m), then f8b50, f8b55
+# and f8b70 from that climb (INIT): their own IK poses' searches did not get the left hook over
+STEPS8B = {(b, 1): os.path.join(HERE, 'fixtures', f'climb_f8_b{round(b * 100)}.npz') for b in (0.50, 0.55, 0.60, 0.70)}
 # Family 9 every 0.1 m from its first top to its last (0.90, lesson 9's): a climb is offered once
 # the gap's top reaches it, so each top past 0.55 is at most 0.05 past a climb. Past the static
 # reach the crossing is lesson 9's swing (plan_chain f9s)
@@ -901,7 +912,8 @@ def build_fixture():
     # family 4's after those
     taught(4, TAUGHT4, '--teach4')
     # families 8's, 9's and 5's found ones after all of those, as family 6's
-    for fam, steps, replay in ((8, STEPS8, _replay8), (9, STEPS9, _replay9), (5, STEPS5, _replay5)):
+    def replayed(fam, steps, replay):
+        nonlocal rows, j0
         for (h, side), path in sorted(steps.items()):
             if not os.path.exists(path):
                 print(f"rsi: no {path}: family {fam}'s {h:.2f} m climb (side {side}) left out")
@@ -916,11 +928,16 @@ def build_fixture():
             top = HILL_SWING if fam == 9 and h > STATIC9 else HILL_MAX
             assert hill <= top, (f"family {fam}'s {h:.2f} m climb climbs {hill:.2f} m of live potential "
                                  f"before it pays (limit {top})")
-    # family 7's, family 3's wider two rows and family 6's two tiers last of all (2026-10-14):
+
+    for fam, steps, replay in ((8, STEPS8, _replay8), (9, STEPS9, _replay9), (5, STEPS5, _replay5)):
+        replayed(fam, steps, replay)
+    # family 7's, family 3's wider two rows, family 6's two tiers and family 8's farther back rungs
+    # last of all (2026-10-14):
     # every start before keeps its number, so a run's books on the fixture before are kept (`kept`)
     taught(7, TAUGHT7, '--teach7')
     taught(3, TAUGHT3, '--teach3')
     taught(6, TAUGHT6, '--teach6', n_rows=2)
+    replayed(8, STEPS8B, _replay8)                   # family 8's past 0.50
     climbs = [c if len(c) == 4 else c + (3, 0) for c in climbs]     # (height, rows, family, side)
     z = {k: np.array([r[k] for r in rows]) for k in rows[0]}
     first = np.unique(z['start'], return_index=True)[1]
