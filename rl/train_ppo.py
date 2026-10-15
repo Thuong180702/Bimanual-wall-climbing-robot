@@ -641,8 +641,9 @@ class Walls(Curriculum):
     passed at UNLOCK_AT or better moves that top a step toward its last value, at
     WARM_RATE or worse a step back. A probe counts only at the top it was drawn at, so
     walls still out when a top moves do not vote on the new one. The score -- the best
-    checkpoint -- is how far the tops have come, 0..1 a family; the guard adds what the
-    families the best had passed still hold of the gate (`held`).
+    checkpoint -- is how far the tops have come, 0..1 a family, a top raised counting only
+    once a window at it is judged (`proven`); the guard adds what the families the best had
+    passed still hold of the gate (`held`).
 
     enabled=False is the no-curriculum ablation: every family, every top at its last
     value from the first step -- plain domain randomization over the same walls.
@@ -681,6 +682,9 @@ class Walls(Curriculum):
                 self.tops[int(f)].update(t)
         self.probes = {k: list(v) for k, v in (w.get('probes') or {}).items()
                        if int(k.split(':')[0]) not in moved}
+        # tops ADR raised and has not judged a window at yet, {'f:name': the top before} (`proven`)
+        self.fresh = {k: v for k, v in (w.get('fresh') or {}).items()
+                      if int(k.split(':')[0]) not in moved}
         # rl.rsi's book per start, {start: [success, ...]}: where its frontier is. By start
         # number, so only on the fixture they were kept on (rl.rsi.signature): gpu9's family-6
         # climbs gained rows at their ends (MARGIN6) and every start after the first moved
@@ -701,10 +705,39 @@ class Walls(Curriculum):
                 print(f"[adr] family {f}'s ranges changed since this checkpoint: it starts over "
                       f"at {self.tops[f]}")
 
-    def progress(self):
-        """how far every top has come, first -> last, 0..1 a family, summed"""
-        return float(sum(np.mean([(self.tops[f][n] - a) / (b - a) for n, _, a, b, _ in ps])
+    def progress(self, tops=None):
+        """how far every top (of `tops`, else the current ones) has come, first -> last, 0..1
+        a family, summed"""
+        tops = tops or self.tops
+        return float(sum(np.mean([(tops[f][n] - a) / (b - a) for n, _, a, b, _ in ps])
                          for f, ps in self.W.FAMILIES.items()))
+
+    def proven(self):
+        """the tops, each ADR raised and has not yet judged a window at (`fresh`) back where it
+        was: what the policy has shown it climbs. The score and the guard read these. Read at the
+        tops themselves, a step up was a best the moment ADR took it, before one wall at the new
+        top was in: gpu11's family 8 to 0.55 m behind (502.7M) and family 6 to two tiers (620.2M)
+        fell 76 -> 16 % and 67 -> 18 % there, ADR stepped both back, and the best -- a rollback's
+        target -- held the step that failed, its progress a bar the run could not come back to"""
+        t = {f: dict(v) for f, v in self.tops.items()}
+        for k, v in self.fresh.items():
+            f, name = k.split(':')
+            t[int(f)][name] = v
+        return t
+
+    def unfresh(self):
+        """every top ADR raised and has not judged yet back where it was, its family's probes
+        dropped (drawn at it): a rollback's tops (Checkpoint.rollback). -> {'f:name': (from, to)}"""
+        back = {}
+        for k, v in self.fresh.items():
+            f, name = k.split(':')
+            back[k] = (self.tops[int(f)][name], v)
+            self.tops[int(f)][name] = v
+            for p in self.probes:
+                if p.split(':')[0] == f:
+                    self.probes[p] = []
+        self.fresh = {}
+        return back
 
     def score(self):
         """how far the tops have come, then -- among equals -- the pool's success on its
@@ -713,7 +746,7 @@ class Walls(Curriculum):
         best froze the moment every top reached its last, where a run spends most of
         its steps, and step 3 of gpu_run.sh scored that first policy to get there"""
         s = super().score()
-        return self.progress() + 0.01 * (s or 0.0) / len(self.W.FAMILIES)
+        return self.progress(self.proven()) + 0.01 * (s or 0.0) / len(self.W.FAMILIES)
 
     def guarded(self):
         """the families the guard holds a best to: those that have passed the gate. A
@@ -727,8 +760,8 @@ class Walls(Curriculum):
         so a family that fell from 95 % to 30 % and stayed there never brought the run
         back. Rates over UNLOCK_AT are capped: ADR raising a top lowers them by design.
         One family forgotten outright is a whole family's worth (GUARD_DROP), as losing
-        its range is"""
-        out = self.progress()
+        its range is. The progress is the `proven` tops': a step ADR takes back costs no margin"""
+        out = self.progress(self.proven())
         for f in lessons:
             n, r = self.rate(f)
             out += min(r, UNLOCK_AT) / UNLOCK_AT if n >= self.unlock_min else 1.0
@@ -831,6 +864,9 @@ class Walls(Curriculum):
         new = (min(t + step, last) if rate >= UNLOCK_AT else
                max(t - step, first) if rate <= WARM_RATE else t)
         new = int(new) if isinstance(first, int) else round(float(new), 6)
+        self.fresh.pop(f'{f}:{name}', None)      # a window judged at it: proven, or stepped back from
+        if new > t:
+            self.fresh[f'{f}:{name}'] = t
         if new != t:
             self.tops[f][name] = new
             # the family's other probes were drawn with this one where it was: they vote again
@@ -846,7 +882,7 @@ class Walls(Curriculum):
 
     def state(self):
         return dict(super().state(), walls=dict(
-            tops={str(f): t for f, t in self.tops.items()}, probes=self.probes,
+            tops={str(f): t for f, t in self.tops.items()}, probes=self.probes, fresh=self.fresh,
             spec={str(f): self.W.spec(f) for f in self.W.FAMILIES},
             starts={str(j): v[-rsi.START_WINDOW:] for j, v in self.starts.items()}, rsi=self.rsi_sig))
 
@@ -1140,7 +1176,9 @@ class Checkpoint(BaseCallback):
         env = m.get_vec_normalize_env()
         env.obs_rms, env.ret_rms = stats.obs_rms, stats.ret_rms
         self.cur.restore(json.load(open(p + 'state.json')))
+        back = {}
         if isinstance(self.cur, Walls):     # this rollout's walls were drawn at the dropped tops
+            back = self.cur.unfresh()       # ...and the best's own tops not yet judged at go too
             self.cur.draw_bank(self.training_env)
         was, was_kl = m.lr_schedule(1.0), self.kl_target
         m.learning_rate = max(was * LR_DECAY, LR_MIN)
@@ -1151,12 +1189,13 @@ class Checkpoint(BaseCallback):
         self.low_since, self.due = None, False
         record('rollback', timesteps=int(m.num_timesteps), held=h, best=self.best_held,
                pool=self.cur.active, lr=[was, m.learning_rate], kl_target=[was_kl, self.kl_target],
-               rollbacks=self.rollbacks)
+               rollbacks=self.rollbacks, unjudged=back)
         print(f"\n[guard] {h:.2f} against the best {self.best_held:.2f} for "
               f"{GUARD_UPDATES}+ updates: back to the best checkpoint (pool "
               f"{self.cur.active}), learning rate {was:g} -> {m.learning_rate:g}, "
               f"KL target {was_kl:g} -> {self.kl_target:g}, "
-              f"rollback {self.rollbacks}\n")
+              f"rollback {self.rollbacks}"
+              + "".join(f"; {k} back {v[0]:g} -> {v[1]:g}, never judged" for k, v in back.items()) + "\n")
         self.save()
 
     def save(self, tag=''):
@@ -1785,10 +1824,43 @@ def walls_check(FakeModel, FakeEnv):
     assert abs(h.held([1]) - full) < 1e-9, "a family above the gate was read as forgetting"
     h.hist[1] = [False] * WW
     assert abs(full - h.held([1]) - 1.0) < 1e-9 and full - h.progress() == 1.0, (full, h.held([1]))
+    # a top ADR has just raised is not proven until a window at it is judged: the score and the
+    # guard read it where it was, so a step taken back costs no margin and is never a best
+    v = Walls(lag=0)
+    v.model = FakeModel(FakeEnv())
+
+    def vprobe(ok, n):
+        for _ in range(n):
+            v.locals = {'infos': [dict(reason='success' if ok else 'fell', lesson=1, probe=0,
+                                       probe_val=v.tops[1]['shift'], steps=100)], 'dones': [True]}
+            v._on_step()
+    proven = lambda: v.progress(v.proven())
+    t0, p0 = v.tops[1]['shift'], v.progress()
+    vprobe(True, WW)                                  # a step up
+    assert v.tops[1]['shift'] > t0 and v.fresh == {'1:shift': t0}, (v.tops[1], v.fresh)
+    assert v.progress() > p0 and abs(proven() - p0) < 1e-9, "an unjudged top counted as progress"
+    assert abs(v.held([1]) - proven() - 1.0) < 1e-9, "the guard read the unjudged top"
+    st = json.loads(json.dumps(v.state()))
+    assert Walls(st['active'], st['history'], st['walls']).fresh == v.fresh, "fresh lost in state.json"
+    vprobe(False, WW)                                 # its window fails: back, and no margin lost
+    assert v.tops[1]['shift'] == t0 and v.fresh == {} and abs(proven() - p0) < 1e-9, (v.tops[1], v.fresh)
+    vprobe(True, WW)
+    t1 = v.tops[1]['shift']
+    vprobe(True, WW)                                  # t1 passed at: proven; the next step is not
+    assert v.fresh == {'1:shift': t1} and proven() > p0, v.fresh
+    vprobe(True, WW // 2)
+    vprobe(False, WW - WW // 2)                       # 50 %: the top stays, judged
+    assert v.fresh == {} and abs(proven() - v.progress()) < 1e-9, v.fresh
+    vprobe(True, WW)
+    t2 = v.tops[1]['shift']
+    vprobe(True, 5)
+    back = v.unfresh()                                # a rollback's: back where it was judged
+    assert back == {'1:shift': (t2, v.tops[1]['shift'])} and v.fresh == {} and v.probes['1:shift'] == [], \
+        (back, v.fresh, v.probes)
     print(f"walls test: ADR moves a top by its step on a full window of {WW} probes at it "
           f"({UNLOCK_AT:.0%} up, {WARM_RATE:.0%} down), within its ends; families enter in "
           f"order; tops survive state.json, a family whose ranges changed starting over (a legacy "
-          f"checkpoint read against rl.walls.LEGACY); the ablation starts every family at its last tops; the gate over {WW} walls holds a family at 60 %; a family stuck {STUCK_STEPS:,} steps stays in the pool, keeps its upgrades locked (rl.walls.NEEDS) and stops blocking the rest; the guard reads the passed families' success. OK")
+          f"checkpoint read against rl.walls.LEGACY); the ablation starts every family at its last tops; the gate over {WW} walls holds a family at 60 %; a family stuck {STUCK_STEPS:,} steps stays in the pool, keeps its upgrades locked (rl.walls.NEEDS) and stops blocking the rest; the guard reads the passed families' success; a raised top counts only once judged, and a rollback takes an unjudged one back. OK")
 
 
 def guard_check(FakeModel, FakeEnv, feed):
@@ -1893,6 +1965,20 @@ def guard_check(FakeModel, FakeEnv, feed):
             sys.stdout = out
         assert json.dumps(wc.tops, sort_keys=True) == tops and ck2.due, \
             "a passed family forgotten with ADR's tops untouched did not trip the guard"
+        # a best saved while a top ADR raised was still unjudged: the rollback takes the top
+        # back too (gpu11's best at 625.5M held family 6's two tiers, the step that failed)
+        wc.draw_bank = lambda env: None               # the toy env takes no walls
+        t0 = wc.tops[1]['shift']
+        sys.stdout = open(os.devnull, 'w')
+        try:
+            wc._move(1, 'shift', 1.0)                 # a passed window: up, not judged yet
+            ck2.save('best_')
+            ck2.rollback()
+        finally:
+            sys.stdout.close()
+            sys.stdout = out
+        assert wc.tops[1]['shift'] == t0 and wc.fresh == {}, \
+            f"a rollback restored an unjudged top: {wc.tops[1]} {wc.fresh}"
 
         # the noise floor and ceiling, on the same model
         be = BoundExploration()
@@ -2270,6 +2356,11 @@ def main():
     best = state.get('best')
     if active is not None and active != (state.get('active') or []):
         print(f"[curriculum] pool narrowed to {active}; the best score starts over")
+        best = None
+    if best is not None and 'walls' in state and 'fresh' not in state['walls']:
+        # its best was scored at tops ADR had not judged yet (Walls.proven), and a rollback
+        # would restore them: gpu11's best_ at 625.5M holds family 6's two tiers that failed
+        print("[guard] a checkpoint from before ADR's unjudged tops were kept apart: the best starts over")
         best = None
     cur = (Walls(active, state.get('history'), state.get('walls'), a.walls == 'adr',
                  seed + state.get('timesteps', 0), cleared=state.get('cleared'),
