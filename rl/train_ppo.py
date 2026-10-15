@@ -637,7 +637,8 @@ class Walls(Curriculum):
     STUCK_STEPS stays in the pool and keeps its upgrades locked, and stops holding back
     the families that do not build on it. Inside a family
     every parameter's top moves by automatic domain randomization: half of the walls
-    put one parameter exactly at its top (rl.walls.draw), and each WALL_WINDOW of those
+    put one parameter exactly at its top (rl.walls.draw; a top just raised, FRESH_P of them
+    and the rest under the old one, until a window at it is judged), and each WALL_WINDOW of those
     passed at UNLOCK_AT or better moves that top a step toward its last value, at
     WARM_RATE or worse a step back. A probe counts only at the top it was drawn at, so
     walls still out when a top moves do not vote on the new one. The score -- the best
@@ -719,11 +720,17 @@ class Walls(Curriculum):
         top was in: gpu11's family 8 to 0.55 m behind (502.7M) and family 6 to two tiers (620.2M)
         fell 76 -> 16 % and 67 -> 18 % there, ADR stepped both back, and the best -- a rollback's
         target -- held the step that failed, its progress a bar the run could not come back to"""
-        t = {f: dict(v) for f, v in self.tops.items()}
+        fr = self.fresh_tops()
+        return {f: {**v, **fr.get(f, {})} for f, v in self.tops.items()}
+
+    def fresh_tops(self):
+        """{family: {parameter: its last judged top}} of the tops ADR raised and has not judged
+        yet: rl.walls.draw puts FRESH_P of the family's walls at the new top, the rest under the old"""
+        out = {}
         for k, v in self.fresh.items():
             f, name = k.split(':')
-            t[int(f)][name] = v
-        return t
+            out.setdefault(int(f), {})[name] = v
+        return out
 
     def unfresh(self):
         """every top ADR raised and has not judged yet back where it was, its family's probes
@@ -773,7 +780,7 @@ class Walls(Curriculum):
         if self.checker is None:
             self.checker = self.W.Checker()
         bank = self.W.draw(self.checker, dict(zip(self.active, self.weights())), self.tops,
-                           self.rng, BANK)
+                           self.rng, BANK, fresh=self.fresh_tops())
         if self.enabled:                 # some of families 3's, 4's and 6's start partway up a climb (rl.rsi)
             bank = rsi.mix(bank, self.rng, self.rsi_tops(), {f: self.share(f) for f in rsi.TOP}, self.starts)
         env.env_method('set_bank', bank)
@@ -1857,6 +1864,17 @@ def walls_check(FakeModel, FakeEnv):
     back = v.unfresh()                                # a rollback's: back where it was judged
     assert back == {'1:shift': (t2, v.tops[1]['shift'])} and v.fresh == {} and v.probes['1:shift'] == [], \
         (back, v.fresh, v.probes)
+    # ...and while unjudged, FRESH_P of the family's walls probe it at the new top, the rest stay
+    # under the judged one (gpu11's family 8 at 0.55 m: 65 % of its walls past 0.50, 76 -> 16 %)
+    tops8 = {**v.W.first_tops(), 8: {'behind': 0.55}}
+    behind = lambda l: v.W.X - l['rungs'][1][1][0]
+    old = v.W.draw(v.W.Checker(), {8: 1.0}, tops8, np.random.default_rng(1), 400)
+    new = v.W.draw(v.W.Checker(), {8: 1.0}, tops8, np.random.default_rng(1), 400, fresh={8: {'behind': 0.5}})
+    at = [l for l in new if l['probe'] == 'behind']
+    assert sum(behind(l) > 0.5 + 1e-6 for l in old) > 0.45 * 400, "the old draw changed"
+    assert abs(len(at) / 400 - v.W.FRESH_P) < 0.08 and all(abs(l['probe_val'] - 0.55) < 1e-9 for l in at), \
+        (len(at), v.W.FRESH_P)
+    assert all(behind(l) <= 0.5 + 1e-6 for l in new if l['probe'] is None), "a wall past the judged top unprobed"
     print(f"walls test: ADR moves a top by its step on a full window of {WW} probes at it "
           f"({UNLOCK_AT:.0%} up, {WARM_RATE:.0%} down), within its ends; families enter in "
           f"order; tops survive state.json, a family whose ranges changed starting over (a legacy "

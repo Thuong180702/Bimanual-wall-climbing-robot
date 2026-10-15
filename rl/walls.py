@@ -335,27 +335,48 @@ class Checker:
         return clear([g for i, g in enumerate(self.rungs[:len(rungs)]) if i not in lay['goal_rungs']])
 
 
-def draw(checker, weights, tops, rng, n, probe_p=0.5):
+FRESH_P = 0.2        # a family's walls at a top ADR has just raised (`draw`'s fresh), until a window
+                     # there is judged. At the new top half the family's probes, and every other wall
+                     # under it, gpu11 put 65 % of its family-8 walls past 0.50 m behind at 502.7M and
+                     # 59 % of its family-6 walls at two tiers at 620.2M (22 and 24 % now), both ~0 %
+                     # there: in 9 and 17M steps family 8 fell 76 -> 16 % and family 6 67 -> 18 %,
+                     # the walls below the new top too, hung on to their timeouts. Every step up of
+                     # family 8's back rung (9) and family 6's tiers (3) went so; small steps -- family
+                     # 7's side, family 6's rise -- never did. The window there now fills 2.5x slower
+                     # on family 8, a little faster on family 6's tiers
+
+
+def draw(checker, weights, tops, rng, n, probe_p=0.5, fresh=None):
     """n usable walls: a family by `weights` ({family: weight}), and with probability
     probe_p one of its parameters put exactly at its current top -- at its last top too:
     one never probed again can never come back down. gpu7 (2026-10-10) took family 3 to two
     rows, its last, and climbed two rows 0/24 for 145M steps; only the spacing was probed,
     on walls of one row or two, ~50 %, inside ADR's dead band -- family 3 held at 50 % and
-    every family after it locked"""
+    every family after it locked.
+
+    `fresh` ({family: {parameter: its last judged top}}): tops ADR has raised and not yet judged
+    a window at (rl.train_ppo.Walls.fresh). FRESH_P of the family's walls probe one of them at its
+    new top; every other wall of the family draws it under the judged one"""
     fams = list(weights)
     w = np.asarray([weights[f] for f in fams], float)
     out = []
     while len(out) < n:
         f = fams[rng.choice(len(fams), p=w / w.sum())]
-        free = [s[0] for s in FAMILIES[f]]
-        probe = free[rng.integers(len(free))] if rng.random() < probe_p else None
+        fr = (fresh or {}).get(f, {})
+        if fr and rng.random() < FRESH_P:
+            probe = list(fr)[rng.integers(len(fr))]
+            top = {**tops[f], **{k: v for k, v in fr.items() if k != probe}}
+        else:
+            top = {**tops[f], **fr}
+            free = [s[0] for s in FAMILIES[f] if s[0] not in fr]
+            probe = free[rng.integers(len(free))] if free and rng.random() < probe_p else None
         for _ in range(50):
-            lay = sample(f, tops[f], rng, probe)
+            lay = sample(f, top, rng, probe)
             if checker.ok(lay):
                 out.append(lay)
                 break
         else:
-            raise RuntimeError(f"family {f} at {tops[f]} (probe {probe}): no usable wall in 50 draws")
+            raise RuntimeError(f"family {f} at {top} (probe {probe}): no usable wall in 50 draws")
     return out
 
 
