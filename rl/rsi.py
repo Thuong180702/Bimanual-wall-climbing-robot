@@ -223,6 +223,11 @@ BACK6 = 8            # ...LONG families' (above)
 START_WINDOW = 20    # a start's book: its last episodes...
 START_MIN = 10       # ...at least this many before it can count as passed...
 PASS = 0.7           # ...at this rate (train_ppo.UNLOCK_AT, the families' gate)
+SLIP = 0.5           # ...and holds the frontier only under this (`slipped`): a start learnt at 0.85
+                     # reads under PASS over 20 episodes 7 % of the time, and with 100+ of them past a
+                     # climb's cliff one always did. gpu11's frontier sat on such a start, not at the
+                     # cliff, at 76-100 % of its checkpoints 500-700M (f9 +y at 700M: 34.8 s at 0.65,
+                     # the cliff 23.6-24.8 s at 0.15-0.45), and FOCUS and Clone went with it
 EVERY = 5            # control steps a start spans along a climb (rows: one a control step)
 MARGIN = 25          # control steps (1 s) before the climb's success: the last start
 MARGIN6 = 5          # ...family 6's (0.2 s): its last hand's catch and seat are its last second.
@@ -648,7 +653,7 @@ def unpassed(books, ref, tops):
 
 def cloned(books, ref, tops):
     """the startable fixture rows of the starts at each climb's frontier and the BACK (BACK6, LONG
-    families) before it not yet passed: where the policy learns its climbs now, the window `weights`
+    families) before and after it not yet passed: where the policy learns its climbs now, the window `weights`
     focuses on (rl.train_ppo.Clone). Not every start not passed (`unpassed`): a family that has just
     entered has all of them, family 5's 2786 rows in gpu11 at 258M, its references' actions 2.8
     sigma off the policy's mean, and in 12M steps families 8, 3, 4 and 6 fell 93 -> 2, 70 -> 34,
@@ -660,7 +665,7 @@ def cloned(books, ref, tops):
         if f is None:
             continue
         back = BACK6 if fam[c] in LONG else BACK
-        hot += [int(j) for j in ok[(sc[ok] == c) & (ok <= f) & (ok >= f - back)] if not passed(books.get(int(j), []))]
+        hot += [int(j) for j in ok[(sc[ok] == c) & (ok <= f + back) & (ok >= f - back)] if not passed(books.get(int(j), []))]
     return np.nonzero(np.isin(ref['start'], hot) & ref['startable'])[0]
 
 
@@ -670,14 +675,21 @@ def passed(h):
     return len(h) >= START_MIN and sum(h) >= PASS * len(h)
 
 
+def slipped(h):
+    """a start's book: failing for the frontier -- booked fewer than START_MIN times, or under SLIP.
+    Between SLIP and PASS a start is not passed (`unpassed`, `cloned`) but does not hold the frontier"""
+    h = h[-START_WINDOW:]
+    return len(h) < START_MIN or sum(h) < SLIP * len(h)
+
+
 def frontier(books, climb, ok=None):
-    """{climb: the latest start along it (its index) not passed in `books` ({start: [success,
-    ...]}), None once every start has}, over the starts `ok`; `climb`: each start's.
+    """{climb: the latest start along it (its index) `slipped` in `books` ({start: [success,
+    ...]}), None once none has}, over the starts `ok`; `climb`: each start's.
     The latest, not the earliest: one that slips behind the frontier is drawn first again"""
     ok = np.arange(len(climb)) if ok is None else np.asarray(ok)
     out = {}
     for c in np.unique(climb[ok]):
-        bad = [int(j) for j in ok[climb[ok] == c] if not passed(books.get(int(j), []))]
+        bad = [int(j) for j in ok[climb[ok] == c] if slipped(books.get(int(j), []))]
         out[int(c)] = max(bad) if bad else None
     return out
 
@@ -695,13 +707,15 @@ def where(books, tops):
 
 def weights(books, climb, ok, back=BACK):
     """draw probabilities over the starts `ok`: FOCUS evenly over the starts to learn from
-    -- each climb's `back` + 1 ending at its frontier, and every start booked fewer than
+    -- each climb's `back` + 1 ending at its frontier (and the ones up to `back` after it not
+    passed), and every start booked fewer than
     START_MIN times -- and the rest evenly over every start"""
     ok = np.asarray(ok)
     hot = np.array([len(books.get(int(j), [])) < START_MIN for j in ok])
+    learnt = np.array([passed(books.get(int(j), [])) for j in ok])
     for f in frontier(books, climb, ok).values():
-        if f is not None:
-            hot |= (climb[ok] == climb[f]) & (ok <= f) & (ok >= f - back)
+        if f is not None:       # ...and the starts after it not yet passed, between SLIP and PASS
+            hot |= (climb[ok] == climb[f]) & (ok >= f - back) & ((ok <= f) | ((ok <= f + back) & ~learnt))
     w = np.full(len(ok), (1.0 - FOCUS) / len(ok))
     w[hot] += FOCUS / max(hot.sum(), 1)
     return w / w.sum()

@@ -1691,6 +1691,13 @@ def walls_check(FakeModel, FakeEnv):
         part = {j: v for j, v in g.starts.items() if j != int(c20[50])}
         w = rsi.weights(part, sc, c20)
         assert np.isclose(w[50], w.max()) and w[50] > 2 * w[60], "a start not yet booked was drawn as a passed one"
+        # a learnt start reading 0.65 by chance past the frontier does not take it (gpu11's f9 at
+        # 700M: 34.8 s at 0.65, its cliff at 24 s); it is still drawn and cloned beside it if near
+        g.starts[int(c20[40])] = [True] * 13 + [False] * 7
+        assert rsi.frontier(g.starts, sc, c20)[k20] == f, "a start under PASS by chance took the frontier"
+        g.starts[int(c20[f - int(c20[0]) + 1])] = [True] * 13 + [False] * 7
+        assert rsi.weights(g.starts, sc, c20)[f - int(c20[0]) + 1] > 2 * rsi.weights(g.starts, sc, c20)[60], \
+            "an unpassed start just past the frontier was not drawn as one at it"
         g.starts[int(c20[40])] = [False] * rsi.START_WINDOW      # one slips behind the frontier:
         assert rsi.frontier(g.starts, sc, c20)[k20] == int(c20[40]), "a start that slipped is not drawn first"
         # a climb over two rows (rsi.TAUGHT) is a climb of its own: its starts on family-3 walls
