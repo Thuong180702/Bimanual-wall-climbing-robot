@@ -657,7 +657,7 @@ class Walls(Curriculum):
         from . import walls as W
         self.W = W
         self.needs = W.NEEDS
-        super().__init__(list(W.FAMILIES), active, history, enabled,
+        super().__init__(list(W.TRAINED), active, history, enabled,
                          episode_steps(W.TIMEOUT) if lag is None else lag, cleared, entered)
         self.ref = rsi.load()
         self.rsi_start = None if self.ref is None else self.ref['start']    # fixture row -> its start
@@ -677,15 +677,23 @@ class Walls(Curriculum):
         w = walls or {}
         was = w.get('spec') or {str(f): s for f, s in self.W.LEGACY.items()}
         moved = {f for f in self.W.FAMILIES if was.get(str(f), self.W.spec(f)) != self.W.spec(f)}
+        # ranges only cut at their last values (family 6 to one tier, 2026-10-16): tops kept, cut
+        cut = {f for f in moved if self.W.narrowed(was[str(f)], f)}
+        moved -= cut
         self.tops = self.W.first_tops() if self.enabled else self.W.last_tops()
         for f, t in (w.get('tops') or {}).items():
             if int(f) not in moved:
                 self.tops[int(f)].update(t)
+        for f in sorted(cut):
+            self.tops[f] = {n: min(self.tops[f][n], last) for n, _, _, last, _ in self.W.FAMILIES[f]}
+            if w.get('tops'):
+                print(f"[adr] family {f}'s ranges were cut since this checkpoint: its tops kept, cut to "
+                      f"{self.tops[f]}")
         self.probes = {k: list(v) for k, v in (w.get('probes') or {}).items()
-                       if int(k.split(':')[0]) not in moved}
+                       if int(k.split(':')[0]) not in moved | cut}
         # tops ADR raised and has not judged a window at yet, {'f:name': the top before} (`proven`)
-        self.fresh = {k: v for k, v in (w.get('fresh') or {}).items()
-                      if int(k.split(':')[0]) not in moved}
+        self.fresh = {k: v for k, v in (w.get('fresh') or {}).items() if int(k.split(':')[0]) not in moved
+                      and v < self.tops[int(k.split(':')[0])][k.split(':')[1]]}   # a cut one may be gone
         # rl.rsi's book per start, {start: [success, ...]}: where its frontier is. By start
         # number, so only on the fixture they were kept on (rl.rsi.signature): gpu9's family-6
         # climbs gained rows at their ends (MARGIN6) and every start after the first moved
@@ -708,9 +716,9 @@ class Walls(Curriculum):
 
     def progress(self, tops=None):
         """how far every top (of `tops`, else the current ones) has come, first -> last, 0..1
-        a family, summed"""
+        a family, summed; a parameter that cannot move (family 6's one tier) is no part of it"""
         tops = tops or self.tops
-        return float(sum(np.mean([(tops[f][n] - a) / (b - a) for n, _, a, b, _ in ps])
+        return float(sum(np.mean([(tops[f][n] - a) / (b - a) for n, _, a, b, _ in ps if b > a] or [1.0])
                          for f, ps in self.W.FAMILIES.items()))
 
     def proven(self):
@@ -753,7 +761,7 @@ class Walls(Curriculum):
         best froze the moment every top reached its last, where a run spends most of
         its steps, and step 3 of gpu_run.sh scored that first policy to get there"""
         s = super().score()
-        return self.progress(self.proven()) + 0.01 * (s or 0.0) / len(self.W.FAMILIES)
+        return self.progress(self.proven()) + 0.01 * (s or 0.0) / len(self.pool)
 
     def guarded(self):
         """the families the guard holds a best to: those that have passed the gate. A
@@ -1469,7 +1477,7 @@ def walls_check(FakeModel, FakeEnv):
     it, up on a pass, down on a fail, never past its ends, at its last top as anywhere, one
     parameter of a family a window; the families enter in order; and the tops survive
     state.json"""
-    from .walls import FAMILIES
+    from .walls import FAMILIES, TRAINED
     WW = WALL_WINDOW
     w = Walls(lag=0)
     w.model = FakeModel(FakeEnv())
@@ -1545,11 +1553,11 @@ def walls_check(FakeModel, FakeEnv):
                           for f in rsi.TOP], 'dones': [True] * len(rsi.TOP)}
     r._on_step()                                         # ...and they still take its episodes
     assert all(len(q) == 1 for q in r.rsi_pending.values()), f"after a rollback: {r.rsi_pending}"
-    step = min(st / (b - a) / len(ps) for ps in FAMILIES.values() for _, _, a, b, st in ps)
+    step = min(st / (b - a) / len(ps) for ps in FAMILIES.values() for _, _, a, b, st in ps if b > a)
     assert 0.01 < step, f"a pool's success (0.01) can outrank a step of a top ({step:.3f})"
     off = Walls(enabled=False, lag=0)
     off.model = FakeModel(FakeEnv())
-    assert off.active == list(FAMILIES) and off.tops[9][FAMILIES[9][0][0]] == FAMILIES[9][0][3]
+    assert off.active == list(TRAINED) and off.tops[9][FAMILIES[9][0][0]] == FAMILIES[9][0][3]
     assert off.score() == off.progress() == len(FAMILIES), "a tie-break with nothing counted"
     for f in FAMILIES:                                   # every family passed: + 0.01
         off.locals = {'infos': [dict(reason='success', lesson=f, probe=-1, probe_val=0.0,
@@ -1605,7 +1613,7 @@ def walls_check(FakeModel, FakeEnv):
     ep(5, True, WW)                                      # step up is 6's (rl.walls.NEEDS)
     assert g.active[-1] == 6, f"5 opened before 6, its step up, passed: {g.active}"
     ep(6, True, WW)
-    assert g.active[-1] == 5, g.active
+    assert 5 not in g.active and g.active[-1] == 6, f"family 5, composed at run time, entered: {g.active}"
     ep(3, False, WW)                                     # ...and once passed, it holds the pool
     ep(5, True, WW)                                      # like any other when it slips
     g.num_timesteps = 3 * STUCK_STEPS
@@ -1882,6 +1890,27 @@ def walls_check(FakeModel, FakeEnv):
     assert abs(len(at) / 400 - v.W.FRESH_P) < 0.08 and all(abs(l['probe_val'] - 0.55) < 1e-9 for l in at), \
         (len(at), v.W.FRESH_P)
     assert all(behind(l) <= 0.5 + 1e-6 for l in new if l['probe'] is None), "a wall past the judged top unprobed"
+    # family 5 is not trained (composed at run time), family 6 is one tier: a checkpoint grown on
+    # two-tier ranges keeps its family-6 tops cut to one tier, its other tops and history whole
+    assert 5 not in v.pool and v.pool == list(TRAINED), v.pool
+    old6 = repr((('tiers', 1, 1, 2, 1), ('rise', 0.30, 0.30, 0.50, 0.05), ('scatter', 0.0, 0.02, 0.08, 0.02)))
+    sw = dict(st['walls'], spec={**st['walls']['spec'], '6': old6},
+              tops={**st['walls']['tops'], '6': dict(tiers=2, rise=0.35, scatter=0.04)},
+              probes={'6:rise': [True] * 7}, fresh={'6:tiers': 1, '6:rise': 0.30})
+    hist6 = {**st['history'], '6': [True] * WW}
+    out = sys.stdout
+    sys.stdout = open(os.devnull, 'w')
+    try:
+        c6 = Walls([1, 2, 3, 4, 6, 5], hist6, sw)
+    finally:
+        sys.stdout.close()
+        sys.stdout = out
+    assert c6.tops[6] == dict(tiers=1, rise=0.35, scatter=0.04) and c6.hist[6] == [True] * WW, (c6.tops[6], c6.hist.get(6))
+    assert c6.fresh == {'6:rise': 0.30} and '6:rise' not in c6.probes, (c6.fresh, c6.probes)
+    assert np.isfinite(c6.progress()), "a parameter that cannot move broke the progress"
+    d6 = v.W.draw(v.W.Checker(), {6: 1.0}, c6.tops, np.random.default_rng(2), 60)
+    assert all(l['probe'] != 'tiers' for l in d6) and all(sum(1 for r in l['rungs'] if r[1][2] > v.W.Z0 + 0.5) == 0 for l in d6), \
+        "a family-6 wall of two tiers, or a probe of a parameter that cannot move"
     print(f"walls test: ADR moves a top by its step on a full window of {WW} probes at it "
           f"({UNLOCK_AT:.0%} up, {WARM_RATE:.0%} down), within its ends; families enter in "
           f"order; tops survive state.json, a family whose ranges changed starting over (a legacy "
@@ -2287,8 +2316,8 @@ def main():
     if gen and not mjx:
         raise SystemExit("generated walls (--walls adr/random) run on the MJX backend only")
     if gen:
-        from .walls import FAMILIES
-        pool = list(FAMILIES)
+        from .walls import TRAINED
+        pool = list(TRAINED)
     envs = a.envs or (MJX_ENVS if mjx else default_envs())
     if a.device is None:
         import torch

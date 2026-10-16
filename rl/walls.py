@@ -22,6 +22,8 @@ the robot is symmetric, the benchmark only goes one way. A generated episode las
 most TIMEOUT: lesson 1's, at which hanging still costs less than falling
 (climb_task's incentive test).
 """
+import ast
+
 import numpy as np, mujoco
 from .climb_task import SEAT_IN
 
@@ -61,8 +63,12 @@ FAMILIES = {
     4: (('steps', 1, 1, 3, 1), ('drop', 0.25, 0.30, 0.45, 0.05),   # lesson 4: 3 steps,
         ('gap', 0.05, 0.10, 0.30, 0.05)),                          #   <= 0.40 down, <= 0.20 on
     5: (('break', 1.80, 1.80, 2.50, 0.10),),                       # lesson 5: 2.20
-    6: (('tiers', 1, 1, 2, 1), ('rise', 0.30, 0.30, 0.50, 0.05),   # lesson 6: 2, ~0.46,
-        ('scatter', 0.0, 0.02, 0.08, 0.02)),                       #   +-0.06
+    # family 6 is the diagonal step up, one tier: lesson 6's two (~0.46 each, +-0.06) are its
+    # steps one after another, composed at run time by goals a tier at a time. Trained at two,
+    # the far goal (2.7-3.3 m off, 0.6 up) froze the policy on the start row (gpu11: 0/16 at
+    # 226M, 8/16 with the goals on tier 1), and three steps to two tiers at 610-690M were 0-4 %
+    6: (('tiers', 1, 1, 1, 1), ('rise', 0.30, 0.30, 0.50, 0.05),
+        ('scatter', 0.0, 0.02, 0.08, 0.02)),
     7: (('side', 0.60, 0.60, 1.10, 0.05),),                        # lesson 7: 1.00
     8: (('behind', 0.35, 0.35, 0.70, 0.05),),                      # lesson 8: 0.63
     # lesson 9: 0.90. It ran to 1.10 m, inside the 1.47 m kinematics allow a swing; the one
@@ -109,6 +115,22 @@ assert set(NEEDS) == set(FAMILIES) and all(p in NEEDS for ps in NEEDS.values() f
     "every family's needs are families"
 ORDER = _order(NEEDS)                # raises StopIteration on a cycle: no family could ever enter
 assert ORDER == [1, 2, 3, 4, 6, 5, 7, 8, 9], ORDER
+# the families trained (rl.train_ppo.Walls' pool). Not 5: lesson 5 is 6's step up, along the top,
+# 4's step down, composed at run time by goals a rung pair at a time and scored so. Trained whole
+# (gpu11, 411-700M) it never once passed and took a quarter of the steps, stuck at its first catch
+TRAINED = tuple(f for f in FAMILIES if f != 5)
+
+
+def narrowed(old, f):
+    """family f's ranges are `old`'s (a checkpoint's spec) with only last values lowered: the tops
+    grown over `old` still mean what they did, cut to the new lasts (train_ppo.Walls._load)"""
+    try:
+        o = ast.literal_eval(old)
+    except (ValueError, SyntaxError):
+        return False
+    n = FAMILIES[f]
+    return len(o) == len(n) and all(tuple(a[:3]) == tuple(b[:3]) and a[4] == b[4] and b[3] <= a[3]
+                                    for a, b in zip(o, n))
 
 
 # where each benchmark lesson sits in its family (rl.lessons draws them): every value
@@ -368,7 +390,7 @@ def draw(checker, weights, tops, rng, n, probe_p=0.5, fresh=None):
             top = {**tops[f], **{k: v for k, v in fr.items() if k != probe}}
         else:
             top = {**tops[f], **fr}
-            free = [s[0] for s in FAMILIES[f] if s[0] not in fr]
+            free = [s[0] for s in FAMILIES[f] if s[0] not in fr and s[2] < s[3]]   # never one that cannot move
             probe = free[rng.integers(len(free))] if free and rng.random() < probe_p else None
         for _ in range(50):
             lay = sample(f, top, rng, probe)
@@ -398,9 +420,11 @@ def main():
         assert ck.ok(lay), f"benchmark lesson {k} fails the wall check"
         assert ck.ok(mirror(lay)), f"benchmark lesson {k}, mirrored, fails the wall check"
         for name, lo, _, last, _ in FAMILIES[k]:
+            if k not in TRAINED or (k, name) == (6, 'tiers'):
+                continue                 # composed at run time, a step at a time (TRAINED, family 6)
             v = BENCHMARK[k][name]
             assert lo <= v <= last, f"lesson {k}: {name} {v} outside its family's [{lo}, {last}]"
-    print("benchmark lessons 1..9, both ways round: usable walls, each inside its family's last range")
+    print("benchmark lessons 1..9, both ways round: usable walls, each inside its family's last range (5 and 6's two tiers: their steps)")
     t0 = __import__('time').perf_counter()
     walls = draw(ck, {f: 1.0 for f in FAMILIES}, last_tops(), rng, 256)
     dt = __import__('time').perf_counter() - t0
