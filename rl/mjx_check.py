@@ -601,7 +601,8 @@ def check_policy(lessons=None, episodes=8, run=None):
         print(f"policy: no checkpoint at {run} -- skipped")
         return
     predict, pool = pol
-    lessons = lessons or pool
+    from .walls import COMPOSED
+    lessons = lessons or [k for k in pool if k not in COMPOSED]
     batch = Batch(episodes)
 
     def c_run(k, xml):

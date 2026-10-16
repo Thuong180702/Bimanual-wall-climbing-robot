@@ -291,8 +291,8 @@ kill $MON 2>/dev/null
 # ---- 3. score the best checkpoint on the full robot -----------------------------
 [ "${SCORE:-1}" = 1 ] || { say "SCORE=0: not scoring; carry on with the same name"; pack; exit 0; }
 [ -f "$RUN/best_model.zip" ] || { say "no best checkpoint to score"; pack; exit 1; }
-say "scoring best_ on the full robot, the benchmark 1..9 both ways round: $EPISODES episodes each, one process each"
-jobs="1 1m 2 2m 3 3m 4 4m 5 5m 6 6m 7 7m 8 8m 9 9m"   # 'm': mirrored, toward the right
+say "scoring best_ on the full robot, the benchmark both ways round but 5 and 6 (rl.walls.COMPOSED): $EPISODES episodes each, one process each"
+jobs="1 1m 2 2m 3 3m 4 4m 7 7m 8 8m 9 9m"   # 'm': mirrored, toward the right; 5 and 6 are composed
 # One thread each: an episode is one robot in C MuJoCo, and unset, every one of the 18
 # would size numpy's, scipy's and torch's pools for all the cores -- thousands of
 # threads, past what gpu6's box allowed four JAX processes (preflight, 2026-10-09)

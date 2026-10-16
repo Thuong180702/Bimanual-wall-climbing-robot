@@ -119,6 +119,9 @@ assert ORDER == [1, 2, 3, 4, 6, 5, 7, 8, 9], ORDER
 # 4's step down, composed at run time by goals a rung pair at a time and scored so. Trained whole
 # (gpu11, 411-700M) it never once passed and took a quarter of the steps, stuck at its first catch
 TRAINED = tuple(f for f in FAMILIES if f != 5)
+# the benchmark lessons that are compositions (5; 6's two tiers): a controller drives the policy
+# through them a rung pair at a time; no training run scores them (gpu_run.sh, rl.curve, rl.mjx_check)
+COMPOSED = (5, 6)
 
 
 def narrowed(old, f):
