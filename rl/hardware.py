@@ -1,25 +1,17 @@
-"""What this machine can train on, and which simulator backend follows from it.
+"""What this machine can train on.
 
-    python -m rl.hardware        # what is here, and what training will use
+    python -m rl.hardware        # what is here, and what training will run on
 
-`rl.train_ppo` prints this line at startup and picks its backend from it, so a
-run says on its own log which machine it was on -- `win17`'s 20M steps had to be
-worked out from file timestamps.
-
-The question it answers is narrow: is there an NVIDIA GPU that JAX can actually
-use, because that is what MJX -- MuJoCo's own physics on the GPU, `rl.mjx_task`
--- needs. If so the backend is 'mjx', otherwise 'cpu': C MuJoCo in one process
-per core, exactly as before. Two near-misses are called out by name rather than
+`rl.train_ppo` prints this line at startup, so a run says on its own log which machine
+it was on. Training runs on MJX -- MuJoCo's own physics on the GPU, `rl.mjx_task` -- which
+needs an NVIDIA GPU that JAX can actually use; without one MJX runs on the CPU, slowly
+(how the checks run on a Mac). Two near-misses are called out by name rather than
 reported as "no GPU":
 
-  * A GPU is present and JAX only sees the CPU. On Windows that is the usual
-    case: JAX has had no native CUDA wheels since 0.4.x, and CUDA JAX runs under
-    WSL2. Otherwise it is a missing `pip install -U "jax[cuda12]"`.
+  * A GPU is present and JAX only sees the CPU. On Windows that is the usual case: JAX
+    has had no native CUDA wheels since 0.4.x, and CUDA JAX runs under WSL2. Otherwise it
+    is a missing `pip install -U "jax[cuda12]"`.
   * JAX sees a GPU but `mujoco.mjx` is not installed (`pip install mujoco-mjx`).
-
-With no NVIDIA card at all JAX is not even imported, so the CPU path pays nothing
-for the GPU one existing. `--backend` on rl.train_ppo overrides the choice
-either way (mjx on a CPU runs, slowly: that is how rl.mjx_check runs on a Mac).
 """
 import os
 import shutil
@@ -70,15 +62,15 @@ def backend():
     """('mjx' | 'cpu', one line saying why)"""
     card = nvidia_gpu()
     if card is None:
-        return "cpu", "no NVIDIA GPU: training on the CPU simulator"
+        return "cpu", "no NVIDIA GPU: MJX on the CPU, slowly"
     dev = jax_gpu()
     if dev is None:
         return "cpu", (f"{card} is here but JAX cannot use it "
                        f"(on Windows CUDA JAX needs WSL2; on Linux run "
-                       f"rl/gpu_setup.sh): training on the CPU")
+                       f"rl/gpu_setup.sh): MJX on the CPU, slowly")
     if not has_mjx():
         return "cpu", (f"JAX sees {dev.device_kind} but mujoco-mjx is missing "
-                       f"(pip install mujoco-mjx): training on the CPU")
+                       f"(pip install mujoco-mjx)")
     return "mjx", f"{dev.device_kind} via JAX: physics, task and policy on the GPU (rl.mjx_task)"
 
 

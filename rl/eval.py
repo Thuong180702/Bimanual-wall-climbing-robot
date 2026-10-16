@@ -1,6 +1,7 @@
-"""Score a saved checkpoint, against a do-nothing control.
+"""Score a saved checkpoint on the benchmark -- the full robot in C MuJoCo -- against a
+do-nothing control.
 
-    python -m rl.eval --name gpu15                 # every lesson it trained on
+    python -m rl.eval --name gpu15                 # every lesson in its pool
     python -m rl.eval --name gpu15 --lessons 1 --episodes 20
     python -m rl.eval --name gpu15 --lessons 1 --mirror     # the lesson toward the right
 
@@ -13,13 +14,31 @@ import argparse, json, os
 import numpy as np
 
 try:
+    import gymnasium as gym
     from stable_baselines3 import PPO
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 except ImportError as e:
     raise SystemExit(f"missing training deps ({e}); pip install -r requirements.txt")
 
-from .train_ppo import MultiLesson
+from .climb_task import ClimbTask
 from .lessons import LESSONS, lesson_key
+
+
+class Lesson(gym.Env):
+    """one benchmark lesson on the full robot, as a gym env (without its visual meshes
+    unless asked: only rl.render draws them)"""
+
+    def __init__(self, lesson, mirror=False, visual=False):
+        self.task = ClimbTask(lesson, visual=visual, mirror=mirror)
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (self.task.obs_dim,), np.float32)
+        self.action_space = gym.spaces.Box(-1.0, 1.0, (17,), np.float32)
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        return self.task.reset(seed)
+
+    def step(self, a):
+        return self.task.step(a)
 
 
 def run(venv, episodes, policy=None):
@@ -71,15 +90,15 @@ def main():
     run_dir = os.path.join('out', a.name)
     ck = a.ckpt if a.ckpt is not None else ('best_' if a.from_best else '')
     state = json.load(open(os.path.join(run_dir, f'{ck}state.json')))
-    lessons = ([lesson_key(x) for x in a.lessons.split(',')] if a.lessons
-               else state['active'])
-    print(f"{run_dir}: {state['timesteps']} steps, pool {state['active']}\n")
+    pool = state['curriculum']['active'] if 'curriculum' in state else state['active']
+    lessons = [lesson_key(x) for x in a.lessons.split(',')] if a.lessons else pool
+    print(f"{run_dir}: {state['timesteps']} steps, pool {pool}\n")
     print(f"{'lesson':>24} {'policy':>18} {'do nothing':>18}")
 
     for k in lessons:
         row = []
         for policy_on in (True, False):
-            venv = DummyVecEnv([lambda: MultiLesson([k], mirror=a.mirror)])
+            venv = DummyVecEnv([lambda: Lesson(k, mirror=a.mirror)])
             venv = VecNormalize.load(os.path.join(run_dir, f'{ck}vecnorm.pkl'), venv)
             venv.training = False          # freeze the statistics; an eval that keeps
             venv.norm_reward = False       # updating them is scoring a moving target

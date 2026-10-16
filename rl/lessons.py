@@ -1,17 +1,25 @@
-"""Curriculum lesson scenes for PPO, one scene per task, ordered by difficulty.
+"""The benchmark: nine lesson scenes, one per skill, in the order they are learnt.
+
+    python -m rl.lessons      # writes urdf/lessons/*.xml and smoke-checks each one
+
+    1 traverse         along one continuous rung
+    2 traverse_gaps    along a broken rung, across its gaps
+    3 climb_up         up rows standing out from the wall
+    4 climb_down       down rows standing in toward it (3 backwards)
+    5 staircase_down   down short rungs, each lower and further along
+    6 step_up          diagonally up onto a tier of short rungs
+    7 wall_corner      onto the side wall's rung, in the corner
+    8 wall_behind      onto the rung on the wall behind the back
+    9 swing_gap        across a gap past the static reach, by swinging
 
 Each scene is generated from ../urdf/scene.xml: the robot, actuators, sensors and the
 verified hanging keyframe are kept verbatim; the walls and rungs are replaced per
-lesson. Every lesson therefore starts from the same keyframe, which pins the start
-rung at x = 0.44, z = 1.00, spanning at least y = +-0.16.
+lesson. Every lesson starts from that keyframe on a start rung at x = 0.44, z = 1.00,
+spanning at least y = +-0.16 -- leaning on the front wall, or pitched to hang free
+where there is no wall to lean on (lesson 4).
 
-A human climber pulls up by flaring the shoulders out in the wall plane and
-flexing the elbows. The shoulder is pitch-first (cad/src/lib/spec.py), so from the
-hang that flare is positive abduction on the left, and scene.xml has all of it -
-the lessons used to widen the range, which the abduction-first shoulder had only
-inward of the hang.
-
-    python -m rl.lessons      # writes urdf/lessons/*.xml and smoke-checks each one
+Training does not draw these scenes: it draws generated walls (rl.walls), one family
+per lesson, each lesson inside its family's last range.
 """
 import hashlib
 import os
@@ -22,10 +30,35 @@ from . import SCENE, URDF
 OUT = os.path.join(URDF, 'lessons')
 
 # scene.xml's walls, 8 m long and 6 m deep: every layout here fits, mirrored too --
-# lesson 6's top tier ends 3.2 m along, lesson 4's staircase 1.15 m down
+# lesson 5's staircase ends 2.45 m along and 1.15 m down
 WALL_FRONT = '    <geom name="wall_front" type="box" material="wall" pos="0.550 0.00 0.50" size="0.05 4.00 3.00"/>'
+# ...and 0.40 m further back, behind lesson 4's lowest row (its face at 0.90)
+WALL_FRONT_FAR = '    <geom name="wall_front" type="box" material="wall" pos="0.950 0.00 0.50" size="0.05 4.00 3.00"/>'
 WALL_BACK = '    <geom name="wall_back"  type="box" material="wall" pos="-0.300 0.00 0.50" size="0.05 4.00 3.00"/>'
 WALL_SIDE = '    <geom name="wall_side"  type="box" material="wall" pos="0.125 -1.050 0.50" size="0.425 0.05 3.00"/>'
+
+# The keyframe leans on the front wall: its centre of mass is 65 mm behind the start
+# rung. With no wall there it swings +-0.13 m. Pitched about the rung by -6.4 deg the
+# keyframe's centre of mass is under it, and the arms then sag; -7.5 deg is the stillest
+# free hang measured (26 mm of sway over 3 s, against 44 mm at -6.4 and 260 unpitched).
+FREE_PITCH = np.radians(-7.5)
+START_RUNG = np.array([0.44, 0.0, 1.00])     # the start rung's axis passes through here, along y
+
+
+def hang_qpos(pitch=0.0):
+    """scene.xml's keyframe qpos, the whole robot turned `pitch` rad about the start rung's
+    axis (+y): the hooks stay on the rung, the body swings round it"""
+    q = np.array(re.search(r'<key name="hang_on_rung"\s+qpos="([^"]+)"', open(SCENE).read())
+                 .group(1).split(), float)
+    if pitch:
+        c, s = np.cos(pitch), np.sin(pitch)
+        p = q[:3] - START_RUNG
+        q[:3] = START_RUNG + [c * p[0] + s * p[2], p[1], -s * p[0] + c * p[2]]
+        w, x, y, z = q[3:7]
+        a, b = np.cos(pitch / 2), np.sin(pitch / 2)          # (a, 0, b, 0) * (w, x, y, z)
+        q[3:7] = [a * w - b * y, a * x + b * z, a * y + b * w, a * z - b * x]
+    return q
+
 
 # --- the grip pad: what makes the hook hold along its rung --------------------
 # The hook is a slot round a smooth cylinder, so along the rung axis nothing holds
@@ -91,148 +124,19 @@ def _rx(name, x0, x1, z, y=-0.94):
 # constraints): 0.56 m up, 0.64-0.68 m along a rung, 0.65-0.88 m down at 0.15-0.45 m
 # aside; along a rung with momentum at most 1.50-1.55 m. Rows stay <= 0.50 m apart
 # and steps within the static reach, except lesson 9, which is past it on purpose.
-# Lessons 1..9 are the benchmark; each goes toward the robot's left (+y), and
-# `mirrored` gives the same lesson toward its right.
+# Each lesson goes toward the robot's left (+y); `mirrored` gives it toward its right.
+#
+# A row straight below or above the hang is inside the robot: its arms and body fill
+# the rung plane 0.10-1.10 m under the hooks (59-107 mm off it). So rows above stand
+# OUT from the wall (lesson 3), rows below stand IN toward it (lesson 4: lesson 3 run
+# backwards), and the diagonal moves step along as they go (lessons 5 and 6).
 LESSONS = {
-    # Three rungs below lesson 1, because lesson 1 cannot be found from scratch any
-    # more. Once dragging a loaded hook and jumping stopped paying, the only paid
-    # move left was lift-and-place, and 1.1 m of it is five cycles per hand: the
-    # 15M-step win5 run never completed one, settled into hanging from one hook
-    # and fluttering the other, and its action noise collapsed from 1.0 to 0.13.
-    #
-    # -2: the LEFT hand takes one step of 0.30 m toward the goal side; the right
-    #     hand's goal is where it already is, so all it owes is one supported
-    #     let-go and re-seat for MIN_GRABS. Nothing is in anyone's way.
-    # -1: the RIGHT hand takes one step of 0.30 m -- the other way, because 0.30 m
-    #     toward the left hand would end 14 mm from it. Same skill, mirrored: this
-    #     arm lifts and places, that hand carries. Without it the 2M local run
-    #     reached lesson 1 with a right hand that had never lifted, and dragged it.
-    #  0: both hands take one step of 0.40 m. Not 0.30: the first version of this
-    #     put the right hand's goal 14 mm from where the left hand starts, and two
-    #     65 mm hooks cannot share that span -- measured on a 600k-step policy, the
-    #     right hook reached its goal region on 42 % of steps and hovered there
-    #     100 mm (min 44) from the left hook, while the left hook, which had to
-    #     move first, never let go. 0.40 m puts the goal 86 mm past the other
-    #     hand's start.
-    -2: dict(name='step_left_hand', timeout=30.0,
-             title='the left hand alone takes one 0.30 m step along a continuous rung',
-             walls=[WALL_FRONT],
-             rungs=[_ry('start', -0.90, 1.50, 1.00)],
-             goal_rungs=['rung_start'],
-             goals=[[0.44, 0.457, 1.00], [0.44, -0.157, 1.00]]),
-    -1: dict(name='step_right_hand', timeout=30.0,
-             title='the right hand alone takes one 0.30 m step, away from the left',
-             walls=[WALL_FRONT],
-             rungs=[_ry('start', -0.90, 1.50, 1.00)],
-             goal_rungs=['rung_start'],
-             goals=[[0.44, 0.157, 1.00], [0.44, -0.457, 1.00]]),
-    0: dict(name='step_both_hands', timeout=30.0,
-            title='both hands, one step of 0.40 m along a continuous rung',
-            walls=[WALL_FRONT],
-            rungs=[_ry('start', -0.90, 1.50, 1.00)],
-            goal_rungs=['rung_start'],
-            goals=[[0.44, 0.557, 1.00], [0.44, 0.243, 1.00]]),
-    1: dict(name='traverse_continuous', timeout=60.0,
+    1: dict(name='traverse', timeout=60.0,
             title='traverse sideways along one continuous rung',
             walls=[WALL_FRONT],
             rungs=[_ry('start', -0.90, 1.50, 1.00)],
             goal_rungs=['rung_start'],
             goals=[[0.44, 1.257, 1.00], [0.44, 0.943, 1.00]]),
-    # 1.5 sits between the continuous rung and the 0.25 m gaps because 0.25 was
-    # never crossed once in 2M steps of exposure, in three local runs. Measured on
-    # the last of them: when the free hand came closest to the far ledge it was
-    # 120-160 mm short, the hands were 627-689 mm apart -- the static reach limit
-    # -- and the HOLDING hand was still 0.47-0.54 m from the edge of its segment.
-    # The order a climber uses -- lead hand to the edge, trailing hand up beside
-    # it, then reach -- was never found because it was never once rewarded, and
-    # the edge itself was not in the observation (it is now, see `_near_rungs`).
-    # A 0.12 m gap is crossed by the ordinary 0.30 m step the policy already has,
-    # so the first crossings happen by accident and the credit does the rest.
-    # Stop at the end. Every seat on a continuous rung is as good as the next, so
-    # nothing before this asks a hand to land SHORT of somewhere -- and at a gap that
-    # is the whole move: lead hand to the last seat, trailing hand up beside it, then
-    # across (the user's description of the climb). Four local runs at 0 % on lesson
-    # 1.5 each ended with the lead hook past its last seat, brushing the end, never
-    # retreating the 5-10 cm to a seat, the trailing hand never moving. Here the rung
-    # ends 3 cm past the left hand's goal, and its goal is one ordinary opener from
-    # its start (mac19's hops: p50 226 mm): land there, or hang half off the end.
-    1.1: dict(name='stop_at_the_end', timeout=30.0,
-              title='one step each along a rung that ends just past the goal',
-              walls=[WALL_FRONT],
-              rungs=[_ry('start', -0.90, 0.42, 1.00)],
-              goal_rungs=['rung_start'],
-              goals=[[0.44, 0.3875, 1.00], [0.44, 0.0755, 1.00]]),
-    # Then the gaps, in the order of the reach they ask of a hand that crosses from
-    # the last seat with its partner still at the start (0.54 m + gap, against the
-    # 0.67 m static limit): 0.58, 0.62, 0.66 for lesson 1.5 -- the mac16 policy
-    # pushed its hook into the far segment's end 38 mm short there -- and 0.79 for
-    # lesson 2, which cannot be lunged at all: the trailing hand has to come up first.
-    # (with the map describing SEATS, half a hook-width in from each end --
-    # climb_task.SEAT_IN -- the seat-to-seat jumps are 105, 145, 185 and 315 mm)
-    # ONE gap each, goals on the segment just across it (0.6 m of travel, not 1.4 m
-    # over two): the first version asked for the full traverse and the policy that
-    # had just learnt to stop short crawled it in 5-9 cm steps -- the climber's
-    # order visible on every replay, the goals never reached in 60 s, 0/40 for
-    # 3.3M steps, and the crawl spread to lesson 1 (95 % -> 20 %). Teach the
-    # crossing on its own; lesson 1.5 asks for two gaps and the distance.
-    1.2: dict(name='cross_a_hairline_gap', timeout=60.0,
-              title='cross one 0.04 m gap: to the last seat, the other hand up, over',
-              walls=[WALL_FRONT],
-              rungs=[_ry('start', -0.45, 0.35, 1.00),
-                     _ry('seg1', 0.39, 0.95, 1.00),
-                     _ry('seg2', 0.99, 1.65, 1.00)],
-              goal_rungs=['rung_seg1'],
-              goals=[[0.44, 0.76, 1.00], [0.44, 0.45, 1.00]]),
-    1.35: dict(name='cross_a_narrow_gap', timeout=60.0,
-               title='cross one 0.08 m gap',
-               walls=[WALL_FRONT],
-               rungs=[_ry('start', -0.45, 0.35, 1.00),
-                      _ry('seg1', 0.43, 0.95, 1.00),
-                      _ry('seg2', 1.03, 1.65, 1.00)],
-               goal_rungs=['rung_seg1'],
-               goals=[[0.44, 0.80, 1.00], [0.44, 0.49, 1.00]]),
-    1.5: dict(name='traverse_small_gaps', timeout=60.0,
-              title='traverse a broken rung: segments with 0.12 m gaps',
-              walls=[WALL_FRONT],
-              rungs=[_ry('start', -0.45, 0.35, 1.00),
-                     _ry('seg1', 0.47, 0.95, 1.00),
-                     _ry('seg2', 1.07, 1.65, 1.00)],
-              goal_rungs=['rung_seg2'],
-              goals=[[0.44, 1.55, 1.00], [0.44, 1.24, 1.00]]),
-    # The last rung before lesson 2, and the measurement that says why it is here:
-    # a crossing is a reach from the last SEAT of one segment to the first seat of
-    # the next -- 185 mm on lesson 1.5, 315 mm on lesson 2, against hops of 226 mm
-    # at the median and 307 at p90 (mac19 on lesson 1). So lesson 2's crossing sits
-    # past the p90 of the step this gait produces, with nothing in between: 0/40
-    # through every run that reached it. 0.18 m makes the reach 245 mm, one
-    # ordinary hop, and it is a single crossing like 1.2 and 1.35 -- the two
-    # lessons that turned the gap skill from "never" into 90-100 %.
-    1.7: dict(name='cross_a_wide_gap', timeout=60.0,
-              title='cross one 0.18 m gap',
-              walls=[WALL_FRONT],
-              rungs=[_ry('start', -0.45, 0.35, 1.00),
-                     _ry('seg1', 0.53, 0.95, 1.00),
-                     _ry('seg2', 1.13, 1.65, 1.00)],
-              goal_rungs=['rung_seg1'],
-              goals=[[0.44, 0.90, 1.00], [0.44, 0.59, 1.00]]),
-    # Between 1.7 and 2 the step used to change two things at once -- the gap goes
-    # 0.18 -> 0.25 m AND one gap becomes two -- which is the double step the rest of
-    # this curriculum exists to avoid. Measured on win15 3's best, that is exactly
-    # where it breaks: in 6 of 10 lesson-2 episodes the lead hook crossed the gap
-    # while the trailing one was still 246-313 mm short of its own seat edge, leaving
-    # the arms at 583-651 mm of a ~671 mm span -- full stretch, the free hook only
-    # 3-25 mm onto the next seat, and the trailing hand then too far back to follow.
-    # All six failed; the four that kept the trailing hand within 64 mm of the edge
-    # hold both successes. So 1.85 isolates the width: one 0.25 m gap, nothing else
-    # new, with the goals on seg1 the way 1.7 has them.
-    1.85: dict(name='cross_a_wide_gap_again', timeout=60.0,
-               title='cross one 0.25 m gap',
-               walls=[WALL_FRONT],
-               rungs=[_ry('start', -0.45, 0.35, 1.00),
-                      _ry('seg1', 0.60, 0.95, 1.00),
-                      _ry('seg2', 1.20, 1.65, 1.00)],
-               goal_rungs=['rung_seg1'],
-               goals=[[0.44, 0.90, 1.00], [0.44, 0.66, 1.00]]),
     2: dict(name='traverse_gaps', timeout=60.0,
             title='traverse a broken rung: segments with 0.25 m gaps',
             walls=[WALL_FRONT],
@@ -241,15 +145,10 @@ LESSONS = {
                    _ry('seg2', 1.20, 1.65, 1.00)],
             goal_rungs=['rung_seg2'],
             goals=[[0.44, 1.55, 1.00], [0.44, 1.24, 1.00]]),
-    # Two rows 0.40 m apart straight above, each standing 0.20 m further out from the wall than the
-    # one below (rl.walls.OUT). Stacked in one plane, as until 2026-10-06, the robot
-    # could not hang from them: its arms and body fill the rung plane 0.10-1.10 m under
-    # its hooks (59-107 mm off it), so at the top its base sat 34 mm inside the start
-    # rung and it fell off, and every motion found up one stacked row pressed an arm on
-    # the row below at 100-415 N. Standing out, the rows below are behind it after 3 s
-    # hanging from the top. 0.40 apart, not 0.45: reaching out costs the free hook
-    # height (0.52 m up 0.15-0.25 m out), and 0.45 was not found (rl.walls, family 3).
-    # Down (lesson 4) is a staircase.
+    # Two rows 0.40 m apart straight above, each standing OUT 0.20 m further from the
+    # wall than the one below (rl.walls.OUT): hanging from the top one, the rows below are
+    # 92-164 mm clear of the robot. 0.40, not 0.45: reaching out costs the free hook
+    # height (0.52 m up 0.15-0.25 m out).
     3: dict(name='climb_up', timeout=90.0,
             title='climb up two rows, each standing 0.20 m further out from the wall',
             walls=[WALL_FRONT],
@@ -258,11 +157,20 @@ LESSONS = {
                    _ry('up2', -0.90, 1.50, 1.80, x=0.04)],
             goal_rungs=['rung_up2'],
             goals=[[0.04, 0.157, 1.80], [0.04, -0.157, 1.80]]),
-    # Climbing down comes before climbing over, which needs both directions. A row
-    # straight below the hang is inside the robot (its arms and body fill 0.25-1.10 m
-    # under the start rung), so the way down is a staircase: each step lower and
-    # further along, the way a climber steps down beside the holds, not onto them.
-    4: dict(name='climb_down', timeout=120.0,
+    # Lesson 3 backwards: from the top row down two, each 0.20 m nearer the wall. The
+    # start row stands 0.46 m off the wall, so the robot hangs free instead of leaning on
+    # it: the keyframe is pitched about the start rung to its stillest free hang (`pitch`).
+    4: dict(name='climb_down', timeout=90.0,
+            title='climb down two rows, each standing 0.20 m nearer the wall',
+            walls=[WALL_FRONT_FAR], pitch=FREE_PITCH,
+            rungs=[_ry('start', -0.90, 1.50, 1.00),
+                   _ry('down1', -0.90, 1.50, 0.60, x=0.64),
+                   _ry('down2', -0.90, 1.50, 0.20, x=0.84)],
+            goal_rungs=['rung_down2'],
+            goals=[[0.84, 0.157, 0.20], [0.84, -0.157, 0.20]]),
+    # Down a staircase of short rungs, each lower and further along: the way a climber
+    # steps down beside the holds.
+    5: dict(name='staircase_down', timeout=120.0,
             title='down a staircase of short rungs, each lower and further along',
             walls=[WALL_FRONT],
             rungs=[_ry('start', -0.90, 0.40, 1.00),
@@ -271,32 +179,16 @@ LESSONS = {
                    _ry('step3', 1.95, 2.45, -0.15)],
             goal_rungs=['rung_step3'],
             goals=[[0.44, 2.33, -0.15], [0.44, 2.02, -0.15]]),
-    # The break is past what the robot can bridge even with momentum (1.55 m hook to
-    # hook), so the only way across is up, along the top and down. The top row spans
-    # the break alone, 0.20 m clear of both ends: up and down are diagonal steps, as
-    # on lessons 6 and 4, never a row straight below the hands.
-    5: dict(name='climb_over', timeout=120.0,
-            title='up, across the top, down the far side of a 2.2 m break',
-            walls=[WALL_FRONT],
-            rungs=[_ry('start', -0.90, 0.35, 1.00),
-                   _ry('top', 0.55, 2.35, 1.45),
-                   _ry('far', 2.55, 3.05, 1.00)],
-            goal_rungs=['rung_far'],
-            goals=[[0.44, 2.93, 1.00], [0.44, 2.62, 1.00]]),
-    # Two tiers of short rungs, each at its own height, each tier starting 0.15 m past
-    # the end of the one below (lesson 2's gaps, climbed diagonally): stacked over the start
-    # row, as until 2026-10-06, the robot's base sat 38 mm inside it at the goals.
-    6: dict(name='staggered', timeout=120.0,
-            title='climb staggered short rungs, each at its own height',
+    # One tier of two short rungs, each at its own height, the tier starting 0.15 m past
+    # the end of the start row: a step up taken diagonally, in the wall's own plane.
+    6: dict(name='step_up', timeout=90.0,
+            title='step up diagonally onto a tier of short rungs, each at its own height',
             walls=[WALL_FRONT],
             rungs=[_ry('start', -0.90, 0.40, 1.00),
-                   _ry('stag1', 0.55, 0.90, 1.40),
-                   _ry('stag2', 1.15, 1.50, 1.50),
-                   _ry('stag3', 1.75, 2.10, 1.42),
-                   _ry('top1', 2.25, 2.60, 1.88),
-                   _ry('top2', 2.85, 3.20, 1.95)],
-            goal_rungs=['rung_top1', 'rung_top2'],
-            goals=[[0.44, 3.02, 1.95], [0.44, 2.42, 1.88]]),
+                   _ry('t1a', 0.55, 0.90, 1.42),
+                   _ry('t1b', 1.15, 1.50, 1.50)],
+            goal_rungs=['rung_t1a', 'rung_t1b'],
+            goals=[[0.44, 1.325, 1.50], [0.44, 0.725, 1.42]]),
     7: dict(name='wall_corner', timeout=120.0,
             title='transfer to the perpendicular wall in the corner',
             walls=[WALL_FRONT, WALL_SIDE],
@@ -318,9 +210,8 @@ LESSONS = {
             goal_rungs=['rung_back'],
             goals=[[-0.19, 0.157, 1.00], [-0.19, -0.157, 1.00]]),
     # One gap past the static reach (0.58 m of gap is the most a still hang crosses):
-    # one hook holds while the robot swings the other across. Thought well inside the
-    # 1.47 m kinematics allow a swing; the one motion found across it (rl/README.md,
-    # 2026-09-26) catches the far rung 1.10 m from the other hook, all the reach there
+    # one hook holds while the robot swings the other across. The one motion found
+    # across it catches the far rung 1.10 m from the other hook, all the reach there
     # is, and has the swing carry the loaded hook 0.18 m on to make room for the other.
     9: dict(name='swing_gap', timeout=60.0,
             title='a 0.90 m gap, past the static reach: swing across',
@@ -351,14 +242,13 @@ def spec_of(lesson, mirror=False):
 
 
 def lesson_key(x):
-    """'2' -> 2, '-1' -> -1, '1.5' -> 1.5: keys are ints except the half-steps"""
-    f = float(str(x).strip())
-    return int(f) if f == int(f) else f
+    """'2' -> 2"""
+    return int(str(x).strip())
 
 
 def lesson_tag(lesson):
-    """'lesson01', 'lesson-2', 'lesson1.5' -- the file and model name stem"""
-    return f"lesson{lesson:02d}" if isinstance(lesson, int) else f"lesson{lesson:g}"
+    """'lesson01' -- the file and model name stem"""
+    return f"lesson{lesson:02d}"
 
 
 def _path(lesson, mirror=False):
@@ -411,7 +301,11 @@ def scene_xml(spec, model, stamp=''):
     head, rest = xml.split('    <!-- ===== walls ===== -->')
     _, tail = rest.split('    <!-- ===== robot ===== -->')
     mid = '\n'.join([f'    <!-- {spec["title"]} -->'] + spec['walls'] + spec['rungs'])
-    return head + mid + '\n\n    <!-- ===== robot ===== -->' + tail
+    xml = head + mid + '\n\n    <!-- ===== robot ===== -->' + tail
+    if spec.get('pitch'):
+        q = ' '.join(f'{v:.6f}' for v in hang_qpos(spec['pitch']))
+        xml = re.sub(r'(<key name="hang_on_rung"\s+qpos=")[^"]+', lambda m: m.group(1) + q, xml)
+    return xml
 
 
 def write(lesson, mirror=False):
@@ -493,9 +387,8 @@ def slide_test(path, force=40.0):
 
 
 def main():
-    import mujoco
     from climbing_env import ClimbingEnv
-    for k, mirror in [(k, False) for k in sorted(LESSONS)] + [(k, True) for k in range(1, 10)]:
+    for k, mirror in [(k, m) for m in (False, True) for k in sorted(LESSONS)]:
         spec = spec_of(k, mirror)
         path = write(k, mirror)
         e = ClimbingEnv(xml=path, success_z=1e9)
@@ -505,10 +398,13 @@ def main():
         for _ in range(int(1.0 / e.model.opt.timestep)):
             e.step(ctrl)
         drift = np.linalg.norm(e.data.xpos[e.base] - p0) * 1000.0
-        # 0.7 mm on the 21.5 kg robot. It read 3.8 while the hooks hung back to
-        # front and the arms were jammed into the torso -- a drift budget is a
-        # symptom detector, so it stays where it was rather than following one.
-        assert drift < 5.0, f"lesson {k}: keyframe drifted {drift:.1f} mm"
+        # 0.7 mm on the 21.5 kg robot leaning on its wall. It read 3.8 while the hooks
+        # hung back to front and the arms were jammed into the torso -- a drift budget
+        # is a symptom detector, so it stays where it was rather than following one.
+        # Hanging free (FREE_PITCH) it sways: 36 mm in this first second with the fingers
+        # still open, 14 mm once ClimbTask has shut them
+        budget = 60.0 if spec.get('pitch') else 5.0
+        assert drift < budget, f"lesson {k}: keyframe drifted {drift:.1f} mm"
         assert e.latched('L')[0] and e.latched('R')[0], f"lesson {k}: a hook came off"
         segs = rung_segments(e.model)
         for nm in spec['goal_rungs']:

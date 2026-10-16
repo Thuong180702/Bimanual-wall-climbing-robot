@@ -52,12 +52,11 @@ import jax, jax.numpy as jp
 # float32 matmul to TF32 (a 10-bit mantissa) by default; the cross-checks against C
 # were made without it. A V100 has no TF32, so there this changes nothing.
 jax.config.update('jax_default_matmul_precision', 'highest')
-import mujoco
 from mujoco import mjx
 from .estimator import JOINTS, THROAT_PT, MAG_WORLD
 from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET
 from . import climb_task as ct, lidar, rsi
-from .lessons import LESSONS, canon_axis
+from .lessons import LESSONS, canon_axis, hang_qpos
 from .mjx_scene import N_RUNG, PARK, lesson_layout, model as scene_model, slots
 
 LESSON_KEYS = sorted(LESSONS)
@@ -197,14 +196,16 @@ class Wall(NamedTuple):
     slot_size: jax.Array
     wall_pos: jax.Array        # (3,) the extra wall plane
     wall_quat: jax.Array
+    front_pos: jax.Array       # (3,) the front wall plane: 0.40 m further back on family 4
+    front_quat: jax.Array
     goals: jax.Array           # (2, 3)
     goal_mask: jax.Array       # (N_RUNG,)
     pts: jax.Array             # (N_PTS, 3) climb_task.route_table's points, padded far away
     pts_g: jax.Array           # (2, N_PTS) their route distance to each goal
     timeout: jax.Array
     family: jax.Array          # rl.walls family, -1 for a lesson
-    probe: jax.Array           # which of its parameters sits at its top, -1 none
-    probe_val: jax.Array       # ...and that top, so ADR counts a probe only at its own
+    probe: jax.Array           # which of its parameters sits at its candidate, -1 none
+    probe_val: jax.Array       # ...and that candidate, so ADR counts a probe only at its own
     d0_row: jax.Array          # the lesson whose secured hang it starts from
 
 
@@ -254,6 +255,7 @@ class MjxClimb:
         self.hook_geoms = np.array([sorted(g for g in on_rung if m.geom_bodyid[g] == h)
                                     for h in self.hook])
         self.wall_geom = m.geom('slot_wall').id
+        self.front_geom = m.geom('wall_front').id
         (self.front_n,) = ct.wall_normals(m)            # the front wall; the slot is its own
         self.weight = float(m.body_subtreemass[self.base] * -m.opt.gravity[2])
         self.rig = lidar.Rig(m)
@@ -290,8 +292,9 @@ class MjxClimb:
     @staticmethod
     def rows(layouts):
         """lesson layouts (rl.mjx_scene.lesson_layout's, or rl.walls') -> the per-row
-        arrays of Tables. A generated wall starts from lesson 1's secured hang: its
-        start rung holds the keyframe's hooks and nothing else of it is within
+        arrays of Tables. A generated wall starts from the secured hang of the lesson
+        it names (`hang`: 1, leaning on the front wall, or 4, hanging free): its start
+        rung holds the keyframe's hooks and nothing else of it is within
         rl.walls.CLEAR of the robot there (rl.walls.Checker)."""
         from .walls import FAMILIES
         out = []
@@ -314,11 +317,12 @@ class MjxClimb:
             out.append(dict(rung_c=c, rung_a=a, rung_h=h, rung_valid=np.arange(N_RUNG) < n,
                             slot_pos=sl['rung_pos'], slot_quat=sl['rung_quat'],
                             slot_size=sl['rung_size'], wall_pos=sl['wall_pos'],
-                            wall_quat=sl['wall_quat'], goals=lay['goals'], goal_mask=mask,
+                            wall_quat=sl['wall_quat'], front_pos=sl['front_pos'],
+                            front_quat=sl['front_quat'], goals=lay['goals'], goal_mask=mask,
                             pts=pts, pts_g=pts_g,
                             timeout=lay['timeout'], family=f, probe=probe,
                             probe_val=lay.get('probe_val', 0.0),
-                            d0_row=lay.get('d0_row', LESSON_KEYS.index(1))))
+                            d0_row=lay.get('d0_row', LESSON_KEYS.index(lay.get('hang', 1)))))
         return {k: np.stack([r[k] for r in out]) for k in out[0]}
 
     def _tables(self):
@@ -326,8 +330,10 @@ class MjxClimb:
         layouts += [dict(lesson_layout(1), family=1)] * self.bank   # until a bank is set
         w = Wall(**{f: jp.asarray(v) for f, v in self.rows(layouts).items()})
         L = len(LESSON_KEYS)
+        qpos0 = jp.asarray(np.stack([hang_qpos(LESSONS[k].get('pitch', 0.0)) for k in LESSON_KEYS]))
         d0, ctrl0, ngt0 = jax.jit(jax.vmap(self._secure))(
-            w.slot_pos[:L], w.slot_quat[:L], w.slot_size[:L], w.wall_pos[:L], w.wall_quat[:L])
+            w.slot_pos[:L], w.slot_quat[:L], w.slot_size[:L], w.wall_pos[:L], w.wall_quat[:L],
+            w.front_pos[:L], w.front_quat[:L], qpos0)
         tau_idle = jax.vmap(lambda d: jp.abs(d.sensordata[self.s_tau]).sum())(d0)
         fight_idle = jax.vmap(lambda d: self._internal(d, self._sensors(d)))(d0)
         grabs0 = jp.zeros((L, 2), jp.int32)
@@ -335,28 +341,30 @@ class MjxClimb:
         if ref is not None:
             # rl.rsi's starts after the lessons' hangs (a wall's d0_row picks one): each
             # state forwarded on the wall it was found on, its clock at 0; the effort and
-            # fight baselines stay the secured hang's (lesson 1's), as on every wall
+            # fight baselines stay those of the secured hang its wall begins from
             c = ref['climb']                                            # one wall per climb
-            sl = {k: v[c] for k, v in self.rows([rsi.climb_wall(ref, i)
-                                                  for i in range(len(ref['climb_spacing']))]).items()}
+            cw = [rsi.climb_wall(ref, i) for i in range(len(ref['climb_family']))]
+            sl = {k: v[c] for k, v in self.rows(cw).items()}
+            r0 = np.array([LESSON_KEYS.index(x['hang']) for x in cw])[c]   # each row's hang
             # 256 starts at a time: all at once the forward's scratch grew with the starts
             # (17.5k: 5 GiB, kept by XLA's pool), and four preflight processes building it
             # together left gpu11's 3090 no room for 4096 envs (2026-10-14)
             # (the last batch padded with the last start: one compile)
             base = mjx.make_data(self.mx)
-            fwd = jax.jit(jax.vmap(lambda p, qt, sz, wp, wq, q, v, c: mjx.forward(
-                self._slot_model(p, qt, sz, wp, wq), base.replace(qpos=q, qvel=v, ctrl=c, time=jp.zeros(())))))
-            args = [sl[k] for k in ('slot_pos', 'slot_quat', 'slot_size', 'wall_pos', 'wall_quat')] + \
+            fwd = jax.jit(jax.vmap(lambda p, qt, sz, wp, wq, fp, fq, q, v, c: mjx.forward(
+                self._slot_model(p, qt, sz, wp, wq, fp, fq),
+                base.replace(qpos=q, qvel=v, ctrl=c, time=jp.zeros(())))))
+            args = [sl[k] for k in ('slot_pos', 'slot_quat', 'slot_size', 'wall_pos', 'wall_quat',
+                                    'front_pos', 'front_quat')] + \
                 [ref['qpos'], ref['qvel'], ref['ctrl']]
             n = len(ref['qpos'])
             parts = [fwd(*(jp.asarray(a[np.minimum(np.arange(i, i + 256), n - 1)]) for a in args))
                      for i in range(0, n, 256)]
             ds = jax.tree_util.tree_map(lambda *x: jp.concatenate(x)[:n], *parts)
-            r1, S = LESSON_KEYS.index(1), len(ref['spacing'])
             cat = lambda a, b: jp.concatenate([a, b])
             d0 = jax.tree_util.tree_map(cat, d0, ds)
-            ctrl0, ngt0 = cat(ctrl0, jp.asarray(ref['ctrl'])), cat(ngt0, jp.zeros(S))
-            tau_idle, fight_idle = cat(tau_idle, jp.full(S, tau_idle[r1])), cat(fight_idle, jp.full(S, fight_idle[r1]))
+            ctrl0, ngt0 = cat(ctrl0, jp.asarray(ref['ctrl'])), cat(ngt0, jp.zeros(n))
+            tau_idle, fight_idle = cat(tau_idle, tau_idle[r0]), cat(fight_idle, fight_idle[r0])
             grabs0 = cat(grabs0, jp.asarray(ref['grabs'], jp.int32))
         con0, on0 = jax.jit(jax.vmap(self._contact))(d0)
         return Tables(walls=w, tau_idle=tau_idle, fight_idle=fight_idle, d0=d0, ctrl0=ctrl0,
@@ -369,13 +377,16 @@ class MjxClimb:
 
     def _env_model(self, w):
         """the shared model with this wall's rungs and extra wall in the slot geoms"""
-        return self._slot_model(w.slot_pos, w.slot_quat, w.slot_size, w.wall_pos, w.wall_quat)
+        return self._slot_model(w.slot_pos, w.slot_quat, w.slot_size, w.wall_pos, w.wall_quat,
+                                w.front_pos, w.front_quat)
 
-    def _slot_model(self, pos, quat, size, wpos, wquat):
+    def _slot_model(self, pos, quat, size, wpos, wquat, fpos, fquat):
         mx = self.mx
         mx = mx.replace(
-            geom_pos=mx.geom_pos.at[self.rung_geoms].set(pos).at[self.wall_geom].set(wpos),
-            geom_quat=mx.geom_quat.at[self.rung_geoms].set(quat).at[self.wall_geom].set(wquat),
+            geom_pos=mx.geom_pos.at[self.rung_geoms].set(pos).at[self.wall_geom].set(wpos)
+            .at[self.front_geom].set(fpos),
+            geom_quat=mx.geom_quat.at[self.rung_geoms].set(quat).at[self.wall_geom].set(wquat)
+            .at[self.front_geom].set(fquat),
             geom_size=mx.geom_size.at[self.rung_geoms].set(size))
         if mx.impl == mjx.Impl.WARP:
             # Warp's broadphase culls a pair by each geom's bounds, the parked slot's
@@ -392,17 +403,18 @@ class MjxClimb:
         kinematics leaves the world's own geoms where `make_data` put them -- parked,
         and no hook ever touched a rung -- where JAX's places them from the model"""
         from mujoco.mjx._src.math import quat_to_mat
-        g = np.r_[self.rung_geoms, self.wall_geom]
-        quat = jp.concatenate([w.slot_quat, w.wall_quat[None]])
-        return d.replace(geom_xpos=d.geom_xpos.at[g].set(jp.concatenate([w.slot_pos, w.wall_pos[None]])),
+        g = np.r_[self.rung_geoms, self.wall_geom, self.front_geom]
+        quat = jp.concatenate([w.slot_quat, w.wall_quat[None], w.front_quat[None]])
+        return d.replace(geom_xpos=d.geom_xpos.at[g].set(jp.concatenate([w.slot_pos, w.wall_pos[None],
+                                                                         w.front_pos[None]])),
                          geom_xmat=d.geom_xmat.at[g].set(jax.vmap(quat_to_mat)(quat)))
 
-    def _secure(self, pos, quat, size, wpos, wquat):
-        """ClimbTask.reset's physics: the keyframe, then 0.4 s closing the fingers to
-        GRIP_SET. Deterministic, so it runs once per lesson."""
-        m, mc = self._slot_model(pos, quat, size, wpos, wquat), self.mc
+    def _secure(self, pos, quat, size, wpos, wquat, fpos, fquat, qpos0):
+        """ClimbTask.reset's physics: the lesson's keyframe (`qpos0`: rl.lessons.hang_qpos),
+        then 0.4 s closing the fingers to GRIP_SET. Deterministic, so it runs once per lesson."""
+        m, mc = self._slot_model(pos, quat, size, wpos, wquat, fpos, fquat), self.mc
         d = mjx.make_data(self.mx).replace(
-            qpos=jp.asarray(mc.key_qpos[0]), qvel=jp.asarray(mc.key_qvel[0]),
+            qpos=qpos0, qvel=jp.asarray(mc.key_qvel[0]),
             ctrl=jp.asarray(mc.key_ctrl[0]), time=jp.asarray(mc.key_time[0]))
         d = mjx.forward(m, d)
         n = int(0.4 / self.dt)
@@ -999,9 +1011,6 @@ class Batch:
         need = (max(1, max(int(v.sum(-1).max()) for v in valid)),
                 any(bool((z > -PARK / 2).any()) for z in wall_z))
         if need != self.task.pairs:
-            print(f"[mjx] collision pairs: rung slots {need[0]} of {N_RUNG}, extra wall "
-                  f"{'yes' if need[1] else 'no'} (was {self.task.pairs[0]}, "
-                  f"{'yes' if self.task.pairs[1] else 'no'}); recompiling the step", flush=True)
             self.task.set_pairs(*need)
             self._compile()
 

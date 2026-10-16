@@ -1,29 +1,32 @@
 """Procedurally generated climbing walls, and the ranges ADR grows them over.
 
-    python -m rl.walls          # every family at its first and its last ranges: valid,
+    python -m rl.walls          # every family at its first and its last levels: usable walls,
                                 # and each benchmark lesson inside its family's last range
 
 The benchmark -- lessons 1..9 of rl.lessons -- is what a policy is scored on, on the full
 robot. It is not what it trains on. Training draws walls from nine families, one per
-benchmark lesson and fixed before any training: each is that lesson's structure with a
-few physical parameters free (FAMILIES). Every parameter has a range whose top starts at
-the easy end and moves by a fixed rule (automatic domain randomization, OpenAI et al.
-2019 "Solving Rubik's Cube with a Robot Hand"; legged_gym's terrain curriculum, Rudin et
-al. 2022): half of a family's walls put one parameter exactly at its top, and when 40
-of those in a row are passed 70 % of the time the top moves up a step (down one at
-20 % or less). Nothing is added by hand when training is stuck, and the benchmark
-lesson sits inside its family's last range (`main` asserts it).
+lesson and fixed before any training: each is that lesson's structure with a few physical
+parameters free (FAMILIES). Every parameter has a range [lo, last] and a LEVEL, which
+starts at the easy end (`first`) and rises one step at a time by automatic domain
+randomization (OpenAI et al. 2019, "Solving Rubik's Cube with a Robot Hand"; legged_gym's
+terrain curriculum, Rudin et al. 2022):
 
-Every wall is a lesson layout in `rl.mjx_scene.lesson_layout`'s format -- rungs
-(name, centre, axis, half length, radius), walls (name, point on the inner face,
-normal), the two goals [L, R] and the goal rungs -- so the MJX slots take it as they
-take a lesson. Half of them are mirrored (y -> -y, the goals swapped between hands):
-the robot is symmetric, the benchmark only goes one way. A generated episode lasts at
-most TIMEOUT: lesson 1's, at which hanging still costs less than falling
-(climb_task's incentive test).
+  * a family's walls draw every parameter uniformly between lo and its level;
+  * PROBE_P of them put one parameter exactly at its CANDIDATE, a step above its level;
+  * when a window of probes at a candidate is passed at rl.train_ppo.UNLOCK_AT, the
+    candidate becomes the level (rl.train_ppo.Curriculum).
+
+So training never draws past what has been passed, and a new level reaches the walls only
+once it is learnt -- a candidate is a fifth of a family's walls however hard it is.
+
+Every wall is a layout in rl.mjx_scene.lesson_layout's format -- rungs (name, centre, axis,
+half length, radius), walls (name, point on the inner face, normal), the two goals [L, R],
+the goal rungs, and `hang`, the lesson whose start hang it begins from -- so the MJX slots
+take it as they take a lesson. Half of them are mirrored (y -> -y, the goals swapped
+between hands): the robot is symmetric, the benchmark only goes one way. An episode lasts
+at most TIMEOUT: lesson 1's, at which hanging still costs less than falling (climb_task's
+incentive test).
 """
-import ast
-
 import numpy as np, mujoco
 from .climb_task import SEAT_IN
 
@@ -34,69 +37,44 @@ MIN_W = 0.25                     # m two goals on one rung keep apart (hooks 65 
 SEAT = SEAT_IN + 0.005           # a goal's closest to a rung end
 TIMEOUT = 60.0
 CLEAR = 0.02                     # m every rung but the start one keeps from the robot at the start
-OUT = 0.20                       # m each family-3 row stands further from the wall than the one below
+OUT = 0.20                       # m each row above stands further from the wall (family 3), each
+                                 # row below nearer it (family 4), than the row it is climbed from
+FACE = 0.06                      # m from the nearest rung's axis to its wall's face
+PROBE_P = 0.25                   # of a family's walls put one parameter at its candidate
 
-# family -> ((parameter, sampled from, first top, last top, step), ...). Integers are
-# counts. The last tops are the benchmark's value or a margin past it, and the
-# robot's measured reach (rl.lessons) bounds the rest: a staircase step stays inside
-# the static reach down (0.65 m at 0.15 m aside); the break of climb_over starts past
-# the 1.55 m the robot can bridge with momentum, so it can only be climbed round; and
-# the swing gap runs from the 0.58 m a still hang crosses to lesson 9's own 0.90 m.
+# family -> ((parameter, sampled from, first level, last level, step), ...). Integers are
+# counts. The last levels are the benchmark's value or a margin past it, and the robot's
+# measured reach (rl.lessons) bounds the rest.
 FAMILIES = {
     1: (('shift', 0.0, 0.30, 1.40, 0.10),),                        # lesson 1: 1.10
     2: (('gaps', 1, 1, 2, 1), ('width', 0.04, 0.04, 0.30, 0.02)),  # lesson 2: 2 x 0.25
-    # lesson 3: 2 x 0.40, each row OUT 0.20 m further from the wall than the one below.
-    # Rows stacked straight (as until 2026-10-06) are in the robot: its arms hang 59-107
-    # mm off the rung plane, so hanging one row up, a row 0.10-0.15 m below is 15-23 mm
-    # inside the wrists, 0.20-0.50 m is 6-25 mm off the forearms and upper arms, and two
-    # rows of 0.45 put the base into the lowest one (the robot fell off the top row) --
-    # every CEM climb of a stacked row pressed an arm on the row below at 100-415 N, and
-    # gpu2 butted the row above from below for 130M steps. Standing out, the rows below
-    # are behind the robot: after 3 s hanging from the top one, 92 mm (2 x 0.45, the
-    # base) to 164 mm clear over this whole range; out 0.05-0.10 the base still swings
-    # onto the lowest of two rows. Reaching OUT costs height: the free hook rises 0.56 m
-    # in the rung plane, 0.52 m 0.15-0.25 m out (urdf/_reach.py's hang), so a row is at
-    # most 0.45 up (0.50 + the 45 mm over it would be past the reach; CEM: 0.20 and 0.40
-    # found, 0.45 not in 3 seeds). It started at 0.30 up, gpu1's 0 % for 90M steps (a reward
-    # barrier since fixed); 0.20 at the user's call.
-    3: (('rows', 1, 1, 2, 1), ('spacing', 0.20, 0.20, 0.45, 0.05)),
-    4: (('steps', 1, 1, 3, 1), ('drop', 0.25, 0.30, 0.45, 0.05),   # lesson 4: 3 steps,
+    # rows above, each OUT further from the wall: a row is at most 0.45 up -- reaching out
+    # costs the free hook height (0.52 m up 0.15-0.25 m out); CEM found 0.20-0.40, not 0.45.
+    # 0.05-0.10 out, the base swung onto the lowest of two rows
+    3: (('rows', 1, 1, 2, 1), ('spacing', 0.20, 0.20, 0.45, 0.05)),   # lesson 3: 2 x 0.40
+    4: (('rows', 1, 1, 2, 1), ('spacing', 0.20, 0.20, 0.45, 0.05)),   # lesson 4: 2 x 0.40, down
+    # a staircase step stays inside the static reach down (0.65 m at 0.15 m aside)
+    5: (('steps', 1, 1, 3, 1), ('drop', 0.25, 0.30, 0.45, 0.05),   # lesson 5: 3 steps,
         ('gap', 0.05, 0.10, 0.30, 0.05)),                          #   <= 0.40 down, <= 0.20 on
-    5: (('break', 1.80, 1.80, 2.50, 0.10),),                       # lesson 5: 2.20
-    # family 6 is the diagonal step up, one tier: lesson 6's two (~0.46 each, +-0.06) are its
-    # steps one after another, composed at run time by goals a tier at a time. Trained at two,
-    # the far goal (2.7-3.3 m off, 0.6 up) froze the policy on the start row (gpu11: 0/16 at
-    # 226M, 8/16 with the goals on tier 1), and three steps to two tiers at 610-690M were 0-4 %
-    6: (('tiers', 1, 1, 1, 1), ('rise', 0.30, 0.30, 0.50, 0.05),
-        ('scatter', 0.0, 0.02, 0.08, 0.02)),
+    6: (('rise', 0.30, 0.30, 0.50, 0.05), ('scatter', 0.0, 0.02, 0.08, 0.02)),   # lesson 6: 0.46
     7: (('side', 0.60, 0.60, 1.10, 0.05),),                        # lesson 7: 1.00
     8: (('behind', 0.35, 0.35, 0.70, 0.05),),                      # lesson 8: 0.63
-    # lesson 9: 0.90. It ran to 1.10 m, inside the 1.47 m kinematics allow a swing; the one
-    # motion found across 0.90 (CEM, 2026-09-26) needed every bit of the reach there is --
-    # the catch 1.10 m from the other hook, 2.5 mm inside the far rung's seat -- and no
-    # search from further back reached past 1.07 m. Past 0.90 no wall is known passable.
+    # the swing gap runs from the 0.58 m a still hang crosses to lesson 9's 0.90: the one
+    # motion found across 0.90 needed all the reach there is (the catch 1.10 m from the
+    # other hook) and no search from further back reached past 1.07 m
     9: (('gap', 0.30, 0.55, 0.90, 0.05),),
 }
 
-
 # family -> the families whose skills it is made of. A family enters the pool only once
-# each of these has passed (train_ppo.Walls), so an upgrade never comes before what it
-# upgrades, and a family stuck at 0 % holds back its upgrades and nothing else -- gpu1's
-# family 3 kept 4-9 locked for 90M steps, and only 5 and 6 climb up. Fixed with the
-# families, before any training. The next family in is the lowest-numbered one whose
-# needs have passed (`ORDER`, with nothing stuck): 1, 2, 3, 4, 6, 5, 7, 8, 9.
-#
-# 5's step up is 6's, not 3's (2026-10-11): family 3's rows stand OUT from the wall, and the
-# step up over the break is diagonal, in the wall's own plane, past the end of the start
-# row -- a tier of family 6, 0.35-0.50 m up. gpu8 entered 5 after 3 and 4, as numbered, and
-# stayed at 0 % for 50M steps, its hook never more than 8 cm up; 6 at its first tops the same
-# (rl.rsi, STEPS6). From 6's at 0.50 m, 5 is 6's step up and 4's down with a row between.
+# each of these has passed (train_ppo.Curriculum), so an upgrade never comes before what it
+# upgrades, and a family stuck at 0 % holds back its upgrades and nothing else. With
+# nothing stuck the families enter in their own order (`ORDER`).
 NEEDS = {1: (),
          2: (1,),        # gaps in the row: a traverse that changes rungs
          3: (1,),        # rows above: a traverse's re-grip, reached upward
-         4: (2,),        # down a staircase: each step is another rung across a gap
-         5: (4, 6),      # over a break: 6's step up a row, along it, 4's down again
-         6: (2, 3),      # tiers of short rungs: up, and across the gaps between them
+         4: (1,),        # rows below: the same, reached downward
+         5: (2,),        # down a staircase: each step another rung across a gap
+         6: (2, 3),      # up a tier of short rungs: up, and across the gap between them
          7: (1,),        # the corner: from the front row onto the side rung, level
          8: (1,),        # the wall behind: onto the back rung, level
          9: (2,)}        # a gap past the static reach: crossed by swinging
@@ -111,58 +89,46 @@ def _order(needs):
     return out
 
 
-assert set(NEEDS) == set(FAMILIES) and all(p in NEEDS for ps in NEEDS.values() for p in ps), \
-    "every family's needs are families"
+assert set(NEEDS) == set(FAMILIES) and all(p in NEEDS for ps in NEEDS.values() for p in ps)
 ORDER = _order(NEEDS)                # raises StopIteration on a cycle: no family could ever enter
-assert ORDER == [1, 2, 3, 4, 6, 5, 7, 8, 9], ORDER
-# the families trained (rl.train_ppo.Walls' pool). Not 5: lesson 5 is 6's step up, along the top,
-# 4's step down, composed at run time by goals a rung pair at a time and scored so. Trained whole
-# (gpu11, 411-700M) it never once passed and took a quarter of the steps, stuck at its first catch
-TRAINED = tuple(f for f in FAMILIES if f != 5)
-# the benchmark lessons that are compositions (5; 6's two tiers): a controller drives the policy
-# through them a rung pair at a time; no training run scores them (gpu_run.sh, rl.curve, rl.mjx_check)
-COMPOSED = (5, 6)
+assert ORDER == sorted(FAMILIES), ORDER
 
-
-def narrowed(old, f):
-    """family f's ranges are `old`'s (a checkpoint's spec) with only last values lowered: the tops
-    grown over `old` still mean what they did, cut to the new lasts (train_ppo.Walls._load)"""
-    try:
-        o = ast.literal_eval(old)
-    except (ValueError, SyntaxError):
-        return False
-    n = FAMILIES[f]
-    return len(o) == len(n) and all(tuple(a[:3]) == tuple(b[:3]) and a[4] == b[4] and b[3] <= a[3]
-                                    for a, b in zip(o, n))
-
-
-# where each benchmark lesson sits in its family (rl.lessons draws them): every value
-# must lie inside the family's last range, so the benchmark is a wall training can draw
+# where each benchmark lesson sits in its family: every value must lie inside the family's
+# last range, so the benchmark is a wall training can draw
 BENCHMARK = {1: dict(shift=1.10), 2: dict(gaps=2, width=0.25), 3: dict(rows=2, spacing=0.40),
-             4: dict(steps=3, drop=0.40, gap=0.20), 5: dict(**{'break': 2.20}),
-             6: dict(tiers=2, rise=0.46, scatter=0.06), 7: dict(side=1.00),
-             8: dict(behind=0.63), 9: dict(gap=0.90)}
+             4: dict(rows=2, spacing=0.40), 5: dict(steps=3, drop=0.40, gap=0.20),
+             6: dict(rise=0.46, scatter=0.04), 7: dict(side=1.00), 8: dict(behind=0.63),
+             9: dict(gap=0.90)}
 
 
 def spec(f):
-    """family f's ranges as a checkpoint records them: its tops mean something only
-    against the ranges they were grown over (train_ppo.Walls starts a family over when
-    they changed)"""
+    """family f's ranges as a checkpoint records them: its levels mean something only
+    against the ranges they were grown over"""
     return repr(FAMILIES[f])
 
 
-# the ranges of checkpoints from before they were recorded with their tops (gpu1 up to
-# 102.9M steps): where they differ from today's
-LEGACY = {3: repr((('rows', 1, 1, 2, 1), ('spacing', 0.25, 0.30, 0.50, 0.05))),
-          9: repr((('gap', 0.30, 0.55, 1.10, 0.05),))}
-
-
-def first_tops():
+def first_levels():
     return {f: {p[0]: p[2] for p in ps} for f, ps in FAMILIES.items()}
 
 
-def last_tops():
+def last_levels():
     return {f: {p[0]: p[3] for p in ps} for f, ps in FAMILIES.items()}
+
+
+def candidates(f, level):
+    """{parameter: the step above its level} of family f's parameters not yet at their last"""
+    out = {}
+    for name, lo, _, last, step in FAMILIES[f]:
+        if level[name] < last:
+            v = min(level[name] + step, last)
+            out[name] = int(v) if isinstance(lo, int) else round(float(v), 6)
+    return out
+
+
+def progress(levels):
+    """how far every level has come, first -> last, 0..1 a family, summed over the families"""
+    return float(sum(np.mean([(levels[f][n] - a) / (b - a) for n, _, a, b, _ in ps])
+                     for f, ps in FAMILIES.items()))
 
 
 def _row(y0, y1, z, x=X):
@@ -171,18 +137,8 @@ def _row(y0, y1, z, x=X):
             (y1 - y0) / 2)
 
 
-def _front():
-    return ('wall_front', np.array([0.50, 0.30, 1.00]), np.array([-1.0, 0.0, 0.0]))
-
-
-def _draw(rng, spec, top, probe):
-    """one parameter: its top when it is the one probed (or one of a tuple of them: rl.rsi's
-    climbs, every parameter at its own value), else uniform below it"""
-    name, lo, _, _, _ = spec
-    t = top[name]
-    if probe == name or (isinstance(probe, tuple) and name in probe):
-        return t
-    return int(rng.integers(lo, t + 1)) if isinstance(lo, int) else float(rng.uniform(lo, t))
+def _front(face=X + FACE):
+    return ('wall_front', np.array([face, 0.30, 1.00]), np.array([-1.0, 0.0, 0.0]))
 
 
 def _goals_from(y_lo, rng, z=Z0, x=X):
@@ -193,15 +149,24 @@ def _goals_from(y_lo, rng, z=Z0, x=X):
     return [np.array([x, yL, z]), np.array([x, yR, z])], yL + SEAT + rng.uniform(0.02, 0.15)
 
 
-def sample(family, top, rng, probe=None):
-    """one wall of `family` with its tops `top` ({parameter: top}); `probe` names the
-    parameter put exactly at its top -> layout dict (rl.mjx_scene.lesson_layout's)"""
-    p = {s[0]: _draw(rng, s, top, probe) for s in FAMILIES[family]}
-    rungs, walls, goal_rungs = [], [_front()], None
+def sample(family, level, rng, exact=None):
+    """one wall of `family`: every parameter uniform from its lo to its `level`, but those in
+    `exact` ({parameter: value}) at that value -- a probe, or a reference climb's wall
+    (rl.rsi) -> layout dict (rl.mjx_scene.lesson_layout's)"""
+    exact = exact or {}
+
+    def draw(name, lo, *_):
+        if name in exact:
+            return exact[name]
+        t = level[name]
+        return int(rng.integers(lo, t + 1)) if isinstance(lo, int) else float(rng.uniform(lo, t))
+
+    p = {s[0]: draw(*s) for s in FAMILIES[family]}
+    rungs, walls, hang = [], [_front()], 1
     d = rng.uniform(-0.15, 0.15)                   # the goals off centre, on a full row
     if family == 1:                                # along the start row
         dL, dR = rng.uniform(0, p['shift'], 2)
-        if probe == 'shift':
+        if 'shift' in exact:                       # one hand all the way
             dL, dR = (p['shift'], dR) if rng.random() < 0.5 else (dL, p['shift'])
         dL = max(dL, dR - (2 * HY - MIN_W))        # the left hand stays left
         yL, yR = HY + dL, -HY + dR
@@ -211,59 +176,45 @@ def sample(family, top, rng, probe=None):
         y = HY + rng.uniform(0.12, 0.30)
         rungs = [_row(rng.uniform(-0.6, -0.45), y, Z0)]
         for i in range(p['gaps']):
-            y0 = y + (p['width'] if probe == 'width' else rng.uniform(0.04, p['width']))
+            y0 = y + (p['width'] if 'width' in exact else rng.uniform(0.04, p['width']))
             if i < p['gaps'] - 1:
                 y = y0 + rng.uniform(0.35, 0.60)
                 rungs.append(_row(y0, y, Z0))
         goals, end = _goals_from(y0, rng)
         rungs.append(_row(y0, end, Z0))
         goal_rungs = [len(rungs) - 1]
-    elif family == 3:                              # rows above, each further out, to the top one
-        m, dz = p['rows'], p['spacing']
-        rungs = [_row(Y0, Y1, Z0 + k * dz, x=X - k * OUT) for k in range(m + 1)]
-        x, z = X - m * OUT, Z0 + m * dz
+    elif family in (3, 4):                         # rows above, each further out (3), or
+        m, dz = p['rows'], p['spacing']            # below, each further in (4), to the last
+        up = 1 if family == 3 else -1
+        rungs = [_row(Y0, Y1, Z0 + up * k * dz, x=X - up * k * OUT) for k in range(m + 1)]
+        x, z = X - up * m * OUT, Z0 + up * m * dz
         goals, goal_rungs = [np.array([x, HY + d, z]), np.array([x, -HY + d, z])], [m]
-    elif family == 4:                              # down a staircase: each step lower, further on
+        if family == 4:                            # the wall behind the lowest row; nothing
+            walls, hang = [_front(x + FACE)], 4    # to lean on, so lesson 4's free hang
+    elif family == 5:                              # down a staircase: each step lower, further on
         y = HY + rng.uniform(0.12, 0.30)           # the start row ends past the left hook
         rungs, z = [_row(-0.9, y, Z0)], Z0
         for i in range(p['steps']):
-            y0 = y + (p['gap'] if probe == 'gap' else rng.uniform(0.05, p['gap']))
-            z -= p['drop'] if probe == 'drop' else rng.uniform(0.25, p['drop'])
+            y0 = y + (p['gap'] if 'gap' in exact else rng.uniform(0.05, p['gap']))
+            z -= p['drop'] if 'drop' in exact else rng.uniform(0.25, p['drop'])
             if i < p['steps'] - 1:
                 y = y0 + rng.uniform(0.40, 0.60)   # room for both hooks on every step
                 rungs.append(_row(y0, y, z))
         goals, end = _goals_from(y0, rng, z=z)
         rungs.append(_row(y0, end, z))
         goal_rungs = [len(rungs) - 1]
-    elif family == 5:                              # a break in the start row, a row above it
-        e = HY + rng.uniform(0.12, 0.30)           # alone: up and down are diagonal steps (6, 4)
-        f0 = e + p['break']
-        goals, end = _goals_from(f0, rng)
-        rungs = [_row(-0.9, e, Z0), _row(e + rng.uniform(0.05, 0.20), f0 - rng.uniform(0.05, 0.20),
-                                         Z0 + rng.uniform(0.35, 0.50)),
-                 _row(f0, end, Z0)]
-        goal_rungs = [2]
-    elif family == 9:                              # one gap past the static reach: swing
-        e = HY + rng.uniform(0.12, 0.30)
-        y0 = e + p['gap']
-        goals, end = _goals_from(y0, rng)
-        rungs = [_row(rng.uniform(-0.6, -0.45), e, Z0), _row(y0, end, Z0)]
-        goal_rungs = [1]
-    elif family == 6:                              # tiers of short rungs, each tier past the
-        y = HY + rng.uniform(0.12, 0.30)           # end of the one below: climbed diagonally
-        rungs, z = [_row(-0.9, y, Z0)], Z0
-        for t in range(p['tiers']):
-            z += p['rise']
-            c = 2 if t == p['tiers'] - 1 else int(rng.integers(2, 4))
-            ln, gp = rng.uniform(0.30, 0.45, c), rng.uniform(0.20, 0.30, c - 1)
-            y += rng.uniform(0.05, 0.20)
-            for j in range(c):
-                rungs.append(_row(y, y + ln[j], z + rng.uniform(-p['scatter'], p['scatter'])))
-                y += ln[j] + (gp[j] if j < c - 1 else 0.0)
+    elif family == 6:                              # a tier of two short rungs past the start
+        y = HY + rng.uniform(0.12, 0.30)           # row's end, each at its own height
+        rungs, z = [_row(-0.9, y, Z0)], Z0 + p['rise']
+        ln, gp = rng.uniform(0.30, 0.45, 2), rng.uniform(0.20, 0.30, 1)
+        y += rng.uniform(0.05, 0.20)
+        for j in range(2):
+            rungs.append(_row(y, y + ln[j], z + rng.uniform(-p['scatter'], p['scatter'])))
+            y += ln[j] + (gp[j] if j < 1 else 0.0)
         (cR, zR), (cL, zL) = [(r[1][1], r[1][2]) for r in rungs[-2:]]
         goals = [np.array([X, cL + rng.uniform(-0.03, 0.03), zL]),
                  np.array([X, cR + rng.uniform(-0.03, 0.03), zR])]
-        goal_rungs = [len(rungs) - 2, len(rungs) - 1]
+        goal_rungs = [1, 2]
     elif family == 7:                              # the side wall, in the corner
         s = p['side']
         ys = -s + 0.06
@@ -276,13 +227,17 @@ def sample(family, top, rng, probe=None):
     elif family == 8:                              # the wall behind the back
         xb = X - p['behind']
         rungs = [_row(Y0, Y1, Z0), _row(Y0, Y1, Z0, x=xb)]
-        walls.append(('wall_back', np.array([xb - 0.06, 0.30, 1.0]), np.array([1.0, 0.0, 0.0])))
+        walls.append(('wall_back', np.array([xb - FACE, 0.30, 1.0]), np.array([1.0, 0.0, 0.0])))
         goals, goal_rungs = [np.array([xb, HY + d, Z0]), np.array([xb, -HY + d, Z0])], [1]
+    elif family == 9:                              # one gap past the static reach: swing
+        e = HY + rng.uniform(0.12, 0.30)
+        y0 = e + p['gap']
+        goals, end = _goals_from(y0, rng)
+        rungs = [_row(rng.uniform(-0.6, -0.45), e, Z0), _row(y0, end, Z0)]
+        goal_rungs = [1]
     rungs = [(f'rung_g{i}', c, a, h, R) for i, (_, c, a, h) in enumerate(rungs)]
-    one = probe if isinstance(probe, str) else None     # rl.rsi's tuple of them probes nothing
-    lay = dict(rungs=rungs, walls=walls, goals=np.asarray(goals, float),
-               goal_rungs=goal_rungs, timeout=TIMEOUT, family=family, probe=one,
-               probe_val=float(p[one]) if one else 0.0)
+    lay = dict(rungs=rungs, walls=walls, goals=np.asarray(goals, float), goal_rungs=goal_rungs,
+               timeout=TIMEOUT, family=family, hang=hang, probe=None, probe_val=0.0)
     return mirror(lay) if rng.random() < 0.5 else lay
 
 
@@ -297,36 +252,38 @@ def mirror(lay):
 class Checker:
     """Is a wall usable? Its goals on seats of their rungs, and every rung but the start
     one -- and the extra wall -- at least CLEAR from each robot part it can touch, with
-    the robot in its secured start hang: `rl.mjx_task` starts every generated wall from
-    that one hang, so nothing may be inside or against the robot there. And the same hang
-    moved to the goals is CLEAR of every rung but the goal ones: a row straight below
-    where the robot ends is in its arms or body (family 3 and lessons 3 and 6 until
-    2026-10-06). A static test: hanging, the body swings toward the wall, and two rows
-    standing out 0.05-0.10 m put the base on the lowest one -- OUT is set from 3 s
-    hangs. Checked in C on the robot MJX trains (rl.mjx_scene), through its own
-    collision pairs."""
+    the robot in the secured start hang it begins from (`hang`): nothing may be inside or
+    against the robot there. And the same hang moved to the goals is CLEAR of every rung
+    but the goal ones: a row straight below where the robot ends is in its arms or body.
+    Checked in C on the robot MJX trains (rl.mjx_scene), through its own collision pairs."""
 
     def __init__(self):
-        from .climb_task import ClimbTask
-        from .mjx_scene import N_RUNG, c_path, model
-        t = ClimbTask(1, visual=False, xml=c_path(1))
-        t.reset()
+        from .mjx_scene import N_RUNG, model
         self.m = model()
         self.d = mujoco.MjData(self.m)
-        self.d.qpos[:] = t.env.data.qpos
-        self.q0 = t.env.data.qpos.copy()
-        self.mid0 = np.mean([t._route(t._throat_true(s))[1] for s in 'LR'], axis=0)
+        self.hangs = {}                            # lesson -> (its secured hang, the hooks' midpoint)
         self.rungs = [self.m.geom(f'slot_rung{i}').id for i in range(N_RUNG)]
-        self.wall = self.m.geom('slot_wall').id
+        self.wall, self.front = self.m.geom('slot_wall').id, self.m.geom('wall_front').id
         # C MuJoCo skips a geom's own rotation when it was compiled at its body's (the
         # parked slots were), so a quat set here would be ignored; MJX never skips it
-        self.m.geom_sameframe[self.rungs + [self.wall]] = 0
+        self.m.geom_sameframe[self.rungs + [self.wall, self.front]] = 0
         pairs = {}
         for a, b in zip(self.m.pair_geom1, self.m.pair_geom2):
             pairs.setdefault(a, []).append(b)
             pairs.setdefault(b, []).append(a)
         self.pairs = pairs
         self.n_rung = N_RUNG
+
+    def hang(self, k):
+        """lesson k's secured hang on the simplified robot, and its hooks' midpoint"""
+        if k not in self.hangs:
+            from .climb_task import ClimbTask
+            from .mjx_scene import c_path
+            t = ClimbTask(k, visual=False, xml=c_path(k))
+            t.reset()
+            self.hangs[k] = (t.env.data.qpos.copy(),
+                             np.mean([t._route(t._throat_true(s))[1] for s in 'LR'], axis=0))
+        return self.hangs[k]
 
     def ok(self, lay):
         from .mjx_scene import slots
@@ -348,90 +305,69 @@ class Checker:
                                                             sl['rung_size'][i])
             m.geom_rbound[g] = sl['rung_size'][i][0] + sl['rung_size'][i][1]
         m.geom_pos[self.wall], m.geom_quat[self.wall] = sl['wall_pos'], sl['wall_quat']
+        m.geom_pos[self.front], m.geom_quat[self.front] = sl['front_pos'], sl['front_quat']
         ft = np.zeros(6)
         clear = lambda gs: not any(mujoco.mj_geomDistance(m, self.d, g, o, CLEAR, ft) < CLEAR
                                    for g in gs for o in self.pairs.get(g, []))
-        self.d.qpos[:] = self.q0
+        q0, mid0 = self.hang(lay.get('hang', 1))
+        self.d.qpos[:] = q0
         mujoco.mj_kinematics(m, self.d)
         if not clear(self.rungs[1:len(rungs)] + ([self.wall] if len(lay['walls']) > 1 else [])):
             return False
-        self.d.qpos[:3] += np.mean(lay['goals'], axis=0) - self.mid0
+        self.d.qpos[:3] += np.mean(lay['goals'], axis=0) - mid0
         mujoco.mj_kinematics(m, self.d)
         return clear([g for i, g in enumerate(self.rungs[:len(rungs)]) if i not in lay['goal_rungs']])
 
 
-FRESH_P = 0.2        # a family's walls at a top ADR has just raised (`draw`'s fresh), until a window
-                     # there is judged. At the new top half the family's probes, and every other wall
-                     # under it, gpu11 put 65 % of its family-8 walls past 0.50 m behind at 502.7M and
-                     # 59 % of its family-6 walls at two tiers at 620.2M (22 and 24 % now), both ~0 %
-                     # there: in 9 and 17M steps family 8 fell 76 -> 16 % and family 6 67 -> 18 %,
-                     # the walls below the new top too, hung on to their timeouts. Every step up of
-                     # family 8's back rung (9) and family 6's tiers (3) went so; small steps -- family
-                     # 7's side, family 6's rise -- never did. The window there now fills 2.5x slower
-                     # on family 8, a little faster on family 6's tiers
-
-
-def draw(checker, weights, tops, rng, n, probe_p=0.5, fresh=None):
-    """n usable walls: a family by `weights` ({family: weight}), and with probability
-    probe_p one of its parameters put exactly at its current top -- at its last top too:
-    one never probed again can never come back down. gpu7 (2026-10-10) took family 3 to two
-    rows, its last, and climbed two rows 0/24 for 145M steps; only the spacing was probed,
-    on walls of one row or two, ~50 %, inside ADR's dead band -- family 3 held at 50 % and
-    every family after it locked.
-
-    `fresh` ({family: {parameter: its last judged top}}): tops ADR has raised and not yet judged
-    a window at (rl.train_ppo.Walls.fresh). FRESH_P of the family's walls probe one of them at its
-    new top; every other wall of the family draws it under the judged one"""
+def draw(checker, weights, levels, rng, n, probe_p=PROBE_P):
+    """n usable walls: a family by `weights` ({family: weight}), every parameter under its
+    level, and with probability probe_p one of them -- of those not yet at their last --
+    exactly at its candidate (`candidates`), the layout saying which (`probe`, `probe_val`)"""
     fams = list(weights)
     w = np.asarray([weights[f] for f in fams], float)
     out = []
     while len(out) < n:
         f = fams[rng.choice(len(fams), p=w / w.sum())]
-        fr = (fresh or {}).get(f, {})
-        if fr and rng.random() < FRESH_P:
-            probe = list(fr)[rng.integers(len(fr))]
-            top = {**tops[f], **{k: v for k, v in fr.items() if k != probe}}
-        else:
-            top = {**tops[f], **fr}
-            free = [s[0] for s in FAMILIES[f] if s[0] not in fr and s[2] < s[3]]   # never one that cannot move
-            probe = free[rng.integers(len(free))] if free and rng.random() < probe_p else None
+        cand = candidates(f, levels[f])
+        probe = list(cand)[rng.integers(len(cand))] if cand and rng.random() < probe_p else None
+        exact = {probe: cand[probe]} if probe else None
         for _ in range(50):
-            lay = sample(f, top, rng, probe)
+            lay = sample(f, levels[f], rng, exact)
             if checker.ok(lay):
-                out.append(lay)
+                out.append(dict(lay, probe=probe, probe_val=cand[probe] if probe else 0.0))
                 break
         else:
-            raise RuntimeError(f"family {f} at {top} (probe {probe}): no usable wall in 50 draws")
+            raise RuntimeError(f"family {f} at {levels[f]} (probe {exact}): no usable wall in 50 draws")
     return out
 
 
 def main():
-    from .lessons import lesson_key
+    import time
     from .mjx_scene import lesson_layout
     rng = np.random.default_rng(0)
     ck = Checker()
-    for label, tops in (('first', first_tops()), ('last', last_tops())):
+    for label, levels in (('first', first_levels()), ('last', last_levels())):
         for f in FAMILIES:
-            n_ok = sum(ck.ok(sample(f, tops[f], rng, pr)) for _ in range(40)
-                       for pr in [None] + [s[0] for s in FAMILIES[f]])
-            tot = 40 * (1 + len(FAMILIES[f]))
-            print(f"family {f} at its {label} tops {tops[f]}: {n_ok}/{tot} walls usable")
-            assert n_ok >= 0.5 * tot, f"family {f}: most walls at the {label} tops are unusable"
-    # each benchmark lesson is usable, and inside its family's last range
-    for k in range(1, 10):
-        lay = lesson_layout(lesson_key(k))
+            # every parameter under its level, and each one at its last value on its own
+            tries = [None] + [{s[0]: s[3]} for s in FAMILIES[f]]
+            n_ok = sum(ck.ok(sample(f, levels[f], rng, ex)) for _ in range(40) for ex in tries)
+            tot = 40 * len(tries)
+            print(f"family {f} at its {label} levels {levels[f]}: {n_ok}/{tot} walls usable")
+            assert n_ok >= 0.5 * tot, f"family {f}: most walls at the {label} levels are unusable"
+    for k in FAMILIES:
+        lay = lesson_layout(k)
         assert ck.ok(lay), f"benchmark lesson {k} fails the wall check"
         assert ck.ok(mirror(lay)), f"benchmark lesson {k}, mirrored, fails the wall check"
         for name, lo, _, last, _ in FAMILIES[k]:
-            if k not in TRAINED or (k, name) == (6, 'tiers'):
-                continue                 # composed at run time, a step at a time (TRAINED, family 6)
             v = BENCHMARK[k][name]
             assert lo <= v <= last, f"lesson {k}: {name} {v} outside its family's [{lo}, {last}]"
-    print("benchmark lessons 1..9, both ways round: usable walls, each inside its family's last range (5 and 6's two tiers: their steps)")
-    t0 = __import__('time').perf_counter()
-    walls = draw(ck, {f: 1.0 for f in FAMILIES}, last_tops(), rng, 256)
-    dt = __import__('time').perf_counter() - t0
-    print(f"draw: 256 usable walls in {dt:.2f} s; families {sorted({w['family'] for w in walls})}")
+    print("benchmark lessons 1..9, both ways round: usable walls, each inside its family's last range")
+    t0 = time.perf_counter()
+    walls = draw(ck, {f: 1.0 for f in FAMILIES}, first_levels(), rng, 256)
+    probed = sum(w['probe'] is not None for w in walls)
+    print(f"draw: 256 usable walls in {time.perf_counter() - t0:.2f} s, {probed} probes; "
+          f"families {sorted({w['family'] for w in walls})}")
+    assert 0.15 < probed / 256 < 0.35, probed
 
 
 if __name__ == '__main__':

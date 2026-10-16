@@ -15,17 +15,17 @@
 #      no-curriculum ablation -- resuming by itself: a crash restarts from the last checkpoint, at most
 #      MAX_FAILS times in a row; it stops at HOURS or TOTAL steps, whichever is first
 #      (SIGTERM, so it saves on the way out).
-#   3. score the best checkpoint on the FULL robot in C MuJoCo -- the benchmark,
-#      lessons 1..9 both ways round, EPISODES each, against doing nothing (rl.eval) -- and replay it on the full
-#      robot, the simplified one and MJX (rl.mjx_check policy), then pack out/<name>/
+#   3. score the best checkpoint on the FULL robot in C MuJoCo -- the benchmark, lessons 1..9
+#      both ways round, EPISODES each, against doing nothing (rl.eval) -- and replay it on the
+#      full robot, the simplified one and MJX (rl.mjx_check policy), then pack out/<name>/
 #      into out/<name>.tgz and print the croc line that sends it home.
 #
 # What out/<name>/ keeps, for an audit and for the paper's plots (python -m rl.plot):
 #   train.log        everything the trainer printed, crashes and their stacks included
-#   progress.jsonl   PPO's table, one line an update (reward, KL, rate, std, losses)
-#   metrics.jsonl    one line a checkpoint (success and ways of ending, per lesson; the
-#                    pool; best; rate; KL target; contact cap) and one per event (start,
-#                    unlock, ADR move, best, rollback, exit -- with the error if it crashed)
+#   progress.jsonl   PPO's numbers, one line an update (reward, KL, rate, std, losses, cloning)
+#   metrics.jsonl    one line a checkpoint (success and ways of ending per lesson, the pool,
+#                    ADR's levels, the climbs' frontiers, best, rate, KL target, contact cap)
+#                    and one an event (start, unlock, ADR step, best, rollback, exit)
 #   gpu.csv          the card every minute: load, memory, temperature, power, clock
 #   gpu_run.log      this script's own lines: restarts and why, budgets, scoring
 #   eval.txt/.jsonl  the full-robot score per lesson with its 95 % interval
@@ -168,8 +168,8 @@ print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
     short() {
         local phy=$1; shift
         rm -rf out/_preflight
-        { "$@" $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$phy" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} \
-          && "$@" $PY -m rl.train_ppo --name _preflight --backend mjx --physics "$phy" --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
+        { "$@" $PY -m rl.train_ppo --name _preflight --physics "$phy" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} \
+          && "$@" $PY -m rl.train_ppo --name _preflight --physics "$phy" --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
             2>&1 | stamped > "$RUN/short_$phy.txt"
         local r=$?
         rm -rf out/_preflight
@@ -244,18 +244,16 @@ while :; do
     [ "$need" -gt 0 ] || { say "step budget reached: $have"; break; }
     resume=; [ -f "$RUN/state.json" ] && resume=--resume
     net=; [ -z "$resume" ] && [ -n "${NET:-}" ] && net="--net $NET"
-    # gpu9 (2026-10-12): the card fell off the bus at 176.6M ('GPU is lost' in gpu.csv, cuInit
-    # failing), and the restart, forced onto --backend mjx, trained on the CPU at 90 env-steps/s
-    # for 7.5 h -- an update every 22 min, inside STALL. The preflight's own GPU check, every start,
-    # its whole output first: piped, `grep -q` left at the first line and the next print's broken
-    # pipe failed the pipeline (pipefail), and gpu10 (dfc5a31) stopped with its GPU fine
+    # a card fallen off the bus leaves JAX on the CPU, where a restart trained at 90 env-steps/s
+    # for 7.5 h (gpu9) -- an update every 22 min, inside STALL. So the GPU check, every start
+    # (its whole output first: piped, `grep -q` stopped reading and the broken pipe failed it)
     grep -q "via JAX" <<< "$($PY -m rl.hardware 2>&1)" || {
         say "JAX cannot use the GPU any more ($(nvidia-smi -L 2>&1 | head -1)): not training on the CPU." \
             "Reboot the box or take another, then carry the run on from its .tgz"
         pack; exit 1; }
     say "train: $have steps so far, $need to go, $(( left / 60 )) min left, $ENVS envs"
     t0=$(date +%s)
-    $PY -m rl.train_ppo --name "$NAME" --backend mjx --physics "$(cat "$RUN/physics" 2>/dev/null || echo jax)" \
+    $PY -m rl.train_ppo --name "$NAME" --physics "$(cat "$RUN/physics" 2>/dev/null || echo jax)" \
                         --envs "$ENVS" --seed "$SEED" \
                         --walls "$WALLS" --steps "$need" $resume $net ${CKPT:+--ckpt-every "$CKPT"} &
     pid=$! why=
@@ -291,8 +289,8 @@ kill $MON 2>/dev/null
 # ---- 3. score the best checkpoint on the full robot -----------------------------
 [ "${SCORE:-1}" = 1 ] || { say "SCORE=0: not scoring; carry on with the same name"; pack; exit 0; }
 [ -f "$RUN/best_model.zip" ] || { say "no best checkpoint to score"; pack; exit 1; }
-say "scoring best_ on the full robot, the benchmark both ways round but 5 and 6 (rl.walls.COMPOSED): $EPISODES episodes each, one process each"
-jobs="1 1m 2 2m 3 3m 4 4m 7 7m 8 8m 9 9m"   # 'm': mirrored, toward the right; 5 and 6 are composed
+say "scoring best_ on the full robot, the benchmark both ways round: $EPISODES episodes each, one process each"
+jobs="1 1m 2 2m 3 3m 4 4m 5 5m 6 6m 7 7m 8 8m 9 9m"   # 'm': mirrored, toward the right
 # One thread each: an episode is one robot in C MuJoCo, and unset, every one of the 18
 # would size numpy's, scipy's and torch's pools for all the cores -- thousands of
 # threads, past what gpu6's box allowed four JAX processes (preflight, 2026-10-09)

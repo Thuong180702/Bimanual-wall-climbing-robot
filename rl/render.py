@@ -1,6 +1,6 @@
 """Render the lesson scenes to PNG.
 
-    python -m rl.render                    # a sheet of all seventeen + close-ups
+    python -m rl.render                    # a sheet of all nine + close-ups
     python -m rl.render --lesson 6         # just one, bigger
 
 No image dependency: PNGs are written by piping a raw frame to ffmpeg, the same
@@ -170,20 +170,19 @@ def video(run, lesson, path, episodes=3, fps=15, stride=1, cap=600,
     hand for 13-55 % of their load-bearing time and it is invisible otherwise -- the
     hook looks the same either way from any camera angle.
     """
-    import mujoco as mj
     from stable_baselines3 import PPO
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-    from .train_ppo import MultiLesson
+    from .eval import Lesson
     from climbing_env import GRIP_BAND
 
     pre = f'out/{run}/{ckpt}'
     venv = VecNormalize.load(pre + 'vecnorm.pkl',
-                             DummyVecEnv([lambda: MultiLesson([lesson], visual=True, mirror=mirror)]))
+                             DummyVecEnv([lambda: Lesson(lesson, mirror=mirror, visual=True)]))
     venv.training = False
     venv.norm_reward = False
     model = PPO.load(pre + 'model', env=venv, device='cpu')
     obs = venv.reset()
-    t = venv.envs[0].cur
+    t = venv.envs[0].task
     m, d = t.env.model, t.env.data
     # the hook alone is a few centimetres of mesh and reads as a grey speck at this
     # framing, so the whole forearm-roll/wrist/hook chain carries the colour

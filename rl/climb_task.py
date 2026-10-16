@@ -27,7 +27,7 @@ from fractions import Fraction
 import numpy as np, mujoco
 from .estimator import Estimator, JOINTS, THROAT_PT, triad, rotvec
 from .lessons import LESSONS, xml_path, rung_segments, spec_of, canon_axis
-from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET, GRIP_CLIFF
+from climbing_env import ClimbingEnv, GRIP_BAND, GRIP_SET
 from . import lidar
 
 FRAME_SKIP = 20          # sim steps per control step: 0.002 s x 20 = 25 Hz
@@ -514,15 +514,16 @@ GRIP_STOP = np.radians(-37.0)   # finger setpoint limit: 3 deg inside GRIP_BAND'
 
 
 class ClimbTask:
-    def __init__(self, lesson=1, visual=True, xml=None, mirror=False, noise=True):
+    def __init__(self, lesson=1, visual=True, xml=None, mirror=False, noise=True, spec=None):
         """`xml`: another scene of the same lesson -- `rl.mjx_scene.c_path`'s simplified
         robot, for the cross-checks against MJX. `mirror`: the lesson toward the
         robot's right (rl.lessons.mirrored). `noise=False`: sensors, SLAM and map exact
-        (the SLAM's rate and lag stay)"""
+        (the SLAM's rate and lag stay). `spec`: another wall's goals, goal rungs and
+        timeout, with its scene as `xml` (rl.mjx_scene.c_scene: a reference climb's wall)"""
         self.lesson = lesson
         self.noise = noise
         self.rng = np.random.default_rng()
-        self.spec = spec_of(lesson, mirror)
+        self.spec = spec or spec_of(lesson, mirror)
         self.env = ClimbingEnv(xml=xml or xml_path(lesson, mirror), success_z=1e9,
                                timeout_s=self.spec['timeout'],
                                held_fn=self._attached, visual=visual)
@@ -1884,9 +1885,9 @@ def main():
           f"{cov(t.seen)}")
 
     # Progress is measured at the rung. The win9 dive: the left hook off the end of
-    # its segment, level with it (y 0.39), then hanging 0.47 m below the far segment
-    # at y 0.65 -- nearer the goal in a straight line, further along the wall.
-    t = ClimbTask(1.5)
+    # its segment, level with it, then hanging 0.47 m below the next segment 0.30 m on
+    # -- nearer the goal in a straight line, further along the wall.
+    t = ClimbTask(2)
     t.reset()
     g = t.goals[0]
     c0, a0, h0 = t.segs['rung_start']
@@ -1931,8 +1932,9 @@ def main():
     # shortest route through the rungs at the robot's own reach (0.65 m; 1.0 across
     # lesson 9's gap, which is swung), the live cost never rises above what it has
     # already come down to. Through the nearest rung it rose 0.15 m on family 3's
-    # first walls; through the best rung's nearest point, 0.06-0.09 m on lessons 4, 6
-    # and 7, and 0.37 m for a hook lifted straight up at lesson 5's break.
+    # first walls; through the best rung's nearest point, 0.06-0.09 m on the staircase,
+    # the staggered tiers and the corner, and 0.37 m for a hook lifted straight up at
+    # the end of a row toward a tier past it.
     hills = []
     for k in range(1, 10):
         tk = ClimbTask(k, visual=False)
@@ -1940,15 +1942,15 @@ def main():
         hills += [(_hill(tk, i, 1.0 if k == 9 else 0.65), k, 'LR'[i]) for i in (0, 1)]
     h, k, sd = max(hills)
     assert h < 0.01, f"lesson {k}, hand {sd}: the live cost climbs {h*1e3:.0f} mm on the way to its goal"
-    t5 = ClimbTask(5, visual=False)
-    t5.reset()
-    c5, a5, h5 = t5.segs['rung_start']
-    brk = c5 + (h5 - SEAT_IN) * (a5 if a5 @ (t5.goals[0] - c5) > 0 else -a5)   # the last seat before the break
-    up = [t5._cost(brk + np.array([0.0, 0.0, z]), 0) for z in (0.0, 0.05, 0.10, 0.20, 0.30, 0.40)]
-    assert all(b < a for a, b in zip(up, up[1:])), f"a hook lifted at lesson 5's break is not paid: {np.round(up, 3)}"
+    t6 = ClimbTask(6, visual=False)
+    t6.reset()
+    c6, a6, h6 = t6.segs['rung_start']
+    end = c6 + (h6 - SEAT_IN) * (a6 if a6 @ (t6.goals[0] - c6) > 0 else -a6)   # the start row's last seat
+    up = [t6._cost(end + np.array([0.0, 0.0, z]), 0) for z in (0.0, 0.05, 0.10, 0.20, 0.30, 0.40)]
+    assert all(b < a for a, b in zip(up, up[1:])), f"a hook lifted at lesson 6's row end is not paid: {np.round(up, 3)}"
     print(f"barrier test: along each lesson's shortest route, both hands, the live cost never climbs "
-          f"(worst {h*1e3:.1f} mm, lesson {k} {sd}); at lesson 5's break a hook lifted 0.4 m toward the row "
-          f"over it is paid {up[0] - up[-1]:.2f}")
+          f"(worst {h*1e3:.1f} mm, lesson {k} {sd}); at lesson 6's row end a hook lifted 0.4 m toward the "
+          f"tier past it is paid {up[0] - up[-1]:.2f}")
 
     # Progress must be paid for a supported reach, and for nothing else. Three ways
     # policies moved the body without one, each of which banked under an earlier

@@ -100,9 +100,9 @@ also lives. `rl.mjx_check` does that.
 import hashlib, os
 import numpy as np, mujoco
 from . import SCENE
-from .lessons import LESSONS, OUT, PAD, canon_axis, lesson_tag, xml_path
+from .lessons import LESSONS, OUT, PAD, canon_axis, hang_qpos, lesson_tag, xml_path
 
-N_RUNG = max(len(v['rungs']) for v in LESSONS.values())     # 6: lesson 6
+N_RUNG = max(len(v['rungs']) for v in LESSONS.values())     # 4: lesson 5's staircase
 PARK = 50.0              # m: where an unused slot waits, out of everyone's reach
 # The solver, which is ~80 % of an MJX step. C MuJoCo allows scene.xml 100 Newton
 # iterations and, under win17's policy, uses 6-7 on every step to reach its 1e-8
@@ -236,7 +236,7 @@ def _cylinder(m, body):
 
 def _round(m, boxes):
     """'body:tag' -> (geom type, pos, quat, size): what a rung can touch"""
-    cap, ball = mujoco.mjtGeom.mjGEOM_CAPSULE, mujoco.mjtGeom.mjGEOM_SPHERE
+    cap = mujoco.mjtGeom.mjGEOM_CAPSULE
     out = {}
     for body in ('base_link', 'torso_upper'):          # a rod up each vertical edge
         c, _, h = boxes[f'{body}:hull']
@@ -364,8 +364,48 @@ def _mix(a, b):
 def lesson_layout(lesson):
     """the lesson as data, read off its C scene: rungs (centre, axis, extent, radius),
     walls (a point on the inner face, the normal toward the robot), goals"""
-    spec = LESSONS[lesson]
-    m = mujoco.MjModel.from_xml_path(xml_path(lesson))
+    return _layout(mujoco.MjModel.from_xml_path(xml_path(lesson)), LESSONS[lesson], lesson)
+
+
+def c_scene(lay):
+    """the simplified robot in C on an rl.walls layout -- a reference climb's wall (rl.rsi,
+    rl.plan) -> (its scene file, the spec ClimbTask(spec=, xml=) takes). The wall goes through
+    the lesson scenes' own XML (rl.lessons: 4 decimals), so a climb found on it replays on
+    exactly the rungs it was found on."""
+    import tempfile
+    from .lessons import _rx, _ry, scene_xml
+    rungs = [(_ry(nm[5:], c[1] - h, c[1] + h, c[2], x=c[0]) if abs(a[1]) > 0.5 else
+              _rx(nm[5:], c[0] - h, c[0] + h, c[2], y=c[1])) for nm, c, a, h, _ in lay['rungs']]
+    walls = []
+    for nm, p, n in lay['walls']:
+        side = abs(n[1]) > 0.5                       # a side wall: thin along y
+        c = np.asarray(p, float) - 0.05 * np.asarray(n, float)
+        pos, size = ((0.125, c[1], 0.50), (0.425, 0.05, 3.00)) if side else ((c[0], 0.0, 0.50), (0.05, 4.00, 3.00))
+        walls.append(f'    <geom name="{nm}" type="box" material="wall" pos="{pos[0]:.4f} {pos[1]:.4f} '
+                     f'{pos[2]:.2f}" size="{size[0]:.3f} {size[1]:.2f} {size[2]:.2f}"/>')
+    hang = lay.get('hang', 1)
+    spec = dict(name='wall', title='a reference wall', walls=walls, rungs=rungs,
+                goals=np.asarray(lay['goals'], float).tolist(), timeout=float(lay['timeout']),
+                goal_rungs=[lay['rungs'][i][0] for i in lay['goal_rungs']],
+                **({'pitch': LESSONS[hang]['pitch']} if LESSONS[hang].get('pitch') else {}))
+    os.makedirs(OUT, exist_ok=True)                  # beside the lesson scenes: meshdir="../meshes/"
+    full = tempfile.NamedTemporaryFile('w', suffix='.xml', dir=OUT, delete=False)
+    full.write(scene_xml(spec, 'wall'))
+    full.close()
+    try:
+        ll = _layout(mujoco.MjModel.from_xml_path(full.name), spec, hang)
+    finally:
+        os.remove(full.name)
+    ll['lesson'] = hang
+    simp = tempfile.NamedTemporaryFile('w', suffix='.xml', delete=False)
+    simp.write(build(ll).to_xml())
+    simp.close()
+    return simp.name, spec
+
+
+def _layout(m, spec, hang):
+    """a scene's rungs, walls and goals as data (lesson_layout), starting from lesson
+    `hang`'s secured hang"""
     rungs, walls = [], []
     for g in range(m.ngeom):
         if m.geom(g).name.startswith('rung_'):
@@ -383,10 +423,10 @@ def lesson_layout(lesson):
             near = min((r[1] for r in rungs), key=lambda p: np.linalg.norm(p - c))
             n[thin] = np.sign(near[thin] - c[thin]) or 1.0
             walls.append((m.geom(g).name, c + n * sz[thin], n))
-    assert len(rungs) <= N_RUNG and walls[0][0] == 'wall_front' and len(walls) <= 2, lesson
+    assert len(rungs) <= N_RUNG and walls[0][0] == 'wall_front' and len(walls) <= 2, spec['name']
     return dict(rungs=rungs, walls=walls, goals=np.asarray(spec['goals'], float),
                 goal_rungs=[i for i, r in enumerate(rungs) if r[0] in spec['goal_rungs']],
-                timeout=float(spec['timeout']))
+                timeout=float(spec['timeout']), hang=hang)
 
 
 def _quat_z_to(v):
@@ -436,6 +476,9 @@ def build(layout=None, n_rung=N_RUNG, wall2=True):
     boxes = _boxes(full)
     spec = mujoco.MjSpec.from_file(SCENE)
     spec.modelname = 'mjx_' + (lesson_tag(layout['lesson']) if layout else 'robot')
+    pitch = LESSONS[layout.get('hang', 1)].get('pitch', 0.0) if layout else 0.0
+    if pitch:                         # a free hang: the keyframe turned about the start rung
+        spec.keys[0].qpos = list(hang_qpos(pitch))
     # absolute, so the XML can be read from anywhere, from a string included
     spec.meshdir = os.path.join(os.path.dirname(SCENE), spec.meshdir)
     # What meets a WALL is the robot's own collision geometry, every body's, exactly as
@@ -573,7 +616,7 @@ def main():
     full = _full()
     m = model()
     kinds = [mujoco.mjtGeom(m.geom_type[g]).name[7:].lower() for g in range(m.ngeom) if m.geom_bodyid[g]]
-    print(f"simplified robot: " + ", ".join(f"{kinds.count(k)} {k}" for k in sorted(set(kinds)))
+    print("simplified robot: " + ", ".join(f"{kinds.count(k)} {k}" for k in sorted(set(kinds)))
           + f" (scene.xml: {sum(1 for g in range(full.ngeom) if full.geom_bodyid[g] and full.geom_contype[g])} "
           f"collision geoms, {full.nmesh} of them meshes), {m.npair} contact pairs, "
           f"{m.nsensordata} sensor values (scene.xml {full.nsensordata})")
@@ -586,9 +629,10 @@ def main():
         for _ in range(int(1.0 / e.model.opt.timestep)):
             e.step(e.data.ctrl.copy())
         drift = np.linalg.norm(e.data.xpos[e.base] - p0) * 1000.0
-        print(f"lesson {k:>5} {LESSONS[k]['name']:>24}: keyframe drift {drift:.2f} mm, "
+        print(f"lesson {k} {LESSONS[k]['name']:>16}: keyframe drift {drift:.2f} mm, "
               f"{e.data.ncon} contacts")
-        assert drift < 5.0, f"lesson {k}: the simplified robot drifted {drift:.1f} mm off its keyframe"
+        budget = 60.0 if LESSONS[k].get('pitch') else 5.0      # rl.lessons.main's
+        assert drift < budget, f"lesson {k}: the simplified robot drifted {drift:.1f} mm off its keyframe"
 
 
 if __name__ == '__main__':

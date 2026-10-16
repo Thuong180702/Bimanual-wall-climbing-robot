@@ -5,9 +5,9 @@
     python -m rl.plot --name gpu1                      # curve.png from it
 
 rl.train_ppo keeps a snapshot every --snap-every steps (out/<name>/snaps/). This runs
-rl.eval on each one, on lessons 1..9 but the composed 5 and 6 (rl.walls.COMPOSED) in C MuJoCo on the full robot -- walls training
-never draws as such -- one process per (snapshot, lesson), so a Mac's cores or the
-rented box's do the whole curve at once. Appends, and skips what curve.jsonl already
+rl.eval on each one, on lessons 1..9 in C MuJoCo on the full robot -- walls training never
+draws as such -- one process per (snapshot, lesson), so a Mac's cores or the rented box's
+do the whole curve at once. Appends, and skips what curve.jsonl already
 has, so it can be run again as a run goes on.
 """
 import argparse, glob, json, os, subprocess, sys
@@ -18,7 +18,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--name', required=True)
     ap.add_argument('--episodes', type=int, default=10)
-    ap.add_argument('--lessons', default='1,2,3,4,7,8,9')   # 5, 6: rl.walls.COMPOSED
+    ap.add_argument('--lessons', default='1,2,3,4,5,6,7,8,9')
     ap.add_argument('--jobs', type=int, default=os.cpu_count())
     a = ap.parse_args()
     run = os.path.join('out', a.name)

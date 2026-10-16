@@ -7,7 +7,7 @@ a PPO policy that learns to climb with it.
 |---|---|
 | [`cad/`](cad/README.md) | the mechanical design: vendor actuator and lidar CAD, the brackets between them, and the tools that check both — the robot is generated from here |
 | [`urdf/`](urdf/README.md) | the generated robot, the scene, 86 sensors, the four lidars, and the measured properties of all of it |
-| [`rl/`](rl/README.md) | the task, its reward and sensor models, eighteen lesson scenes, generated walls with ADR, and PPO on the CPU or on MJX (GPU) |
+| [`rl/`](rl/README.md) | the task, its reward and sensor models, the nine-lesson benchmark, generated walls with ADR, reference climbs, and PPO on MJX (GPU) |
 | [`slam/`](slam/README.md) | the SLAM test rig: simulated Mid-360 point clouds through FAST-LIO2 in Docker |
 
 ```bash
@@ -16,9 +16,9 @@ pip install -r requirements.txt
 
 python -m rl.lessons                 # generate the lesson scenes (not in git)
 python -m rl.climb_task              # the RL task, plus every reward and sensor invariant
-python -m rl.train_ppo --name run1   # train: on MJX by itself when JAX sees a GPU
+bash rl/gpu_setup.sh && bash rl/gpu_run.sh run1    # train on a rented GPU box, unattended
+python -m rl.eval --name run1 --from-best           # the benchmark on the full robot
 python -m rl.render --video run1     # watch what it learned
-bash rl/gpu_setup.sh && bash rl/gpu_run.sh run1    # a rented GPU box, unattended
 ```
 
 ## Real parts, not blocks
@@ -46,7 +46,7 @@ measured with FAST-LIO2 on simulated Mid-360s, a flat wall does not tell a lidar
 where it is along the wall (`slam/README.md`). Every policy trained before this is
 void. Train from scratch.
 
-**The RL side** trains on the CPU or on MJX, and its main output so far is a list of
+**The RL side** trains on MJX, and its main output so far is a list of
 things the task rewarded that were not climbing — the hook slides along a smooth
 rung, a reward that pays one direction can be pumped, a sum over two hands does not
 care which hand works. Each is now an assertion in `python -m rl.climb_task`.
@@ -57,12 +57,10 @@ is in git history.
 
 ## Platforms
 
-Trains on macOS, Linux and Windows; wheels exist for every dependency on all three.
-On the CPU, C MuJoCo runs one process per core and **cores set the speed**: a GPU
-could help only the policy network, which is under the noise floor. With an NVIDIA
-GPU, `rl.train_ppo` runs the physics itself there on MJX (`rl/mjx_task.py`, checked
-against the CPU task to 1e-15 by `rl.mjx_check`); `requirements-gpu.txt` pins that
-stack.
+Training runs on an NVIDIA GPU: the physics, the task and the policy on the card
+(`rl/mjx_task.py`, checked against the C MuJoCo task to 1e-15 by `rl.mjx_check`);
+`requirements-gpu.txt` pins that stack. Everything else -- the checks, the benchmark,
+the figures -- runs on macOS, Linux and Windows, MJX itself too, slowly, on a CPU.
 
 `ffmpeg` is needed only by `rl.render`, never for training. Docker is needed only by
 the SLAM rig.

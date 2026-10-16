@@ -6,10 +6,10 @@ Reads out/<name>/progress.jsonl (PPO, one line an update), metrics.jsonl (one li
 checkpoint or event) and eval.jsonl (the full-robot score), all written by
 rl.train_ppo / rl.eval / rl/gpu_run.sh, and draws:
 
-    success.png    each lesson's success rate over the run, unlocks and rollbacks marked
+    success.png    each lesson's success from the hang over the run, entries and rollbacks marked
     training.png   episode return, approx_kl against its target, learning rate, action std
     ends.png       how the episodes ended, as shares of each checkpoint's episodes
-    adr.png        on generated walls: each family's progress through its ranges (rl.walls)
+    adr.png        each lesson's ADR progress through its family's ranges (rl.walls)
     eval.png       the full robot's success per lesson with its 95 % interval, and the
                    do-nothing control
     curve.png      the benchmark on the full robot at every kept snapshot (rl.curve)
@@ -58,9 +58,9 @@ def main():
             pts = [(c['timesteps'] / 1e6, c['rate'][k][1]) for c in cks
                    if c['rate'].get(k, [0])[0]]         # [0]: nothing counted yet
             if pts:
-                ax.plot(*zip(*pts), label=f"{'family' if cks[-1].get('tops') else 'lesson'} {k}", lw=1.2)
+                ax.plot(*zip(*pts), label=f"lesson {k}", lw=1.2)
         mark(ax, events)
-        ax.set(xlabel='env steps (M)', ylabel='success rate (last 40 episodes)', ylim=(0, 1.05))
+        ax.set(xlabel='env steps (M)', ylabel='success from the hang (last 200 walls)', ylim=(0, 1.05))
         ax.legend(fontsize=7, ncol=3)
         fig.tight_layout()
         fig.savefig(os.path.join(out, 'success.png'), dpi=150)
@@ -77,14 +77,14 @@ def main():
         fig.tight_layout()
         fig.savefig(os.path.join(out, 'ends.png'), dpi=150)
 
-    if cks and cks[-1].get('tops'):
+    if cks:
         from .walls import FAMILIES
         fig, ax = plt.subplots(figsize=(9, 4))
         for f, ps in FAMILIES.items():
             pts = [(c['timesteps'] / 1e6,
-                    sum((c['tops'][str(f)][n] - a0) / (b0 - a0) for n, _, a0, b0, _ in ps) / len(ps))
-                   for c in cks if c.get('tops')]
-            ax.plot(*zip(*pts), label=f'family {f}', lw=1.2)
+                    sum((c['levels'][str(f)][n] - a0) / (b0 - a0) for n, _, a0, b0, _ in ps) / len(ps))
+                   for c in cks]
+            ax.plot(*zip(*pts), label=f'lesson {f}', lw=1.2)
         mark(ax, events)
         ax.set(xlabel='env steps (M)', ylabel='ADR progress (first -> last range)', ylim=(0, 1.05))
         ax.legend(fontsize=7, ncol=3)

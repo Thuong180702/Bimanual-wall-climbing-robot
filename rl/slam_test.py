@@ -786,7 +786,7 @@ def report(k, e):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--lesson', type=float, nargs='+', default=[1])
+    ap.add_argument('--lesson', type=int, nargs='+', default=[1])
     ap.add_argument('--run', help='a checkpoint (runs/NAME) to drive the robot; default: '
                                   'the arms swinging with the hooks shut')
     ap.add_argument('--episodes', type=int, default=1)
