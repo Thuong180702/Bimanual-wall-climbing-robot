@@ -29,6 +29,7 @@ python -m rl.curve --name gpu1 && python -m rl.plot --name gpu1     # learning c
 | `train_ppo.py` | PPO, the curriculum, the guard; `gpu_run.sh` runs it unattended |
 | `mjx_check.py` | the GPU path cross-checked against the C one |
 | `eval.py`, `curve.py`, `plot.py`, `status.py`, `render.py` | scoring, figures, watching |
+| `demo.py` | demo videos: a policy climbing, beside the map its simulated lidars build (`demo/`) |
 | `HISTORY.md` | the development journal: every run, and the measurement behind each choice |
 
 ## The benchmark
