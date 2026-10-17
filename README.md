@@ -9,6 +9,7 @@ a PPO policy that learns to climb with it.
 | [`urdf/`](urdf/README.md) | the generated robot, the scene, 86 sensors, the four lidars, and the measured properties of all of it |
 | [`rl/`](rl/README.md) | the task, its reward and sensor models, the nine-lesson benchmark, generated walls with ADR, reference climbs, and PPO on MJX (GPU) |
 | [`slam/`](slam/README.md) | the SLAM test rig: simulated Mid-360 point clouds through FAST-LIO2 in Docker |
+| [`demo/`](demo/README.md) | demo videos: the policy climbing beside the map its lidars build |
 
 ```bash
 python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
@@ -18,8 +19,39 @@ python -m rl.lessons                 # generate the lesson scenes (not in git)
 python -m rl.climb_task              # the RL task, plus every reward and sensor invariant
 bash rl/gpu_setup.sh && bash rl/gpu_run.sh run1    # train on a rented GPU box, unattended
 python -m rl.eval --name run1 --from-best           # the benchmark on the full robot
-python -m rl.render --video run1     # watch what it learned
+python -m rl.demo --run out/run1 --lessons 1,2,3   # demo videos, with the lidar map
 ```
+
+## Demo
+
+Left: the full robot in MuJoCo. Right: the map its four Livox Mid-360 lidars build as it
+climbs, simulated point by point along the sensor's own scan pattern. More, and how they
+were made, in [`demo/`](demo/README.md).
+
+| step up a tier (lesson 6) | round the corner (lesson 7) |
+|---|---|
+| [![lesson 6](demo/preview/lesson06_step_up.gif)](demo/lesson06_step_up.mp4) | [![lesson 7](demo/preview/lesson07_wall_corner.gif)](demo/lesson07_wall_corner.mp4) |
+
+| climb up rows standing out (lesson 3) |
+|---|
+| [![lesson 3](demo/preview/lesson03_climb_up_mirror.gif)](demo/lesson03_climb_up_mirror.mp4) |
+
+## The benchmark
+
+Nine lessons, one skill each, scored on the full robot both ways round
+([`rl/README.md`](rl/README.md)):
+
+| | | | |
+|---|---|---|---|
+| 1 traverse along a rung | 2 traverse a broken rung | 3 climb up rows standing out | 4 climb down rows standing in |
+| 5 down a staircase | 6 diagonally up a tier | 7 round a corner | 8 onto the wall behind |
+| 9 swing across a gap | | | |
+
+Training draws procedurally generated walls, one family per lesson, grown by automatic
+domain randomization, with reference climbs (CEM) where PPO's noise alone never finds the
+move. Status (v0.1.0): the pipeline is complete and checked end to end; the run that
+scores it from scratch is next. The demo policy is an earlier run's: lessons 1, 5, 6, 7
+4/4 on the full robot, 2 and 3 not yet reliable, 4 and 9 untrained.
 
 ## Real parts, not blocks
 
