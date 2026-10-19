@@ -20,7 +20,7 @@ optimizer, observation statistics and curriculum included.
   * REFERENCE CLIMBS (rl.rsi). A share of the walls of each family that has climbs begin
     partway up one, toward the frontier of what the policy finishes; where it does not,
     its mean is pulled toward the climb's own action (`Clone`).
-  * The UPDATE SIZE (`UpdateSize`). Each action dimension's std is held in [STD_MIN, 1],
+  * The UPDATE SIZE (`UpdateSize`). Each action dimension's std is held in [STD_MIN, STD_MAX],
     and the learning rate moves to keep every update's KL near the run's target (rsl_rl's
     rule). Without them the std of the dimensions a policy uses precisely shrank without
     limit, and since a Gaussian's KL goes as 1/std^2 every update grew with it until the
@@ -81,6 +81,11 @@ LR_DECAY = 0.5       # each rollback halves the learning rate and the KL target
 LR_MIN, LR_MAX = 1e-5, 3e-4
 KL_START, KL_MIN = 0.1, 0.01   # the KL target: where it starts, and the least a rollback leaves it
 STD_MIN = 0.05       # floor on every action dimension's std: 0.003 rad of setpoint noise a step
+STD_MAX = 0.3        # ...and its ceiling. At 1 (SB3's start) gpu12's wrists and elbows drifted up to it
+                     # from 200M on (0.4 -> 1.0) while the shoulders sat at the floor, and every catch
+                     # paid: at its 315M checkpoint lesson 8's release, from the starts it finishes
+                     # deterministically 40/40, went 15/40 sampled, 25/40 under 0.5, 35/40 under 0.3;
+                     # from the hang under 0.3, lessons 3 and 4 went 23 -> 29 and 22 -> 31 of 35
 BANK = 1024          # walls drawn at the start of every rollout; each env takes one at every reset
 ENVS = 4096          # envs in one GPU batch (gpu_run.sh halves it until it fits the card)
 PPO_SHAPE = dict(n_steps=32, minibatches=8, n_epochs=10)   # rsl_rl's rollout, 80 Adam steps an update
@@ -473,18 +478,19 @@ class Curriculum(BaseCallback):
 
 
 class UpdateSize(BaseCallback):
-    """At every rollout's start: each action dimension's std into [STD_MIN, 1] -- SB3 starts
-    at 1 and every good run came down from it, while a run whose std ran away (to 4.2 on one
-    joint) took itself apart -- and the learning rate x1/1.5 when the last update's approx_kl
-    passed twice the run's target, x1.5 when it was under half, within [LR_MIN, LR_MAX]. The
-    target is the Checkpoint's: each rollback halves it"""
+    """At every rollout's start: each action dimension's std into [STD_MIN, STD_MAX] -- SB3
+    starts at 1; a run whose std ran away (to 4.2 on one joint) took itself apart, and one held
+    under 1 still let the joints it uses least drift up to it, where they spoil every catch --
+    and the learning rate x1/1.5 when the last update's approx_kl passed twice the run's target,
+    x1.5 when it was under half, within [LR_MIN, LR_MAX]. The target is the Checkpoint's: each
+    rollback halves it"""
 
     def __init__(self, ck):
         super().__init__()
         self.ck = ck
 
     def _on_rollout_start(self):
-        self.model.policy.log_std.data.clamp_(min=float(np.log(STD_MIN)), max=0.0)
+        self.model.policy.log_std.data.clamp_(min=float(np.log(STD_MIN)), max=float(np.log(STD_MAX)))
         kl = self.model.logger.name_to_value.get('train/approx_kl')
         if kl is None:
             return
@@ -1053,7 +1059,7 @@ def guard_check():
             sys.stdout.close()
             sys.stdout = out
         assert abs(m.lr_schedule(1.0) - LR_MIN) < 1e-15 and abs(ck.kl_target - KL_MIN) < 1e-12
-        # the update size: std held in [STD_MIN, 1], the rate following the KL toward the target
+        # the update size: std held in [STD_MIN, STD_MAX], the rate following the KL toward the target
         from stable_baselines3.common.logger import configure
         m.set_logger(configure(None, []))
         us = UpdateSize(ck)
@@ -1071,9 +1077,9 @@ def guard_check():
         assert abs(after(10 * kt, 1.5e-4) - 1e-4) < 1e-12 and abs(after(0.1 * kt, 1e-4) - 1.5e-4) < 1e-12
         assert after(kt, 1e-4) == 1e-4 and after(0.1 * kt, LR_MAX) == LR_MAX and after(10 * kt, LR_MIN) == LR_MIN
         sd = m.policy.log_std.exp().detach().numpy()
-        assert abs(sd[0] - STD_MIN) < 1e-6 and abs(sd[1] - 1.0) < 1e-6, sd
+        assert abs(sd[0] - STD_MIN) < 1e-6 and abs(sd[1] - STD_MAX) < 1e-6, sd
     print(f"guard test: a passed family forgotten for {GUARD_UPDATES} updates sends the run back to its best "
-          f"(policy, statistics, curriculum) at x{LR_DECAY:g} the rate; std in [{STD_MIN:g}, 1]; the rate "
+          f"(policy, statistics, curriculum) at x{LR_DECAY:g} the rate; std in [{STD_MIN:g}, {STD_MAX:g}]; the rate "
           f"follows the KL within [{LR_MIN:g}, {LR_MAX:g}]. OK")
 
 

@@ -1098,6 +1098,38 @@ Family 6's rows now end MARGIN6 (0.2 s) before success: 4 more starts a climb, t
 the seat in them. Every new row is startable but one (0.40 m, 81 mm), and the reference
 finishes open loop in MJX from all 32 of the last 8 starts.
 
+**gpu12 at 315M: the noise the policy no longer needed spoiled every catch (2026-10-19).**
+gpu12 (the clean rebuild's numbering, an RTX 3090 at 16k steps/s) passed lessons 1-5 and 7 by
+160M, with no rollback and no error. Lessons 6, 8 and 9 then sat at 0 % from the hang. Between
+them they took ~70 % of the steps. The passed lessons sagged: 3 to 72 %, 7 to 66 %, and 4 fell
+to 5 % at 284M and came back.
+
+*The std.* From 200M the wrists and elbows drifted up to the 1.0 ceiling (wrist_R 0.69 -> 1.00,
+elbow_R 0.83 -> 1.00) while both shoulders sat at the 0.05 floor.
+
+*Lesson 8.* Its frontier sat at 3.0-3.8 s for 90M steps, just before the reference opens the
+left finger (2.0-2.6 s) and puts that hook on the back rung (4.0-4.8 s). With the mean action
+(MJX, out of the 315M checkpoint), every start from 2.6 s on finished, 40/40, and every start
+from 2.0 s back hung to the timeout, 0/24. So the policy never starts the release itself. It
+finishes once the release has begun, but sampled at its own std only 15/40 times, so those
+starts never reached the books' 70 % and the clone window never reached the release.
+Capped, the same starts finished 25/40 under 0.5 and 35/40 under 0.3. From the hang
+(28 walls in C) it never let go of the left hand. It waved the right one back instead, the
+hand the reference does not teach, 5-7 cm under the back rung, and touched it 10-46 times
+without seating the hook.
+
+*Lessons 6 and 9.* Each is stuck at its second hand's move: lesson 6's right hand stepping
+up the tier at 27.6-29.2 s (frontier 24-28 s), lesson 9's crossing at 35.6 s (frontier 30-32 s).
+There the mean fails as often as the sampled policy. Lesson 6 -y fell from its 24 s start
+5/5, mean included, a start it had held above half at 240-265M, when its frontier reached 23.6 s.
+From the hang, lesson 6's lead hand slid along its row and never rose more than 9 cm, and
+lesson 9's never reached past 0.68 m.
+
+*The cap.* Under 0.3 the passed lessons also did better from the hang (35 walls each, in C):
+lesson 3 23 -> 29, lesson 4 22 -> 31, lesson 5 27 -> 30, lesson 7 30 -> 31. The std is now held
+in [0.05, 0.3] (`STD_MAX`), and gpu12 resumes on it. No fixture changed, so every climb's
+books carry over.
+
 Since those starts moved every family-6 start after the first climb, a checkpoint now records
 the fixture it kept its books on (`rsi.signature`). A resume on another fixture starts every
 book over: about 10M steps, every start at the frontier until it has START_MIN episodes.
