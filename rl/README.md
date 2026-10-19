@@ -99,7 +99,7 @@ ever leaves it, because training families one after another forgets the earlier 
   that window the policy's mean action is also pulled toward the climb's (behaviour
   cloning at 0.3x PPO's gradient). The climbs are searched by CEM on the simulated
   robot or recorded from a trained policy (`plan.py`, which lists where each came from).
-- **Update size.** Each action dimension's std stays in [0.05, 0.3], and the learning
+- **Update size.** Each action dimension's std stays in [0.1, 0.3], and the learning
   rate keeps every update's KL near a target (rsl_rl's rule).
 - **Guard.** The best checkpoint is kept, scored by ADR's progress (0..1 a family). If
   the families it had passed fall a whole family below what they held there for 325

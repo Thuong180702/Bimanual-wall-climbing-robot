@@ -1130,6 +1130,46 @@ lesson 3 23 -> 29, lesson 4 22 -> 31, lesson 5 27 -> 30, lesson 7 30 -> 31. The 
 in [0.05, 0.3] (`STD_MAX`), and gpu12 resumes on it. No fixture changed, so every climb's
 books carry over.
 
+**gpu12 at 537M: why gpu11 climbed lessons 6 and 8 and gpu12 did not (2026-10-20).** The two
+runs use the same robot, the same PPO settings and the same reference climbs. gpu11's
+checkpoints still climb both on gpu12's walls: lesson 6 20/21 and lesson 8 19-20/21 from the
+hang, in C. So the walls are not the difference; how each run learned is.
+
+*Where all three stick.* At 537M, the starts of each climb pass after its crux and fail
+before it. Lesson 8 passes from 1.4 s; before that is the hang itself, where the reference
+waits and moves its shoulders. Lesson 6 passes from ~15 s; the crux is the lead hand's
+step-up, 0.2 m out from the wall and 0.34 m up in 0.8 s. Lesson 9 passes from 16-25 s; the
+crux is the lead hand's 0.63 m sweep across the gap in 0.8 s.
+
+From the starts before each crux, the mean frees the lead hand and carries it short of the
+hold, then hangs on the other hand to the 50 s timeout:
+- lesson 6 slides along the row, never more than 6 cm up;
+- lesson 9 stops over the gap, 0.45 m short;
+- lesson 8, from the hang, reaches back at once and stops 4-5 cm short.
+
+*Noise.* Between 200M and 368M the elbows and wrists drifted to the 1.0 ceiling. gpu11's
+stayed at 0.4-0.6. Every catch failed under that noise, so the frontiers sat at their
+catches for 90-150M steps. gpu12 also had three families stuck at once (lessons 6, 8, 9 at
+~25 % of the steps each). gpu11 had one, at 60-90 %. The 0.3 ceiling (above) removed the
+noise.
+
+*The lock.* By then the shoulders had sat at the 0.05 floor since 200M. Every crux is a
+shoulder move, and moving the mean 0.5 there is 10 sigma, which no update's KL allows.
+Measured on the 537M checkpoint (64 envs on the Mac, a pull of 1x PPO's gradient toward
+gpu11's actions at the states gpu12 reaches):
+- at a floor of 0.05, the mean stayed 30 sigma off for 20 updates;
+- undamped, the pull took approx_kl to 12-60, against 1.2 -> 0.15 without it;
+- at a floor of 0.1, the mean came 18 -> 13 sigma in 30 updates, with approx_kl at 0.1-0.16.
+
+Families 1-5 and 7 from the hang did not mind the noisier shoulders (C, 35 walls each):
+30/33/30/30/30/20 at 0.05, 28/32/32/31/31/24 at 0.1. The floor is now 0.1 (`STD_MIN`).
+
+*Not done.* Offline DAgger from gpu11 taught gpu12 lesson 8 from the hang (0 -> 29/35), but
+only on one checkpoint. Inside training it cannot share a family with the reference's
+cloning: gpu11's motion is not the reference's, and the teacher pulled the mean away from
+the reference at lesson 8's 0.4-1.2 s rows (0.27 -> 0.65-0.94). The fix stays in the update
+size, where the lock was.
+
 Since those starts moved every family-6 start after the first climb, a checkpoint now records
 the fixture it kept its books on (`rsi.signature`). A resume on another fixture starts every
 book over: about 10M steps, every start at the frontier until it has START_MIN episodes.

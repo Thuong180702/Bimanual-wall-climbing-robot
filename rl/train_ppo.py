@@ -80,7 +80,12 @@ GUARD_UPDATES = 325  # ...for this many policy updates (a new family's first dip
 LR_DECAY = 0.5       # each rollback halves the learning rate and the KL target
 LR_MIN, LR_MAX = 1e-5, 3e-4
 KL_START, KL_MIN = 0.1, 0.01   # the KL target: where it starts, and the least a rollback leaves it
-STD_MIN = 0.05       # floor on every action dimension's std: 0.003 rad of setpoint noise a step
+STD_MIN = 0.1        # floor on every action dimension's std: 0.006 rad of setpoint noise a step. At 0.05
+                     # gpu12's shoulders sat on it from 200M, and a policy that places its hands with them
+                     # was locked: moving their mean 0.5 is 10 sigma, a KL no update is let take. Pulled
+                     # toward gpu11's actions (it climbs families 6 and 8), its mean stayed 30 sigma off
+                     # for 20 updates at 0.05 and came 18 -> 13 at 0.1, the KL as small; families 1-5
+                     # and 7 from the hang held at 0.1 (C, 35 walls each)
 STD_MAX = 0.3        # ...and its ceiling. At 1 (SB3's start) gpu12's wrists and elbows drifted up to it
                      # from 200M on (0.4 -> 1.0) while the shoulders sat at the floor, and every catch
                      # paid: at its 315M checkpoint lesson 8's release, from the starts it finishes
