@@ -67,6 +67,11 @@ SHARE = (0.75, 0.25)  # of a family's walls begun at a start: until its gate is 
                       # from the hang it teaches nothing until the frontier reaches it -- and
                       # after, when three in four go back to the hang: given harder climbs and
                       # fewer hangs, families forgot the walls they had passed
+SLOW = (6, 8, 9)      # families whose hang runs to the 60 s timeout until they are learnt...
+SHARE_SLOW = 0.95     # ...begin this share at a start until then. At 0.75 a quarter of their walls
+                      # idle out 60 s from the hang: 63 % of gpu10's family-6 steps, and over half of
+                      # gpu12's family-8 steps (75 hangs a 1M steps, ~1500 steps each), where the
+                      # mean then learnt its own stalled reach. gpu11, which learnt 6 and 8, ran 0.95
 FOCUS = 0.75          # of the starts drawn: in each climb's frontier window
 BACK = 2              # starts each side of the frontier, at the least: `back`
 START_WINDOW = 20     # a start's book: its last episodes...

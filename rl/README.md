@@ -87,14 +87,17 @@ ever leaves it, because training families one after another forgets the earlier 
 
 - **Entry.** Families enter one at a time, in order, once every family in the pool
   passes its gate -- 70 % over its last 200 walls from the hang -- and the families it
-  is built from have passed (`walls.NEEDS`). A family that has not passed once in 50M
-  steps stops holding back the families that do not need it.
+  is built from have passed (`walls.NEEDS`). A family not yet passed that has made no
+  progress in 50M steps -- its rate from the hang and the share of its reference starts it
+  finishes both no better than their best -- stops holding back the families that do not
+  need it. A family still progressing keeps its steps.
 - **Step shares.** Each family's share of the steps is how much it still fails (10 %
   at least), so the frontier and anything that regresses get the samples.
 - **Reference climbs** (`rsi.py`). Families whose skill is a long chain of moves --
   climbing a row, stepping up a tier, the back rung, the swing -- are never found from
   the hang by PPO's noise. A share of their walls (three in four until the gate is
-  passed, one in four after) begin partway up a reference climb, drawn toward each
+  passed -- nineteen in twenty for lessons 6, 8 and 9, whose hang otherwise idles out 60 s
+  -- and one in four after) begin partway up a reference climb, drawn toward each
   climb's frontier: the latest point along it the policy does not yet finish from. In
   that window the policy's mean action is also pulled toward the climb's (behaviour
   cloning at 0.3x PPO's gradient). The climbs are searched by CEM on the simulated

@@ -15,8 +15,9 @@ optimizer, observation statistics and curriculum included.
     over its last WINDOW walls from the hang) and the families it is made of have passed
     (rl.walls.NEEDS); nothing ever leaves. Inside a family ADR raises each parameter's
     level once its candidate's probes pass the gate (rl.walls). The pool's steps go where
-    its failures are (`weights`). A family that has not passed once in STUCK_STEPS stops
-    holding back the families that do not build on it.
+    its failures are (`weights`). A family that has not passed yet and has not progressed in
+    STUCK_STEPS -- its rate from the hang, or the share of its reference starts it finishes,
+    no better than its best -- stops holding back the families that do not build on it.
   * REFERENCE CLIMBS (rl.rsi). A share of the walls of each family that has climbs begin
     partway up one, toward the frontier of what the policy finishes; where it does not,
     its mean is pulled toward the climb's own action (`Clone`).
@@ -73,8 +74,14 @@ WINDOW = 200         # walls a rate is read over. 4096 envs end hundreds of a fa
                      # family truly at 60 % reads 70 % 13 % of the time; over 200, 0.2 %
 MIN_SHARE = 0.10     # the floor on a passed family's need, so it is not forgotten
 WARM_RATE = 0.20     # a stuck family under this, with no climbs to learn from, draws MIN_SHARE
-STUCK_STEPS = 50_000_000   # a family in the pool this long that has never passed stops holding the
-                     # next one back; it stays in the pool, its upgrades locked
+STUCK_STEPS = 50_000_000   # a family not yet passed that has not progressed in this many steps stops
+                     # holding the next one back; it stays in the pool, its upgrades locked. Counted
+                     # from its entry, gpu12 let 7, 8 and 9 in while 6 was still learning, and then
+                     # 6, 8 and 9 shared ~70 % of the steps at ~25 % each (gpu11's one stuck family
+                     # had 60-90 %): a family still progressing keeps its steps
+PROGRESS_RATE = 0.05 # progress: the rate from the hang this much over its best...
+PROGRESS_STARTS = 0.02    # ...or this share more of the family's reference starts passed
+PROBE_MIN = 20       # probes at a candidate before its rate counts in the family's share of the steps
 GUARD_DROP = 1.0     # the guard: the best's passed families a whole family below what they held...
 GUARD_UPDATES = 325  # ...for this many policy updates (a new family's first dip recovers sooner)
 LR_DECAY = 0.5       # each rollback halves the learning rate and the KL target
@@ -304,6 +311,8 @@ class Curriculum(BaseCallback):
         self.starts = {int(j): list(v) for j, v in c.get('starts', {}).items()} if same else {}
         self.cleared = {f for f in c.get('cleared', []) if keep(f)}
         self.entered = {int(f): v for f, v in c.get('entered', {}).items()}
+        self.moved = {int(f): v for f, v in c.get('moved', {}).items()}        # its last progress
+        self.best_prog = {int(f): list(v) for f, v in c.get('best_prog', {}).items()}
         self.pending.clear()
         self.since = self.clock          # episodes a dropped policy began do not count
 
@@ -314,6 +323,8 @@ class Curriculum(BaseCallback):
             gate=tail(self.gate, WINDOW), lens=tail(self.lens, WINDOW), probes=self.probes,
             starts=tail(self.starts, rsi.START_WINDOW), cleared=sorted(self.cleared),
             entered={str(f): v for f, v in self.entered.items()},
+            moved={str(f): v for f, v in self.moved.items()},
+            best_prog={str(f): v for f, v in self.best_prog.items()},
             spec={str(f): W.spec(f) for f in W.FAMILIES},
             rsi=None if self.ref is None else rsi.signature(self.ref))}
 
@@ -386,10 +397,30 @@ class Curriculum(BaseCallback):
         say(self.num_timesteps, f"lesson {f} {name} {was:g} -> {cand:g}")
 
     # ---- the pool ---------------------------------------------------------------
+    def progress(self, f):
+        """(its rate from the hang, the share of its reference starts it finishes)"""
+        n, r = self.rate(f)
+        if self.ref is None or f not in self.taught:
+            return r, 0.0
+        ok = rsi.allowed(self.ref, {f: self.levels[f]})
+        ok = ok[self.ref['climb_family'][self.ref['start_climb'][ok]] == f]
+        return r, float(np.mean([rsi.passed(self.starts.get(int(j), [])) for j in ok])) if len(ok) else 0.0
+
+    def track(self):
+        """each family not yet passed: when it last bettered its best progress"""
+        for f in self.active:
+            if f in self.cleared:
+                continue
+            r, s = self.progress(f)
+            best = self.best_prog.setdefault(f, [r, s])
+            if r >= best[0] + PROGRESS_RATE or s >= best[1] + PROGRESS_STARTS:
+                self.moved[f] = int(self.num_timesteps)
+            self.best_prog[f] = [max(best[0], r), max(best[1], s)]
+
     def stalled(self, f):
-        """in the pool STUCK_STEPS and never once passed"""
-        return f not in self.cleared and \
-            self.num_timesteps - self.entered.setdefault(f, self.num_timesteps) >= STUCK_STEPS
+        """not passed yet, and no progress in STUCK_STEPS"""
+        since = self.moved.get(f, self.entered.setdefault(f, self.num_timesteps))
+        return f not in self.cleared and self.num_timesteps - since >= STUCK_STEPS
 
     def _unlock(self):
         rates = {f: self.rate(f) for f in self.active}
@@ -409,7 +440,9 @@ class Curriculum(BaseCallback):
         """of family f's walls begun at one of its rl.rsi starts"""
         if not self.enabled or f not in self.taught:
             return 0.0
-        return rsi.SHARE[f in self.cleared]
+        if f in self.cleared:
+            return rsi.SHARE[1]
+        return rsi.SHARE_SLOW if f in rsi.SLOW else rsi.SHARE[0]
 
     def length(self, f):
         """mean steps of a wall of family f as the bank draws it: its share begun at a start
@@ -418,17 +451,30 @@ class Curriculum(BaseCallback):
         own, part, s = mean(f), mean(f + rsi.BOOK), self.share(f)
         return own if own is None or part is None else (1.0 - s) * own + s * part
 
+    def fails(self, f):
+        """how much family f fails over the walls it is drawn: its rate from the hang under its
+        levels, and PROBE_P of its walls at a candidate (each read once its window has
+        PROBE_MIN). By the levels alone a family past its gate drew ~4 % of gpu12's steps
+        however its candidates did: family 3's two rows sat at 11 %, family 2's 0.20 m gaps at
+        36 %, family 5's second step at 25 %, and ADR raised nothing from 264M to 537M"""
+        fail = 1.0 - self.rate(f)[1]
+        rs = [sum(h) / len(h) for k in W.candidates(f, self.levels[f])
+              if len(h := self.probes.get(f'{f}:{k}', [])) >= PROBE_MIN]
+        if self.enabled and rs:
+            fail = (1.0 - W.PROBE_P) * fail + W.PROBE_P * (1.0 - float(np.mean(rs)))
+        return fail
+
     def weights(self):
         """draw probabilities over the pool: each family's share of the STEPS is how much it
-        still fails (MIN_SHARE at least), the probability that divided by its episodes' mean
-        length. Drawn by episode, a failing family timing out at 1500 steps against 20 took
-        96 % of the steps; at fixed step shares a family behind the frontier that regressed
-        got none. A stuck family with no climbs to learn from draws MIN_SHARE"""
+        still fails (`fails`; MIN_SHARE at least), the probability that divided by its
+        episodes' mean length. Drawn by episode, a failing family timing out at 1500 steps
+        against 20 took 96 % of the steps; at fixed step shares a family behind the frontier
+        that regressed got none. A stuck family with no climbs to learn from draws MIN_SHARE"""
         need, lens = [], []
         for f in self.active:
             n, r = self.rate(f)
             capped = self.stalled(f) and r < WARM_RATE and f not in self.taught
-            need.append(MIN_SHARE if capped else max(1.0 - r, MIN_SHARE) if n else 1.0)
+            need.append(MIN_SHARE if capped else max(self.fails(f), MIN_SHARE) if n else 1.0)
             lens.append(self.length(f))
         known = [x for x in lens if x]
         fill = sum(known) / len(known) if known else 1.0
@@ -479,6 +525,8 @@ class Curriculum(BaseCallback):
         self.model._last_episode_starts = np.ones(self.training_env.num_envs, dtype=bool)
 
     def _on_rollout_start(self):
+        if self.enabled:
+            self.track()
         self.draw_bank(self.training_env)
 
 
@@ -940,12 +988,27 @@ def self_check():
     w = c.weights()
     steps = [x * c.length(f) for x, f in zip(w, c.active)]
     assert 0.5 < steps[3] / sum(steps) < 0.95 and min(steps[:3]) / sum(steps) > 0.03, steps
-    # a stuck family stops blocking what does not need it, after STUCK_STEPS
+    # a passed family failing at its candidate draws more steps than one passing at it
+    c.probes['2:width'] = [False] * PROBE_MIN
+    c.probes['3:spacing'] = [True] * PROBE_MIN
+    assert c.fails(2) > c.fails(3) + 0.9 * W.PROBE_P and abs(c.fails(3) - (1 - W.PROBE_P) * (1 - c.rate(3)[1])) < 1e-9
+    c.probes.clear()
+    # a family still progressing keeps the next one out past STUCK_STEPS; one that stops, not
+    c.track()                                       # family 4 at 0 %: its best
+    c.num_timesteps = c.entered[4] + STUCK_STEPS - 1
+    _feed(c, 4, True, WINDOW // 5, steps=1500)      # 20 % now: progress
+    c.track()
     c.num_timesteps = c.entered[4] + STUCK_STEPS
     _feed(c, 1, True, 1)
+    assert c.active[-1] == 4, f"a family progressing was taken for stuck: {c.active}"
+    c.track()                                       # no better than its best since
+    c.num_timesteps = c.moved[4] + STUCK_STEPS
+    _feed(c, 1, True, 1)
     assert c.active[-1] == 5, f"a family stuck for STUCK_STEPS still blocks: {c.active}"
+    c2 = _curriculum(state=c.state())               # its progress clock survives state.json
+    assert c2.moved == c.moved and c2.best_prog == c.best_prog
     print("curriculum test: families enter in order, each once the whole pool passes its gate; the steps "
-          "go where the failures are; a stuck family stops blocking. OK")
+          "go where the failures are; a family stops blocking only once it stops progressing. OK")
 
     # ADR: a level rises on a full window passed at its candidate, never past its last; a probe
     # drawn at a candidate since passed does not vote; a rise clears the family's other votes

@@ -1170,6 +1170,38 @@ cloning: gpu11's motion is not the reference's, and the teacher pulled the mean 
 the reference at lesson 8's 0.4-1.2 s rows (0.27 -> 0.65-0.94). The fix stays in the update
 size, where the lock was.
 
+**The curriculum for a fresh run, from gpu12's 537M books (2026-10-20).** Three rules shaped
+gpu12's late run, and none of them came from gpu11:
+
+1. *Stuck by the calendar.* A family that had not passed 50M steps after it entered let the
+   next one in, even while it was still learning. So lessons 7, 8 and 9 entered while 6 was
+   at 0 % and progressing, and from 204M lessons 6, 8 and 9 shared ~70 % of the steps at
+   ~25 % each. When gpu11 learnt 6 and then 8, each was the one stuck family, at 60-90 %.
+   A family not yet passed now counts as stuck only after 50M steps without progress. Its
+   rate from the hang must rise 0.05 over its best, or the share of its reference starts it
+   finishes must rise 0.02 (`Curriculum.track`).
+2. *A quarter of the slow families from the hang.* The rebuild gave every family 0.75 of its
+   walls at reference starts until its gate. gpu11 ran 0.95 for the families whose hang idles
+   out its 60 s: at 0.75, 63 % of gpu10's family-6 steps were hang timeouts. gpu12's family 8
+   spent over half its steps idling out from the hang (75 hangs a 1M steps, ~1500 steps
+   each). That is where its mean learnt the reach that stops short. Lessons 6, 8 and 9 are
+   back at 0.95 (`rsi.SLOW`, `rsi.SHARE_SLOW`).
+3. *ADR starved.* A family's share of the steps was its failure under its levels only, so a
+   passed family drew ~4 % however its candidates did. Nothing rose from 264M to 537M, with
+   the candidates at:
+   - family 2: gaps 0.20 m, 36 %;
+   - family 3: two rows, 11 %;
+   - family 4: two rows, 31 %;
+   - family 5: a second step, 25 %.
+
+   Lessons 2-5 of the benchmark sit past them. A family's failure now counts the walls it is
+   actually drawn, PROBE_P of them at its candidates (`Curriculum.fails`). On gpu12's books
+   that takes families 2-5 from 3-6 % to 4-8 % of the steps.
+
+Not measured: whether lessons 1 and 2 learn as fast from a std of 0.3 as gpu11 and gpu12 did
+from 0.8. MJX on this Mac's CPU runs 30 steps/s, and lesson 1 took 6M steps. On the GPU,
+lessons 1-2 passed by ~12M in both runs.
+
 Since those starts moved every family-6 start after the first climb, a checkpoint now records
 the fixture it kept its books on (`rsi.signature`). A resume on another fixture starts every
 book over: about 10M steps, every start at the frontier until it has START_MIN episodes.
