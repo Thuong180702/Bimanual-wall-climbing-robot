@@ -63,7 +63,7 @@ LESSON_KEYS = sorted(LESSONS)
 N_PTS = 256        # route points a wall carries (climb_task.route_table): 180 on the
                    # largest family walls, lesson 3's three full rows
 FAR_PT = 1e3       # padding: a point, and a route distance, no hand ever takes
-REASONS = ('', 'success', 'timeout', 'fell', 'released', 'blowup')
+REASONS = ('', 'success', 'timeout', 'fell', 'released', 'blowup', 'stalled')
 _ENV = {k: v.default for k, v in inspect.signature(ClimbingEnv).parameters.items()}
 FALL_Z, FREE_FALL_S, QVEL_MAX = _ENV['fall_z'], _ENV['free_fall_s'], _ENV['qvel_max']
 FINGERS = [JOINTS.index('finger_L'), JOINTS.index('finger_R')]
@@ -181,6 +181,8 @@ class State(NamedTuple):
     slide_ref: jax.Array       # where along it the run began,
     slide_net: jax.Array       # and how far from there it is now
     n_steps: jax.Array
+    best_live: jax.Array       # the live potential's lowest this episode, by STALL_D steps,
+    best_k: jax.Array          # and the step it got there (rl.rsi.STALL)
     wall: 'Wall'               # this episode's wall, copied at its reset: a new bank
                                # (Batch.set_bank) never moves a rung under a robot
 
@@ -745,13 +747,13 @@ class MjxClimb:
                    grabs=T.grabs0[w.d0_row], grab_paid=T.grabs0[w.d0_row] > 0,
                    cross_axis=jp.zeros(3), cross_sign=jp.array(1.0),
                    off_t=z2, held_t=z2, slide_rung=jp.full(2, -1), slide_ref=z2, slide_net=z2,
-                   n_steps=jp.array(0), wall=w)
+                   n_steps=jp.array(0), best_live=jp.array(0.0), best_k=jp.array(0), wall=w)
         st, true, sen = self._sense(T, st, d, jp.zeros(3), z)
         dd, live = self._dists(w, thr)
         _, seat_d, _ = self._seg_point(thr[0], w.rung_c, w.rung_a, w.rung_h)
         axis = w.rung_a[jp.argmin(jp.where(w.rung_valid, seat_d, jp.inf))]
         sign = jp.sign((thr[0] - thr[1]) @ axis)
-        st = st._replace(prev_d=dd, prev_live=live, live_att=live,
+        st = st._replace(prev_d=dd, prev_live=live, live_att=live, best_live=live.sum(),
                          held=self._holding(w, con, on, thr, true),
                          cross_axis=axis, cross_sign=jp.where(sign == 0, 1.0, sign))
         return st, self._obs(T, st, sen)
@@ -855,6 +857,12 @@ class MjxClimb:
                          credit=acc, off_t=off_t,
                          held_t=held_t, slide_rung=slide_rung, slide_ref=slide_ref,
                          slide_net=slide_net, n_steps=n_steps)
+        # rl.rsi.STALL: an episode from one of those families' starts that has stopped closing in
+        lower = live.sum() < st.best_live - rsi.STALL_D
+        st = st._replace(best_live=jp.where(lower, live.sum(), st.best_live),
+                         best_k=jp.where(lower, n_steps, st.best_k))
+        stalled = (jp.isin(w.family, jp.asarray([f + rsi.BOOK for f in rsi.STALL]))
+                   & ((n_steps - st.best_k) * ct.CONTROL_DT > rsi.STALL_S))
         # climb_task._success
         near = jp.sqrt(((thr - g) ** 2).sum(-1)) <= ct.LATCH_TOL
         on_goal = (on & w.goal_mask[None]).any(1)
@@ -868,8 +876,8 @@ class MjxClimb:
         released = st.no_grip_t >= FREE_FALL_S
         timeout = d.time > w.timeout
         why = jp.where(success, 1, jp.where(blowup, 5, jp.where(fell, 3, jp.where(
-            released, 4, jp.where(timeout, 2, 0)))))
-        truncated = why == 2
+            released, 4, jp.where(timeout, 2, jp.where(stalled, 6, 0))))))
+        truncated = (why == 2) | (why == 6)
         terminated = (why != 0) & ~truncated
         # a fall (fell, released) gets back the live term charged since a hook last
         # touched a rung, as in ClimbTask

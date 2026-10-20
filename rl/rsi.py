@@ -87,6 +87,12 @@ FAIL = 0.3            # ...and before those, the starts under this hold it: gpu1
 EVERY = 5             # control steps a start spans along a climb
 MARGIN = 5            # control steps (0.2 s) before the climb's success: its last start
 BOOK = 100            # an episode from a start reports family + BOOK
+STALL = (9,)          # families whose episodes from a start end 'stalled' (truncated, as a
+STALL_S = 20.0        # timeout) once the live potential has made no new low by STALL_D in
+STALL_D = 0.05        # STALL_S s: gpu13's missed lesson-9 throws hung one-handed to the 60 s
+                      # timeout, 6.6k of 20.6k episodes from its starts at 475-531M, ~72 % of
+                      # their steps. Along the climbs themselves the longest such stretch is
+                      # 7.6 s (f9 0.55-0.6), 13.1 s (f9 0.7 -y), measured on their rows in C
 SEEN = 0.08           # m: the farther hook's estimate off where it is, at most, as an episode
                       # begins at a row, on every one of SEEN_DRAWS sensor-noise draws (`_seen`):
 SEEN_DRAWS = 16       # the error's tail is long: on one draw, or the worst of 4, rows of f8 0.70
@@ -272,6 +278,20 @@ def where(books, ref, levels):
             for c, f in frontier(books, ref, allowed(ref, levels)).items()}
 
 
+def window(books, ref, levels):
+    """{climb's label: [[s into it, successes, episodes] of each start in its frontier window,
+    from its book]}: whether the starts at a frontier are being learnt or not, between two
+    snapshots (`where` says only which one is the latest failing)"""
+    ok, sc, dt = allowed(ref, levels), ref['start_climb'], EVERY * 0.04
+    hot, _ = _window(books, ref, ok)
+    out = {}
+    for j in ok[hot]:
+        c, h = int(sc[j]), books.get(int(j), [])[-START_WINDOW:]
+        out.setdefault(label(ref, c), []).append(
+            [round((int(j) - int(np.argmax(sc == c))) * dt, 2), int(sum(h)), len(h)])
+    return out
+
+
 def mix(layouts, rng, levels, share, books, ref):
     """`layouts` (rl.walls.draw's) with share[f] of each family f's walls begun at a start of one
     of its climbs `levels` let in, drawn toward the frontiers in `books` (`weights`), from any of
@@ -416,6 +436,10 @@ def check(z):
     assert frontier(books, z, ok) == {0: int(ok[len(ok) // 2])}, "noise past the cliff holds the frontier"
     books[int(ok[len(ok) // 2])] = [True] * START_WINDOW           # with the cliff passed, it does
     assert frontier(books, z, ok) == {0: int(ok[-3])}
+    from .walls import first_levels                               # what a checkpoint records there
+    rec = window(books, z, {3: first_levels()[3]})[label(z, 0)]
+    t = round((int(ok[-3]) - int(ok[0])) * EVERY * 0.04, 2)
+    assert [t, sum(books[int(ok[-3])]), START_WINDOW] in rec and all(n <= START_WINDOW for *_, n in rec), rec
     print("rsi: OK")
 
 

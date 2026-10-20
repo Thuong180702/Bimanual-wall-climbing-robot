@@ -235,6 +235,40 @@ def check_task(lessons=(1, 2, 4, 7), steps=260):
 
 
 # --- physics ------------------------------------------------------------------------
+def check_stall():
+    """rl.rsi.STALL: from a lesson-9 start held still, an episode ends 'stalled' (truncated)
+    STALL_S on; from a lesson-6 start it does not; and the lesson-9 climb's own actions from
+    its 10 s start are never cut on the way to success (its longest stretch with no new low
+    is 7.1 s)"""
+    import jax, jax.numpy as jp
+    from . import climb_task as ct, rsi
+    from .mjx_task import Batch, REASONS, LESSON_KEYS
+    z, L, rng = rsi.load(), len(LESSON_KEYS), np.random.default_rng(0)
+    c = {rsi.label(z, i): i for i in range(len(z['climb_family']))}
+    rows = lambda lab: np.nonzero(z['climb'] == c[lab])[0]
+    r9, r6 = rows('f9 0.6'), rows('f6 0.3')
+    go = int(r9[int(round(10.0 / ct.CONTROL_DT))])
+    starts = [('f9 0.6', int(r9[0])), ('f6 0.3', int(r6[0])), ('f9 0.6', go)]
+    b = Batch(3, bank=3)
+    b.set_bank([dict(rsi.start_wall(z, c[lab], rng), d0_row=L + r) for lab, r in starts])
+    b.state, _ = b._reset(b.task.tables, jp.asarray(L + np.arange(3)), jax.random.split(jax.random.PRNGKey(0), 3))
+    end, n = [None] * 3, int((r9[-1] - go) + 2 * rsi.MARGIN + 1)
+    for k in range(max(n, int((rsi.STALL_S + 1.0) / ct.CONTROL_DT))):
+        a = np.zeros((3, 17), np.float32)
+        a[2] = z['action'][min(go + k, int(r9[-1]))] if go + k <= r9[-1] else 0.0
+        _, _, _, term, trunc, info = b.step(a)
+        for i in range(3):
+            if end[i] is None and bool(np.asarray(term | trunc)[i]):
+                end[i] = (REASONS[int(info['reason'][i])], (k + 1) * ct.CONTROL_DT, bool(np.asarray(trunc)[i]))
+        if end[0] and end[2] and k * ct.CONTROL_DT > rsi.STALL_S + 0.5:
+            break
+    assert end[0] and end[0][0] == 'stalled' and end[0][2] and rsi.STALL_S < end[0][1] < rsi.STALL_S + 2.0, end
+    assert end[1] is None, f"a lesson-6 start was cut: {end[1]}"
+    assert end[2] and end[2][0] == 'success', f"the lesson-9 climb itself ended {end[2]}"
+    print(f"physics: a lesson-9 start held still ends 'stalled' at {end[0][1]:.1f} s (truncated), a "
+          f"lesson-6 one runs on, the climb from 10 s succeeds at {end[2][1]:.1f} s uncut")
+
+
 def check_physics(lessons=(1, 2, 7, 8)):
     import jax, jax.numpy as jp
     from mujoco import mjx
@@ -368,6 +402,7 @@ def check_physics(lessons=(1, 2, 7, 8)):
         assert all(np.isfinite(np.asarray(x)).all() for x in (obs, end, r)), "a NaN got out"
         obs, end, r, term, trunc, info = b.step(z3)
     print("physics: a NaN state or estimate ends as 'blowup' at FAIL_R, finite, and resets")
+    check_stall()
 
     # A batch that collides only the rung slots and walls in play (Batch's `fit`, what
     # training runs) must step as one that collides every pair: families 1..3's walls

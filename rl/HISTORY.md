@@ -1243,6 +1243,30 @@ Since those starts moved every family-6 start after the first climb, a checkpoin
 the fixture it kept its books on (`rsi.signature`). A resume on another fixture starts every
 book over: about 10M steps, every start at the frontier until it has START_MIN episodes.
 
+**gpu13 at 533M: lesson 9 sat on the throw, lesson 8 fell, the rollback took lesson 6's -y with
+it.** With the mirrored -y climbs (from 418M) lesson 6's -y frontier went 36 -> 13.6 s by 500M,
+past its step-up. Lesson 9's frontiers went 42 -> 14 s by 480M and stayed there 50M steps:
+the left hand's throw across the gap (released at 14.0 s, caught by 15.0 s), both gaps, both
+ways. At 475-480M lesson 8 from the hang fell 79 -> 0 % (all timeouts, no level raised), and
+at 532M the guard went back to the best at 445M -- before either climb's progress.
+Probed on that checkpoint in MJX: lesson 6 from the hang +y 9/14, -y 0/10 (its starts fail
+from 2-16 s, pass from 18 s: the right hand's step-up); lesson 9 fails from 14.4 s and before,
+passes from 15.0 s, the throw too weak (0.2-0.45 m of 0.68) and the hook left under the rung.
+The throw itself is sound on the training physics: open loop 12/12 from 10-16 s, and 10/10
+with the base's velocity jittered 0.05 m/s. What this did not settle is why PPO with cloning
+(0.7-1.0 sigma off at the frontier rows) does not carry the throw; a policy cloned offline
+alone is no test of it -- it fails lesson 6's -y step-up too (0/32), which training learnt.
+Two things changed, neither a guess at that cause:
+
+- a missed throw hung one-handed to the 60 s timeout: 6.6k of the 20.6k episodes from lesson
+  9's starts at 475-531M, ~72 % of their steps. Such an episode now ends 'stalled' (truncated,
+  as a timeout) once the live potential has made no new low by 5 cm in 20 s (`rsi.STALL`;
+  the climbs' own longest such stretch is 7.6 s, 13.1 s at 0.70 -y), lesson 9's starts only;
+- the rollback had written over the only weights that could say why lesson 8 fell: the
+  policy that forgot is now kept (`out/<name>/rolled/`), and each checkpoint records every
+  frontier-window start's book (`window`), so the next snapshot says whether the starts at
+  a frontier are being learnt at all.
+
 **Why gpu1 scores lesson 2 at 23 % on the full robot and 55 % in training's model
 (2026-09-26).** Lesson 2, deterministic, 30 episodes each: the full robot in C 7/30,
 the simplified robot in C 17/30, the simplified robot in MJX 16/30 -- the engines

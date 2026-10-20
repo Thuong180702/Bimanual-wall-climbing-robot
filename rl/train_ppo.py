@@ -723,6 +723,9 @@ class Checkpoint(BaseCallback):
         at half the learning rate and half the KL target"""
         m, p = self.model, os.path.join(self.dir, 'best_')
         h = self.held()
+        # the policy that forgot, kept as it was: gpu13's lesson 8 fell 79 -> 0 % at 475-480M and
+        # the rollback at 532M wrote over the only weights that could say why
+        self.save(os.path.join('rolled', f'{int(m.num_timesteps):012d}_'))
         m.set_parameters(p + 'model.zip', exact_match=True, device=m.device)
         with open(p + 'vecnorm.pkl', 'rb') as f:
             stats = pickle.load(f)
@@ -811,6 +814,7 @@ class Checkpoint(BaseCallback):
                    contact_cap=cap, std=float(self.model.policy.log_std.detach().exp().mean()),
                    levels=self.cur.levels, progress=W.progress(self.cur.levels),
                    frontier=None if ref is None else rsi.where(self.cur.starts, ref, self.cur.levels_in()),
+                   window=None if ref is None else rsi.window(self.cur.starts, ref, self.cur.levels_in()),
                    low_since=self.low_since)
         if self.line_at is None or n - self.line_at >= LINE_EVERY:
             if self.line_at is not None:
@@ -1157,6 +1161,9 @@ def guard_check():
             sys.stdout = out
         assert all(torch.equal(v, best_w[k]) for k, v in m.policy.state_dict().items()), "the policy"
         assert np.allclose(venv.obs_rms.mean, best_mean), "the observation statistics"
+        kept = PPO.load(os.path.join(d, 'rolled', f'{10 + P:012d}_model.zip'), device='cpu')
+        assert all(torch.allclose(v, best_w[k] + 0.1) for k, v in kept.policy.state_dict().items()
+                   if k in dict(m.policy.named_parameters())), "the forgetting policy was not kept"
         assert cur.rate(1)[1] == 1.0 and cur.active == [1, 2], "the curriculum"
         assert abs(m.lr_schedule(1.0) - LR_MAX * LR_DECAY) < 1e-12 and ck.kl_target == KL_START * LR_DECAY
         sys.stdout = open(os.devnull, 'w')
