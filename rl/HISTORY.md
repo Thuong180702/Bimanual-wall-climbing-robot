@@ -1205,6 +1205,16 @@ never rises back over the lowest it has been, and never sits under 0.3 for that 
 starts at SB3's 1 and falls as freely as in gpu11. (A learning-speed test could not be run
 here: MJX on this Mac's CPU runs 30 steps/s.)
 
+**gpu13 at 223M (2026-10-20): the stuck rule missed slow progress.** Lessons 1-5 and 7 passed,
+no rollback, std 0.24. Lesson 6 entered at 110.6M and its +y frontier crept 36 -> 29 s by
+160.6M (rate from the hang 0 -> 0.5 %), yet it was taken for stuck exactly 50M steps after it
+entered and let lessons 7 and 8 in. `track` compared each reading with the best so far and
+then raised the best to it, so a family gaining less than the margin between two rollouts
+never progressed. The mark is now the best as it was at the last progress. Since then
+lesson 6 went 0.5 -> 37 % from the hang (frontier 9 s +y, 16 s -y), and lesson 8 is 0 %
+from the hang but its frontier went 16 -> 4.6 s in 50M (gpu12: stuck at 3-3.8 s), books 69 %.
+Without the fix lesson 8 would also have counted as stuck at ~266M and let lesson 9 in.
+
 Since those starts moved every family-6 start after the first climb, a checkpoint now records
 the fixture it kept its books on (`rsi.signature`). A resume on another fixture starts every
 book over: about 10M steps, every start at the frontier until it has START_MIN episodes.

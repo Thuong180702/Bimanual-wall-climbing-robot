@@ -315,7 +315,7 @@ class Curriculum(BaseCallback):
         self.cleared = {f for f in c.get('cleared', []) if keep(f)}
         self.entered = {int(f): v for f, v in c.get('entered', {}).items()}
         self.moved = {int(f): v for f, v in c.get('moved', {}).items()}        # its last progress
-        self.best_prog = {int(f): list(v) for f, v in c.get('best_prog', {}).items()}
+        self.best_prog = {int(f): (list(v) * 2)[:4] for f, v in c.get('best_prog', {}).items()}
         self.pending.clear()
         self.since = self.clock          # episodes a dropped policy began do not count
 
@@ -414,11 +414,16 @@ class Curriculum(BaseCallback):
         for f in self.active:
             if f in self.cleared:
                 continue
+            # [best rate, best share, both as they were at its last progress]: progress is the
+            # best passing that mark by the margin. Measured against the best itself, gpu13's
+            # family 6 (rate 0 -> 3 %, frontier 36 -> 29 s, in steps under the margin) was
+            # taken for stuck 50M steps after it entered, and let lessons 7 and 8 in
             r, s = self.progress(f)
-            best = self.best_prog.setdefault(f, [r, s])
-            if r >= best[0] + PROGRESS_RATE or s >= best[1] + PROGRESS_STARTS:
+            b = self.best_prog.setdefault(f, [r, s, r, s])
+            b[0], b[1] = max(b[0], r), max(b[1], s)
+            if b[0] >= b[2] + PROGRESS_RATE or b[1] >= b[3] + PROGRESS_STARTS:
                 self.moved[f] = int(self.num_timesteps)
-            self.best_prog[f] = [max(best[0], r), max(best[1], s)]
+                b[2], b[3] = b[0], b[1]
 
     def stalled(self, f):
         """not passed yet, and no progress in STUCK_STEPS"""
@@ -1015,6 +1020,11 @@ def self_check():
     _feed(c, 1, True, 1)
     assert c.active[-1] == 4, f"a family progressing was taken for stuck: {c.active}"
     c.track()                                       # no better than its best since
+    c.num_timesteps = c.moved[4] + STUCK_STEPS - 1  # ...but creeping up under the margin
+    for _ in range(10):
+        _feed(c, 4, True, 2, steps=1500)            # +1 % a step, from 20 %
+        c.track()
+    assert c.moved[4] == c.num_timesteps, "a family creeping up was taken for stuck"
     c.num_timesteps = c.moved[4] + STUCK_STEPS
     _feed(c, 1, True, 1)
     assert c.active[-1] == 5, f"a family stuck for STUCK_STEPS still blocks: {c.active}"
