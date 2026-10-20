@@ -80,6 +80,10 @@ PASS = 0.7            # ...at this rate (rl.train_ppo.UNLOCK_AT, the families' g
 SLIP = 0.5            # ...and holds the frontier only under this: a start learnt at 0.85 reads
                       # under PASS over 20 episodes 7 % of the time, and with 100+ starts past a
                       # climb's cliff one always did -- the frontier sat on it, not at the cliff
+FAIL = 0.3            # ...and before those, the starts under this hold it: gpu13's lesson 6 -y had
+                      # 127 starts past its cliff at 0.91 on average, one under SLIP at a read 35 %
+                      # of the time (under FAIL 0.3 %), and its frontier sat off the cliff at 39
+                      # of 77 checkpoints from 230M to 307M
 EVERY = 5             # control steps a start spans along a climb
 MARGIN = 5            # control steps (0.2 s) before the climb's success: its last start
 BOOK = 100            # an episode from a start reports family + BOOK
@@ -208,20 +212,22 @@ def passed(h):
     return len(h) >= START_MIN and sum(h) >= PASS * len(h)
 
 
-def slipped(h):
+def slipped(h, under=SLIP):
     """a start's book: holding the frontier -- booked fewer than START_MIN times, or under SLIP.
     Between SLIP and PASS a start is not passed, and does not hold the frontier"""
     h = h[-START_WINDOW:]
-    return len(h) < START_MIN or sum(h) < SLIP * len(h)
+    return len(h) < START_MIN or sum(h) < under * len(h)
 
 
 def frontier(books, ref, ok):
-    """{climb: the latest of its starts `ok` slipped in `books` ({start: [success, ...]}), None
-    once none is}. The latest, not the earliest: one that slips behind it is drawn first again"""
+    """{climb: the latest of its starts `ok` under FAIL in `books` ({start: [success, ...]}), or
+    with none under FAIL the latest slipped; None once none is}. The latest, not the earliest:
+    one that slips behind it is drawn first again"""
     ok, sc = np.asarray(ok), ref['start_climb']
     out = {}
     for c in np.unique(sc[ok]):
-        bad = [int(j) for j in ok[sc[ok] == c] if slipped(books.get(int(j), []))]
+        hs = [(int(j), books.get(int(j), [])) for j in ok[sc[ok] == c]]
+        bad = [j for j, h in hs if slipped(h, FAIL)] or [j for j, h in hs if slipped(h)]
         out[int(c)] = max(bad) if bad else None
     return out
 
@@ -405,6 +411,11 @@ def check(z):
     assert frontier(books, z, ok) == {0: int(ok[len(ok) // 2])}
     w = weights(books, z, ok)
     assert w[len(ok) // 2] > 10 * w[0], "the frontier start is not drawn first"
+    books[int(ok[-3])] = [True, False] * (START_WINDOW // 2)       # a learnt start's bad read
+    books[int(ok[-3])][:3] = [False] * 3                          # (0.4) past a cliff at 0 %
+    assert frontier(books, z, ok) == {0: int(ok[len(ok) // 2])}, "noise past the cliff holds the frontier"
+    books[int(ok[len(ok) // 2])] = [True] * START_WINDOW           # with the cliff passed, it does
+    assert frontier(books, z, ok) == {0: int(ok[-3])}
     print("rsi: OK")
 
 

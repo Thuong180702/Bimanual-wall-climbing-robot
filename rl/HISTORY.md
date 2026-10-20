@@ -1215,6 +1215,18 @@ lesson 6 went 0.5 -> 37 % from the hang (frontier 9 s +y, 16 s -y), and lesson 8
 from the hang but its frontier went 16 -> 4.6 s in 50M (gpu12: stuck at 3-3.8 s), books 69 %.
 Without the fix lesson 8 would also have counted as stuck at ~266M and let lesson 9 in.
 
+**gpu13 at 307M: lesson 6 is one side.** Lesson 8 passed at ~290M (0 -> 88 % in 25M once its
+release was learnt). Lesson 6 sat at 33-48 % from 250M: +y is learnt (10/12 from the hang in C,
+every +y start passed), -y is 0/24 from the hang and 0 % at every start of its climb before
+10.6 s, passed from 11.8 s. The cliff is the trailing (right) hand's re-grip at 11.2 s, before
+it steps up the tier at 14 s; from 9.6-11.2 s the policy lets that hand go and hangs it 3-10 cm
+under the rung for the rest of the episode. Lesson 9 entered at 300.4M by the stuck rule, as
+designed (no progress 250-300M). The -y frontier sat off that cliff, at a learnt start past it
+that read under SLIP by chance, at 39 of 77 checkpoints from 230M: 127 starts past the cliff at
+0.91 on average put one under 0.5 at a read 35 % of the time. The frontier is now the latest
+start under FAIL = 0.3 (0.3 % by chance), else the latest under SLIP: on the 307M books it lands
+on the cliff, 10.6 s.
+
 Since those starts moved every family-6 start after the first climb, a checkpoint now records
 the fixture it kept its books on (`rsi.signature`). A resume on another fixture starts every
 book over: about 10M steps, every start at the frontier until it has START_MIN episodes.
