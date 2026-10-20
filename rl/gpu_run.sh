@@ -4,7 +4,7 @@
 #     mkdir -p out && nohup bash rl/gpu_run.sh gpu1 > out/gpu1.console 2>&1 &
 #     tail -f out/gpu1.console                      # or: .venv/bin/python -m rl.status --name gpu1
 #
-#   1. preflight, once per card, ENVS, WALLS and change to what it checks: JAX and torch both on the card in one process, the
+#   1. preflight, once per card, ENVS and WALLS: JAX and torch both on the card in one process, the
 #      JAX task still ClimbTask's on THIS card (rl.mjx_check task physics), a batch of
 #      ENVS fits, which of MJX's backends the run steps on (Warp only if it is C
 #      MuJoCo's physics by the same checks: rl.mjx_check warp;
@@ -108,14 +108,12 @@ fi
 
 # ---- 1. preflight ---------------------------------------------------------------
 # the card is in the stamp: a run carried to another box (its .tgz unpacked there)
-# is checked again on the card it lands on. A run carried on after commits that touch
-# only the trainer, the tools and the docs is not: what the preflight checks -- the task,
-# the robot, the walls, the GPU stack -- is the same (the trainer has its own --self-check)
+# is checked again on the card it lands on. A run carried on, on the same card, is never
+# checked again, whatever the commits since (the user's rule, 2026-10-20).
+# ponytail: a change to the task or robot is then not checked on the GPU; rm out/<name>/preflight.ok to force it
 card=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)
 ok=$(cat "$RUN/preflight.ok" 2>/dev/null)
-same() { [ "${ok#* }" = "$ENVS $WALLS $card" ] && git diff --quiet "${ok%% *}" HEAD -- . ':!*.md' \
-         ':!rl/train_ppo.py' ':!rl/gpu_run.sh' ':!rl/status.py' ':!rl/plot.py' ':!rl/curve.py' \
-         ':!rl/eval.py' ':!rl/render.py' ':!rl/demo.py' ':!rl/plan.py' ':!demo' 2>/dev/null; }
+same() { [ -n "$ok" ] && [ "${ok#* }" = "$ENVS $WALLS $card" ]; }
 if ! same; then
     say "preflight: 4 steps on this card, each at most an hour. Harmless in the console:" \
         "'numa_hwloc ... hwloc_set_cpubind() failed' (XLA may not pin its threads in a" \
