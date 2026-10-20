@@ -1227,6 +1227,18 @@ that read under SLIP by chance, at 39 of 77 checkpoints from 230M: 127 starts pa
 start under FAIL = 0.3 (0.3 % by chance), else the latest under SLIP: on the 307M books it lands
 on the cliff, 10.6 s.
 
+**gpu13 at 372M: lesson 6's -y climb did not run on the training physics.** With the frontier
+on the cliff from 320M (12-13 s at 21 of 24 checkpoints), -y still did not move in 50M steps:
+0 % before 11.6 s, lesson 6 from the hang down 38 -> 28 %. Meanwhile lesson 9's frontiers went
+42 -> 23-26 s and lesson 8 took its next level, so the policy was still learning. At the cliff
+rows its mean was 0.3-1.2 sigma off the climb's action (5-10 sigma before them): cloning had
+done its part. Replayed open loop in MJX from its own starts, the old -y climb (searched on
+its own, with a re-grip of the right hand at 11.2 s that +y does not make) finished from none
+of them (9.6-14.4 s, 18 of 18 still on the tier at the end), while +y finished from every
+one. The -y climbs are now the exact mirrors of +y's (`plan mirror`; the simplified robot is
+its own mirror image): in C from the hang at 36.4 s, and in MJX open loop from every start
+after 2 s. A new fixture starts every book over (`rsi.signature`).
+
 Since those starts moved every family-6 start after the first climb, a checkpoint now records
 the fixture it kept its books on (`rsi.signature`). A resume on another fixture starts every
 book over: about 10M steps, every start at the frontier until it has START_MIN episodes.
