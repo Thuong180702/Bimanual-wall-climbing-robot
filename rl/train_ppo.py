@@ -897,7 +897,7 @@ def main():
           f"{venv.num_envs} envs, {venv.num_envs * model.n_steps:,} steps an update, policy on "
           f"{model.device}, {a.physics} physics, walls {a.walls}; lessons in training {cur.active}")
     try:                                 # SIGTERM saves too, so a killed run is resumable
-        signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
+        signal.signal(signal.SIGTERM, lambda *_: setattr(Stop, 'asked', True))
     except (ValueError, AttributeError, OSError):
         pass
     model.set_logger(Logger(None, [JsonLines(os.path.join(run, 'progress.jsonl'))]))
@@ -909,8 +909,9 @@ def main():
            robot=robot_stamp(), walls=a.walls, bank=BANK, levels=cur.levels)
     how = 'finished'
     try:
-        model.learn(total_timesteps=a.steps, callback=[cur, ckpt, UpdateSize(ckpt), Clone(cur)],
+        model.learn(total_timesteps=a.steps, callback=[cur, ckpt, UpdateSize(ckpt), Clone(cur), Stop()],
                     reset_num_timesteps=not a.resume)
+        how = 'interrupted' if Stop.asked else how
     except KeyboardInterrupt:
         how = 'interrupted'
     except BaseException as e:
@@ -921,6 +922,15 @@ def main():
     record('exit', how=how, timesteps=int(model.num_timesteps))
     print(ckpt.line())
     print(f"{how} at {model.num_timesteps:,} steps; resume with: python -m rl.train_ppo --name {a.name} --resume")
+
+
+class Stop(BaseCallback):
+    """SIGTERM: learn returns at the next step. Raised from the handler, the interrupt could land
+    in a destructor and be dropped: gpu13's first stop hit Warp's Graph.__del__ and trained on"""
+    asked = False
+
+    def _on_step(self):
+        return not Stop.asked
 
 
 # --- self-check ------------------------------------------------------------------
@@ -1079,6 +1089,13 @@ def self_check():
         raise AssertionError("resumed onto another robot")
     except SystemExit:
         pass
+    old = signal.signal(signal.SIGTERM, lambda *_: setattr(Stop, 'asked', True))
+    s = Stop()
+    assert s._on_step()
+    os.kill(os.getpid(), signal.SIGTERM)                 # the handler only marks it...
+    assert Stop.asked and not s._on_step(), "SIGTERM did not stop learn"   # ...learn stops here
+    signal.signal(signal.SIGTERM, old); Stop.asked = False
+    print("stop test: SIGTERM stops learn at its next step, through the callbacks. OK")
     print("self-check: OK")
 
 
