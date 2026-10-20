@@ -1198,9 +1198,12 @@ gpu12's late run, and none of them came from gpu11:
    actually drawn, PROBE_P of them at its candidates (`Curriculum.fails`). On gpu12's books
    that takes families 2-5 from 3-6 % to 4-8 % of the steps.
 
-Not measured: whether lessons 1 and 2 learn as fast from a std of 0.3 as gpu11 and gpu12 did
-from 0.8. MJX on this Mac's CPU runs 30 steps/s, and lesson 1 took 6M steps. On the GPU,
-lessons 1-2 passed by ~12M in both runs.
+The 0.3 ceiling had been held from the first rollout, so a fresh run would have explored
+lessons 1-2 at a third of the noise gpu11 and gpu12 learnt them with (~0.8). The 0.3 was
+measured only late, against the drift. The ceiling is now a ratchet: each dimension's std
+never rises back over the lowest it has been, and never sits under 0.3 for that reason. It
+starts at SB3's 1 and falls as freely as in gpu11. (A learning-speed test could not be run
+here: MJX on this Mac's CPU runs 30 steps/s.)
 
 Since those starts moved every family-6 start after the first climb, a checkpoint now records
 the fixture it kept its books on (`rsi.signature`). A resume on another fixture starts every

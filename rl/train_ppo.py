@@ -21,7 +21,8 @@ optimizer, observation statistics and curriculum included.
   * REFERENCE CLIMBS (rl.rsi). A share of the walls of each family that has climbs begin
     partway up one, toward the frontier of what the policy finishes; where it does not,
     its mean is pulled toward the climb's own action (`Clone`).
-  * The UPDATE SIZE (`UpdateSize`). Each action dimension's std is held in [STD_MIN, STD_MAX],
+  * The UPDATE SIZE (`UpdateSize`). Each action dimension's std is held over STD_MIN and never
+    back over the lowest it has been (STD_MAX at the least: under it, it moves freely),
     and the learning rate moves to keep every update's KL near the run's target (rsl_rl's
     rule). Without them the std of the dimensions a policy uses precisely shrank without
     limit, and since a Gaussian's KL goes as 1/std^2 every update grew with it until the
@@ -93,11 +94,13 @@ STD_MIN = 0.1        # floor on every action dimension's std: 0.006 rad of setpo
                      # toward gpu11's actions (it climbs families 6 and 8), its mean stayed 30 sigma off
                      # for 20 updates at 0.05 and came 18 -> 13 at 0.1, the KL as small; families 1-5
                      # and 7 from the hang held at 0.1 (C, 35 walls each)
-STD_MAX = 0.3        # ...and its ceiling. At 1 (SB3's start) gpu12's wrists and elbows drifted up to it
-                     # from 200M on (0.4 -> 1.0) while the shoulders sat at the floor, and every catch
-                     # paid: at its 315M checkpoint lesson 8's release, from the starts it finishes
-                     # deterministically 40/40, went 15/40 sampled, 25/40 under 0.5, 35/40 under 0.3;
-                     # from the hang under 0.3, lessons 3 and 4 went 23 -> 29 and 22 -> 31 of 35
+STD_MAX = 0.3        # ...and its ceiling: each dimension's std never rises back over the lowest it has
+                     # been, down to this. It starts at SB3's 1 and falls as PPO sharpens it, as gpu11's
+                     # did (0.8 while lessons 1-2 were learnt), but never climbs again: gpu12's wrists and
+                     # elbows drifted 0.4 -> 1.0 from 200M while its families sat stuck, and every catch
+                     # paid -- at 315M lesson 8's release, 40/40 from its starts with the mean, went
+                     # 15/40 sampled, 25/40 under 0.5, 35/40 under 0.3; from the hang under 0.3,
+                     # lessons 3 and 4 went 23 -> 29 and 22 -> 31 of 35
 BANK = 1024          # walls drawn at the start of every rollout; each env takes one at every reset
 ENVS = 4096          # envs in one GPU batch (gpu_run.sh halves it until it fits the card)
 PPO_SHAPE = dict(n_steps=32, minibatches=8, n_epochs=10)   # rsl_rl's rollout, 80 Adam steps an update
@@ -531,9 +534,10 @@ class Curriculum(BaseCallback):
 
 
 class UpdateSize(BaseCallback):
-    """At every rollout's start: each action dimension's std into [STD_MIN, STD_MAX] -- SB3
-    starts at 1; a run whose std ran away (to 4.2 on one joint) took itself apart, and one held
-    under 1 still let the joints it uses least drift up to it, where they spoil every catch --
+    """At every rollout's start: each action dimension's std over STD_MIN and under its ceiling,
+    the lowest it has been but never under STD_MAX (the Checkpoint's `std_cap`, 1 at SB3's start)
+    -- a run whose std ran away (to 4.2 on one joint) took itself apart, and one held under 1
+    still let the joints it uses least drift up to it, where they spoil every catch --
     and the learning rate x1/1.5 when the last update's approx_kl passed twice the run's target,
     x1.5 when it was under half, within [LR_MIN, LR_MAX]. The target is the Checkpoint's: each
     rollback halves it"""
@@ -543,7 +547,14 @@ class UpdateSize(BaseCallback):
         self.ck = ck
 
     def _on_rollout_start(self):
-        self.model.policy.log_std.data.clamp_(min=float(np.log(STD_MIN)), max=float(np.log(STD_MAX)))
+        import torch
+        ls = self.model.policy.log_std.data
+        cap = torch.as_tensor(np.log(self.ck.std_cap), dtype=ls.dtype, device=ls.device) \
+            if self.ck.std_cap is not None else torch.zeros_like(ls)
+        ls.clamp_(min=float(np.log(STD_MIN)))
+        ls.copy_(torch.minimum(ls, cap))
+        cap = torch.minimum(cap, ls.clamp(min=float(np.log(STD_MAX))))
+        self.ck.std_cap = cap.exp().cpu().tolist()
         kl = self.model.logger.name_to_value.get('train/approx_kl')
         if kl is None:
             return
@@ -673,6 +684,7 @@ class Checkpoint(BaseCallback):
         self.best_active = st.get('best_active', [])     # the families the best had passed...
         self.best_held = st.get('best_held', self.best)  # ...and what they held there (`held`)
         self.kl_target = st.get('kl_target', KL_START)
+        self.std_cap = st.get('std_cap')          # UpdateSize's per-dimension ceiling
         self.rollbacks = st.get('rollbacks', 0)
         self.low_since, self.due, self.last, self.line_at = None, False, 0, None
         self.clock = (time.time(), 0)                     # (wall-clock, steps) at the last line
@@ -736,7 +748,8 @@ class Checkpoint(BaseCallback):
         state = {'timesteps': int(self.model.num_timesteps), 'robot': robot_stamp(),
                  'walls_mode': self.walls, 'best': self.best, 'best_active': self.best_active,
                  'best_held': self.best_held, 'lr': self.model.lr_schedule(1.0),
-                 'kl_target': self.kl_target, 'rollbacks': self.rollbacks, **self.cur.state()}
+                 'kl_target': self.kl_target, 'std_cap': self.std_cap, 'rollbacks': self.rollbacks,
+                 **self.cur.state()}
         with open(p + 'state.tmp.json', 'w') as f:
             json.dump(state, f, indent=1)
         for f in ('model.zip', 'vecnorm.pkl', 'state.json'):
@@ -1127,7 +1140,8 @@ def guard_check():
             sys.stdout.close()
             sys.stdout = out
         assert abs(m.lr_schedule(1.0) - LR_MIN) < 1e-15 and abs(ck.kl_target - KL_MIN) < 1e-12
-        # the update size: std held in [STD_MIN, STD_MAX], the rate following the KL toward the target
+        # the update size: std over STD_MIN and never back over its lowest (STD_MAX at the least),
+        # the rate following the KL toward the target
         from stable_baselines3.common.logger import configure
         m.set_logger(configure(None, []))
         us = UpdateSize(ck)
@@ -1145,9 +1159,20 @@ def guard_check():
         assert abs(after(10 * kt, 1.5e-4) - 1e-4) < 1e-12 and abs(after(0.1 * kt, 1e-4) - 1.5e-4) < 1e-12
         assert after(kt, 1e-4) == 1e-4 and after(0.1 * kt, LR_MAX) == LR_MAX and after(10 * kt, LR_MIN) == LR_MIN
         sd = m.policy.log_std.exp().detach().numpy()
-        assert abs(sd[0] - STD_MIN) < 1e-6 and abs(sd[1] - STD_MAX) < 1e-6, sd
+        assert abs(sd[0] - STD_MIN) < 1e-6 and abs(sd[1] - 1.0) < 1e-6, sd      # SB3's 1 at first
+
+        def std(x):                                  # dimension 1 set to x, through a rollout start
+            with torch.no_grad():
+                m.policy.log_std[1] = float(np.log(x))
+            us._on_rollout_start()
+            return float(m.policy.log_std[1].exp())
+        assert abs(std(0.6) - 0.6) < 1e-6 and abs(std(0.9) - 0.6) < 1e-6, "std climbed back over its lowest"
+        assert abs(std(0.2) - 0.2) < 1e-6 and abs(std(0.25) - 0.25) < 1e-6, "under STD_MAX it moves freely"
+        assert abs(std(0.8) - STD_MAX) < 1e-6, "rose back over STD_MAX"
+        assert Checkpoint(ck.dir, ck.cur, 1, json.load(open(ck.save() + 'state.json'))).std_cap == ck.std_cap
     print(f"guard test: a passed family forgotten for {GUARD_UPDATES} updates sends the run back to its best "
-          f"(policy, statistics, curriculum) at x{LR_DECAY:g} the rate; std in [{STD_MIN:g}, {STD_MAX:g}]; the rate "
+          f"(policy, statistics, curriculum) at x{LR_DECAY:g} the rate; std over {STD_MIN:g}, never back over its "
+          f"lowest (down to {STD_MAX:g}); the rate "
           f"follows the KL within [{LR_MIN:g}, {LR_MAX:g}]. OK")
 
 
