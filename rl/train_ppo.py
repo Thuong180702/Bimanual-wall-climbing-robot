@@ -312,11 +312,12 @@ class Curriculum(BaseCallback):
         self.gate = {int(f): list(v) for f, v in c.get('gate', {}).items() if keep(f)}
         self.lens = {int(f): list(v) for f, v in c.get('lens', {}).items() if keep(f)}
         self.probes = {k: list(v) for k, v in c.get('probes', {}).items() if keep(k)}
-        # books are by start number: those of the climbs ahead of the first one the fixture changed
+        # books are by start number: carried to where each climb the fixture still has now starts
         old = (self.ref_climbs if c.get('rsi') == self.ref_sig else
-               c.get('rsi_climbs') or rsi.history().get(c.get('rsi')))
-        hold = set() if self.ref is None or not old else set(rsi.kept(self.ref, old).tolist())
-        self.starts = {int(j): list(v) for j, v in c.get('starts', {}).items() if int(j) in hold}
+               rsi.history().get(c.get('rsi')) or c.get('rsi_climbs'))
+        old = old if old and all(isinstance(o, list) for o in old) else None   # 70714bb's: hashes only
+        to = {} if self.ref is None or not old else rsi.kept(self.ref, old)
+        self.starts = {to[int(j)]: list(v) for j, v in c.get('starts', {}).items() if int(j) in to}
         self.cleared = {f for f in c.get('cleared', []) if keep(f)}
         self.entered = {int(f): v for f, v in c.get('entered', {}).items()}
         self.moved = {int(f): v for f, v in c.get('moved', {}).items()}        # its last progress
@@ -1093,9 +1094,12 @@ def self_check():
         st = json.loads(json.dumps(c.state()))       # the fixture's last climb replaced since
         last = int(c.ref['start'][-1])
         st['curriculum']['starts'][str(last)] = [True]
-        st['curriculum']['rsi'], st['curriculum']['rsi_climbs'][-1] = 'another', 'changed'
+        st['curriculum']['rsi'], st['curriculum']['rsi_climbs'][-1][0] = 'another', 'changed'
         k = Curriculum(st).starts
         assert k.get(j) == [True] * 3 and last not in k, "books of an unchanged climb dropped, or a changed one's kept"
+        st['curriculum']['rsi_climbs'] = [['gone', 3]] + c.ref_climbs     # a climb ahead of all, dropped since
+        st['curriculum']['starts'] = {str(j + 3): [True] * 3}
+        assert Curriculum(st).starts == {j: [True] * 3}, "a climb's books not carried to where it starts now"
     guard_check()
     clone_check()
     check_robot({'robot': robot_stamp()})

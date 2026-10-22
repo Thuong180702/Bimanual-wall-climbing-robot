@@ -49,10 +49,10 @@ S = 0.0375                    # rl.walls.SEAT: a goal's closest to a rung end
 HY = 0.157
 
 # phase: (hand, rung slot, y band lo, hi, mode, T s, keyframes, hold s[, keep the order])
-def _step(rung, L=(0.10, 0.25), R=(-0.25, -0.05), over=(5.0, 5), last=(5.0, 5)):
+def _step(rung, L=(0.10, 0.25), R=(-0.25, -0.05), over=(5.0, 5), last=(5.0, 5), seat=2.0):
     """both hands onto a full row straight above, below or behind the hang, left first"""
-    return [('L', rung, *L, 'over', *over, 0.5), ('L', rung, *L, 'seat', 2.0, 2, 0.8),
-            ('R', rung, *R, 'over', *last, 0.5), ('R', rung, *R, 'seat', 2.0, 2, 0.8)]
+    return [('L', rung, *L, 'over', *over, 0.5), ('L', rung, *L, 'seat', seat, 2, 0.8),
+            ('R', rung, *R, 'over', *last, 0.5), ('R', rung, *R, 'seat', seat, 2, 0.8)]
 
 
 def _f6():
@@ -131,6 +131,11 @@ for h in (0.30, 0.40):
     PLANS[f'f6mr{round(h * 100)}'] = (6, h, -1, 1, mirrored(_f6()))
 for b in (0.35, 0.50, 0.55, 0.60, 0.70):
     PLANS[f'f8b{round(b * 100)}'] = (8, b, 1, 1, _step('rung_g1', L=(0.08, 0.25), over=(6.0, 6), last=(6.0, 6)))
+    # the same keyframes in two thirds of the time (--init f8b..): at gamma 0.995 the 17.4 s climb from
+    # the hang was worth +0.44 discounted, less than reaching the back rung with L and hanging there
+    # to the timeout (+0.6..1.7), so gpu14 never took 0.55 from the hang in 900M steps
+    PLANS[f'f8fb{round(b * 100)}'] = (8, b, 1, 1, _step('rung_g1', L=(0.08, 0.25), over=(3.5, 6), last=(4.0, 6),
+                                                        seat=1.5))
 for g in (0.55, 0.60):
     PLANS[f'f9g{round(g * 100)}'] = (9, g, 1, 1, _f9(g))
     PLANS[f'f9mg{round(g * 100)}'] = (9, g, -1, 1, mirrored(_f9(g)))
@@ -152,9 +157,9 @@ PROVENANCE = {
     'climb_f6_r40': "search f6r40 --init f6r30", 'climb_f6m_r40': "mirror climb_f6_r40",
     'climb_f7_s60': "record gpu10 (215M)", 'climb_f7m_s60': "record gpu10 (215M)",
     'climb_f8_b35': "search f8b35 --turn 2 --ik 4:<least squares, the left hook over the back rung turned round>",
-    'climb_f8_b60': "search f8b60 --turn 2 --hill 2 --ik (as 0.35)",
-    'climb_f8_b50': "search f8b50 --turn 2 --hill 2 --init f8b60", 'climb_f8_b55': "search f8b55 --turn 2 --hill 2 --init f8b60",
-    'climb_f8_b70': "search f8b70 --turn 2 --hill 2 --init f8b60",
+    # each the faster search of the climb before it: f8b60 (--ik as 0.35), f8b50/55/70 (--init f8b60)
+    **{f'climb_f8_b{b}': f"search f8fb{b} --turn 2 --hill 2 --init f8b{b}, seed {s}"
+       for b, s in ((50, 61), (55, 61), (60, 61), (70, 63))},
     'climb_f9_g55': "search f9g55", 'climb_f9m_g55': "search f9mg55",
     'climb_f9_g60': "search f9g60", 'climb_f9m_g60': "mirror climb_f9_g60",
     **{f'climb_f9{m}_g{g}': f"search f9{m}sg{g} --init lesson 9's swing on the full robot (the other way: "

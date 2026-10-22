@@ -162,10 +162,16 @@ def signature(ref):
 
 
 def climb_signatures(ref):
-    """`signature` a climb at a time"""
-    return [hashlib.sha1(b''.join(np.ascontiguousarray(ref[k][ref['climb'] == c]).tobytes()
-                                  for k in ('start', 'qpos'))).hexdigest()[:16]
-            for c in range(len(ref['climb_family']))]
+    """[(a climb's rows hashed, its starts), ...] in climb order: what `signature` is a climb at a
+    time, blind to where in the fixture the climb sits"""
+    out = []
+    for c in range(len(ref['climb_family'])):
+        m = ref['climb'] == c
+        s = ref['start'][m]
+        out.append([hashlib.sha1(np.ascontiguousarray(s - s.min()).tobytes()
+                                 + np.ascontiguousarray(ref['qpos'][m]).tobytes()).hexdigest()[:16],
+                    int(len(np.unique(s)))])
+    return out
 
 
 def history():
@@ -175,13 +181,17 @@ def history():
 
 
 def kept(ref, old):
-    """the starts of `ref` whose books, kept on a fixture whose climbs hashed `old`, still hold:
-    those of the climbs before the first one that changed (start numbers run in climb order).
-    Replacing the last climbs, as gpu14's 0.90 swings were, keeps every other climb's books"""
-    new, n = climb_signatures(ref), 0
-    while n < min(len(old), len(new)) and old[n] == new[n]:
-        n += 1
-    return np.nonzero(ref['start_climb'] < n)[0]
+    """{start on a fixture whose climbs were `old` (climb_signatures): the same start on `ref`}, for
+    every climb `ref` still has unchanged. Books are by start number, which a climb changed ahead
+    of another shifts: gpu14's lesson-8 climbs re-found faster sit ahead of all of lesson 9's"""
+    first = np.concatenate([[0], np.cumsum([n for _, n in old])])
+    where = {h: first[i] for i, (h, _) in enumerate(old)}
+    out = {}
+    for c, (h, n) in enumerate(climb_signatures(ref)):
+        if h in where:
+            j = int(ref['start'][ref['climb'] == c].min())
+            out.update({int(where[h]) + k: j + k for k in range(n)})
+    return out
 
 
 def label(ref, c):
