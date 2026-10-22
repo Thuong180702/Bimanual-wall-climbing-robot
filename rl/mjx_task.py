@@ -221,6 +221,7 @@ class Tables(NamedTuple):
     ctrl0: jax.Array
     ngt0: jax.Array
     grabs0: jax.Array          # (L + S, 2) holds each hand has taken by then: 0 at a hang
+    let0: jax.Array            # (L + S, 2) ...and whether it has let go since its last one
     con0: jax.Array            # (L + S, 2) `_contact` at each start: what Warp's reset reads
     on0: jax.Array             # (L + S, 2, N_RUNG)
 
@@ -369,8 +370,24 @@ class MjxClimb:
             tau_idle, fight_idle = cat(tau_idle, tau_idle[r0]), cat(fight_idle, fight_idle[r0])
             grabs0 = cat(grabs0, jp.asarray(ref['grabs'], jp.int32))
         con0, on0 = jax.jit(jax.vmap(self._contact))(d0)
+        # `update`'s let_go along each climb, row by row: a start begun with it cleared lost
+        # every hold its hands were between letting go and taking. gpu14's lesson 8 at 0.55
+        # sat at 0 % from the hang 365M steps: the references' second hand lets go at 14.3 s
+        # and is booked at 17.4 s, so their last 3 s of starts could not succeed unless that
+        # hand let go and took hold again (open loop: never), the books there sat at 30-75 %
+        # and held the frontier at the climb's end
+        let0 = np.zeros((len(grabs0), 2), bool)
+        if ref is not None:
+            con, g, c = np.asarray(con0)[L:], ref['grabs'], ref['climb']
+            free, held = con <= 0.0, con > ct.HOLD_LOAD
+            for k in range(1, len(c)):
+                if c[k] == c[k - 1]:
+                    let0[L + k] = (let0[L + k - 1] | (free[k] & held[k, ::-1])) & ~(g[k] > g[k - 1])
+            last = np.r_[np.nonzero(np.diff(c))[0], len(c) - 1]
+            assert not ((g[last] < 1) & ~let0[L + last] & ~free[last]).any(), \
+                "a climb's last start holds a hand whose first hold can never be booked"
         return Tables(walls=w, tau_idle=tau_idle, fight_idle=fight_idle, d0=d0, ctrl0=ctrl0,
-                      ngt0=ngt0, grabs0=grabs0, con0=con0, on0=on0)
+                      ngt0=ngt0, grabs0=grabs0, let0=jp.asarray(let0), con0=con0, on0=on0)
 
     @staticmethod
     def wall(T, row):
@@ -743,7 +760,7 @@ class MjxClimb:
                    slam_err=ct.SLAM_SIG * ep['slam'], k=jp.array(0),
                    buf_true=jp.zeros((ct.SLAM_LAG, 3)), buf_est=jp.zeros((ct.SLAM_LAG, 3)),
                    prev_d=z2, prev_live=z2, live_att=z2, credit=z2, held=jp.zeros(2, bool),
-                   prev_thr=thr, prev_loaded=con > ct.HOLD_LOAD, let_go=jp.zeros(2, bool),
+                   prev_thr=thr, prev_loaded=con > ct.HOLD_LOAD, let_go=T.let0[w.d0_row],
                    grabs=T.grabs0[w.d0_row], grab_paid=T.grabs0[w.d0_row] > 0,
                    cross_axis=jp.zeros(3), cross_sign=jp.array(1.0),
                    off_t=z2, held_t=z2, slide_rung=jp.full(2, -1), slide_ref=z2, slide_net=z2,
