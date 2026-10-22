@@ -38,11 +38,12 @@ Every climb is checked as the fixture is built:
     episode begins there, whatever the sensor noise (the estimator starts from the holds and
     the torso).
 """
-import hashlib, os
+import hashlib, json, os
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FILE = os.path.join(HERE, 'fixtures', 'rsi.npz')
+HISTORY = os.path.join(HERE, 'fixtures', 'rsi_history.json')
 
 # (family, height, side, rows, file in rl/fixtures). height: the value of the family's TOP
 # parameter the climb is on; side 1 the wall as rl.walls draws it, -1 mirrored, 0 either (a
@@ -158,6 +159,29 @@ def signature(ref):
     hold only for the fixture they were kept on"""
     return hashlib.sha1(b''.join(np.ascontiguousarray(ref[k]).tobytes()
                                  for k in ('start', 'climb', 'qpos'))).hexdigest()[:16]
+
+
+def climb_signatures(ref):
+    """`signature` a climb at a time"""
+    return [hashlib.sha1(b''.join(np.ascontiguousarray(ref[k][ref['climb'] == c]).tobytes()
+                                  for k in ('start', 'qpos'))).hexdigest()[:16]
+            for c in range(len(ref['climb_family']))]
+
+
+def history():
+    """{a fixture's signature: its climb_signatures}, every fixture `build` has written: a run
+    kept on one finds what of it the fixture now on disk still has"""
+    return json.load(open(HISTORY)) if os.path.exists(HISTORY) else {}
+
+
+def kept(ref, old):
+    """the starts of `ref` whose books, kept on a fixture whose climbs hashed `old`, still hold:
+    those of the climbs before the first one that changed (start numbers run in climb order).
+    Replacing the last climbs, as gpu14's 0.90 swings were, keeps every other climb's books"""
+    new, n = climb_signatures(ref), 0
+    while n < min(len(old), len(new)) and old[n] == new[n]:
+        n += 1
+    return np.nonzero(ref['start_climb'] < n)[0]
 
 
 def label(ref, c):
@@ -408,6 +432,7 @@ def build():
         print(f"rsi: {label(z, c)}: hooks seen at most {e.max() * 1000:.0f} mm off at a start; "
               f"{int((e >= SEEN).sum())} of its {len(e)} rows past SEEN")
     np.savez_compressed(FILE, **z)
+    json.dump({**history(), signature(z): climb_signatures(z)}, open(HISTORY, 'w'), indent=0)
     print(f"rsi: {len(rows)} rows, {j0} starts, {len(climbs)} climbs -> {FILE}")
     return z
 

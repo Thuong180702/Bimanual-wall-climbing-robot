@@ -97,6 +97,23 @@ def _f9s(gap):
             ('L', 'rung_g1', yL - 0.10, yL + 0.07, 'over', 2.0, 2, 0.4), ('L', 'rung_g1', yL - 0.10, yL + 0.07, 'seat', 1.5, 2, 0.8)]
 
 
+def _f9t(gap):
+    """_f9s carried on from its first four phases (both hooks on the row, R 0.15 m behind its end):
+    R slid on, loaded, to the row's end while L is free, then L swung across. _f9s's catch at 0.90
+    landed 0.5 mm inside the far rung's seat, 1.09 m hook to hook: MJX lost it from most starts.
+    From the end R gives back the 0.11 m, so the catch is asked 0.10 m inside. The swing and the
+    catch are one phase judged on the hold: 'over' asked the hook to hang 45 mm above the far rung
+    for 0.5 s at the swing's end, and from there 3 searches of 4 could not seat it"""
+    e = HY + 0.21
+    y0 = e + gap
+    yL = y0 + S + 0.03 + 0.31
+    return [('R', 'rung_g0', e - 0.077, e - S, 'slide', 5.0, 5, 0.5, False),
+            ('L', 'rung_g1', y0 + 0.10, y0 + 0.45, 'seat', 10.0, 10, 0.8),
+            ('L', 'rung_g1', y0 + 0.18, y0 + 0.37, 'slide', 5.0, 5, 0.5),
+            ('R', 'rung_g1', y0 + S, y0 + 0.21, 'over', 5.0, 5, 0.5), ('R', 'rung_g1', y0 + S, y0 + 0.21, 'seat', 2.0, 2, 0.8),
+            ('L', 'rung_g1', yL - 0.10, yL + 0.07, 'over', 2.0, 2, 0.4), ('L', 'rung_g1', yL - 0.10, yL + 0.07, 'seat', 1.5, 2, 0.8)]
+
+
 def mirrored(phases):
     """phases the other way round: the hands swapped, each band turned over"""
     return [('R' if p[0] == 'L' else 'L', p[1], -p[3], -p[2]) + tuple(p[4:]) for p in phases]
@@ -120,6 +137,8 @@ for g in (0.55, 0.60):
 for g in (0.70, 0.80, 0.90):
     PLANS[f'f9sg{round(g * 100)}'] = (9, g, 1, 1, _f9s(g))
     PLANS[f'f9msg{round(g * 100)}'] = (9, g, -1, 1, mirrored(_f9s(g)))
+PLANS['f9tg90'] = (9, 0.90, 1, 1, _f9t(0.90))            # --start: f9sg90's first four phases
+PLANS['f9mtg90'] = (9, 0.90, -1, 1, mirrored(_f9t(0.90)))
 
 # rl/fixtures/<file>.npz <- how it was made (searches on the robot as of 2026-10; their chains in
 # out/climb_demo/ on the machine that ran them)
@@ -139,7 +158,11 @@ PROVENANCE = {
     'climb_f9_g55': "search f9g55", 'climb_f9m_g55': "search f9mg55",
     'climb_f9_g60': "search f9g60", 'climb_f9m_g60': "mirror climb_f9_g60",
     **{f'climb_f9{m}_g{g}': f"search f9{m}sg{g} --init lesson 9's swing on the full robot (the other way: "
-                            f"its mirror), no hill weight" for g in (70, 80, 90) for m in ('', 'm')},
+                            f"its mirror), no hill weight" for g in (70, 80) for m in ('', 'm')},
+    'climb_f9_g90': "search f9tg90 --start <climb_f9_g90's first 4 phases> --init <f9tg90 with 'over' + 'seat'>, "
+                    "seed 42 of 3 (MJX open loop from every other start 94/94; the old 15 of 32 a second apart)",
+    'climb_f9m_g90': "search f9mtg90 --start <climb_f9m_g90's first 4 phases> --init <climb_f9_g90 mirrored>, "
+                     "seed 55 of 3 (93/93; the old failed from every start before its catch)",
     'climb_f4_r20': "search f4r20 --hill 2, seed 0",
     'climb_f4_r30': "search f4r30 --hill 2 --init f4r20, seed 1",
     'climb_f4_r40': "search f4r40 --hill 2 --init f4r30, seed 2",

@@ -285,6 +285,8 @@ class Curriculum(BaseCallback):
         super().__init__()
         self.enabled = enabled
         self.ref = rsi.load()
+        self.ref_sig, self.ref_climbs = (None, None) if self.ref is None else (
+            rsi.signature(self.ref), rsi.climb_signatures(self.ref))
         self.taught = set() if self.ref is None else {int(f) for f in self.ref['climb_family']}
         self.lag = episode_steps(W.TIMEOUT)
         self.lag_start = {f: episode_steps(rsi.timeout(self.ref, f)) for f in self.taught}
@@ -310,8 +312,11 @@ class Curriculum(BaseCallback):
         self.gate = {int(f): list(v) for f, v in c.get('gate', {}).items() if keep(f)}
         self.lens = {int(f): list(v) for f, v in c.get('lens', {}).items() if keep(f)}
         self.probes = {k: list(v) for k, v in c.get('probes', {}).items() if keep(k)}
-        same = self.ref is not None and c.get('rsi') == rsi.signature(self.ref)
-        self.starts = {int(j): list(v) for j, v in c.get('starts', {}).items()} if same else {}
+        # books are by start number: those of the climbs ahead of the first one the fixture changed
+        old = (self.ref_climbs if c.get('rsi') == self.ref_sig else
+               c.get('rsi_climbs') or rsi.history().get(c.get('rsi')))
+        hold = set() if self.ref is None or not old else set(rsi.kept(self.ref, old).tolist())
+        self.starts = {int(j): list(v) for j, v in c.get('starts', {}).items() if int(j) in hold}
         self.cleared = {f for f in c.get('cleared', []) if keep(f)}
         self.entered = {int(f): v for f, v in c.get('entered', {}).items()}
         self.moved = {int(f): v for f, v in c.get('moved', {}).items()}        # its last progress
@@ -329,7 +334,7 @@ class Curriculum(BaseCallback):
             moved={str(f): v for f, v in self.moved.items()},
             best_prog={str(f): v for f, v in self.best_prog.items()},
             spec={str(f): W.spec(f) for f in W.FAMILIES},
-            rsi=None if self.ref is None else rsi.signature(self.ref))}
+            rsi=self.ref_sig, rsi_climbs=self.ref_climbs)}
 
     @staticmethod
     def _push(books, key, x, keep):
@@ -1085,6 +1090,12 @@ def self_check():
         j = int(c.ref['start'][0])
         assert c.starts.get(j) == [True] * 3 and f not in c.gate, c.starts
         assert Curriculum(json.loads(json.dumps(c.state()))).starts == c.starts, "the start books' round trip"
+        st = json.loads(json.dumps(c.state()))       # the fixture's last climb replaced since
+        last = int(c.ref['start'][-1])
+        st['curriculum']['starts'][str(last)] = [True]
+        st['curriculum']['rsi'], st['curriculum']['rsi_climbs'][-1] = 'another', 'changed'
+        k = Curriculum(st).starts
+        assert k.get(j) == [True] * 3 and last not in k, "books of an unchanged climb dropped, or a changed one's kept"
     guard_check()
     clone_check()
     check_robot({'robot': robot_stamp()})
