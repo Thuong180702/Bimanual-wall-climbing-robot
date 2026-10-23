@@ -252,10 +252,12 @@ def check_stall():
     b = Batch(3, bank=3)
     b.set_bank([dict(rsi.start_wall(z, c[lab], rng), d0_row=L + r) for lab, r in starts])
     b.state, _ = b._reset(b.task.tables, jp.asarray(L + np.arange(3)), jax.random.split(jax.random.PRNGKey(0), 3))
-    end, n = [None] * 3, int((r9[-1] - go) + 2 * rsi.MARGIN + 1)
+    # 3 s past the climb's last row for its success: 0.24 s past it, a new box's 3090 ended
+    # nothing where the old one and the CPU succeed at 30.7 s (2026-10-23)
+    end, n = [None] * 3, int((r9[-1] - go) + 3.0 / ct.CONTROL_DT)
     for k in range(max(n, int((rsi.STALL_S + 1.0) / ct.CONTROL_DT))):
         a = np.zeros((3, 17), np.float32)
-        a[2] = z['action'][min(go + k, int(r9[-1]))] if go + k <= r9[-1] else 0.0
+        a[2] = z['action'][min(go + k, int(r9[-1]))]     # past its rows, its last step held
         _, _, _, term, trunc, info = b.step(a)
         for i in range(3):
             if end[i] is None and bool(np.asarray(term | trunc)[i]):
