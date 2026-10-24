@@ -3,6 +3,10 @@
 
 # training runs, checkpoints, rendered videos and stills -- all reproducible
 out/
+# a run packed on a box (rl/gpu_run.sh), carried in the repo root: never an object. Untracked,
+# gpu14.tgz was hashed by something on its next box, again and again, and each copy cut off
+# halfway left a 135 MB tmp_obj in .git/objects -- 168 of them filled the 32 GB disk (2026-10-24)
+*.tgz
 
 # generated from scene.xml by `python -m rl.lessons`, so it would only go stale here
 urdf/lessons/
