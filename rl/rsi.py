@@ -299,9 +299,16 @@ def cloned(books, ref, levels):
     """the startable rows of the starts in each climb's frontier window not yet passed: where
     the policy learns its climbs now (rl.train_ppo.Clone). Every start not passed was too many:
     a family just let in has all of them -- 2786 rows, 2.8 sigma off the policy's mean -- and
-    in 12M steps cloning them took four families down 20-90 points to a rollback"""
+    in 12M steps cloning them took four families down 20-90 points to a rollback.
+    ...and every start after a frontier not passed either: there a window start fails on the
+    climb's later steps, and gpu14's lesson 8 at 0.55 sat 100M steps at 7.8 s with the back-rung
+    swing's starts (8.6-11.0 s) at 45-65 %, under PASS but over FAIL, never cloned (2026-10-24)"""
     ok = allowed(ref, levels)
     hot, learnt = _window(books, ref, ok)
+    sc = ref['start_climb']
+    for c, f in frontier(books, ref, ok).items():
+        if f is not None:
+            hot |= (sc[ok] == c) & (ok > f)
     return np.nonzero(np.isin(ref['start'], ok[hot & ~learnt]) & ref['startable'])[0]
 
 
@@ -475,6 +482,13 @@ def check(z):
     rec = window(books, z, {3: first_levels()[3]})[label(z, 0)]
     t = round((int(ok[-3]) - int(ok[0])) * EVERY * 0.04, 2)
     assert [t, sum(books[int(ok[-3])]), START_WINDOW] in rec and all(n <= START_WINDOW for *_, n in rec), rec
+    # cloned: past the window, the starts not passed (0.6) still are; the passed ones never
+    k = len(ok) // 2
+    books = {int(j): [True] * START_WINDOW for j in ok}
+    books[int(ok[k])] = [False] * START_WINDOW
+    books[int(ok[-1])] = [True] * 12 + [False] * 8
+    cl = set(z['start'][cloned(books, z, {3: first_levels()[3]})].tolist())
+    assert int(ok[-1]) in cl and int(ok[k]) in cl and int(ok[0]) not in cl and int(ok[-2]) not in cl, cl
     print("rsi: OK")
 
 
