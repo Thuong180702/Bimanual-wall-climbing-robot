@@ -98,6 +98,12 @@ SEEN = 0.08           # m: the farther hook's estimate off where it is, at most,
                       # begins at a row, on every one of SEEN_DRAWS sensor-noise draws (`_seen`):
 SEEN_DRAWS = 16       # the error's tail is long: on one draw, or the worst of 4, rows of f8 0.70
                       # read 116-125 mm on the next
+DART = (8,)           # families whose found climbs are also run with the policy's noise (`tracked`):
+DART_SIGMA = 0.2      # each control step's action given this noise, the climb's setpoints still
+DART_DRAWS = 8        # tracked; the runs that succeed are cloned too, each state labelled with the
+                      # tracking step (DART, Laskey et al. 2017). Cloned only on the climb's own
+                      # states, gpu14's lesson-8 policy matched it there to 0.11 sigma and finished
+                      # from them ~50 %, where the noisy tracking itself finishes 55-80 % (2026-10-24)
 HILL_MAX = 0.05       # m the live potential may rise above its lowest so far along a climb
 HILL_SWING = 5.0      # ...and family 9's swings past STATIC9: the pendulum is the hill (+1.6 m
 STATIC9 = 0.65        # and +2.5 m at lesson 9's), paid back within ~6 s, the climb ends +16.4
@@ -386,6 +392,42 @@ def replay(lay, path):
     return out, won, hill
 
 
+def tracked(lay, path, sigma, rng):
+    """a found climb run through ClimbTask.step with `sigma` of noise on every action, each step
+    the one that brings the setpoints back onto the climb's -> (states, each with that step
+    as its action, success step or None). sigma 0 is `replay`"""
+    from .climb_task import ClimbTask, ACT_SCALE
+    from .mjx_scene import c_scene
+    xml, spec = c_scene(dict(lay, timeout=90.0))
+    try:
+        t = ClimbTask(spec=spec, xml=xml, visual=False)
+        t.rng = np.random.default_rng(0)
+        t.reset()
+    finally:
+        os.remove(xml)
+    z = np.load(path)
+    d, out = t.env.data, []
+    tgt = np.vstack([z['ctrl'], np.repeat(z['ctrl'][-1:], int(3.0 / 0.04), 0)])   # then held 3 s
+    for c in tgt:
+        a = np.clip((c - t.ctrl) / ACT_SCALE, -1, 1)
+        out.append(dict(qpos=d.qpos.copy(), qvel=d.qvel.copy(), ctrl=t.ctrl.copy(),
+                        grabs=t.grabs.copy(), action=a))
+        _, _, te, tr, info = t.step(a + sigma * rng.standard_normal(len(a)))
+        if te or tr:
+            return out, (len(out) if info.get('reason') == 'success' else None)
+    return out, None
+
+
+def dart_view(z):
+    """the fixture's DART rows as a fixture of their own (one climb a run), for an
+    rl.mjx_task.MjxClimb to begin episodes from: what rl.train_ppo.Clone observes them with"""
+    first = np.unique(z['dart_seq'], return_index=True)[1]
+    c = z['climb'][z['dart_row'][first]]
+    return dict(qpos=z['dart_qpos'], qvel=z['dart_qvel'], ctrl=z['dart_ctrl'], grabs=z['dart_grabs'],
+                climb=z['dart_seq'], **{k: z[k][c] for k in ('climb_family', 'climb_height', 'climb_side',
+                                                            'climb_rows', 'climb_length')})
+
+
 def _seen(z):
     """each row's farther hook from its estimate at an episode's first sense there, on its
     climb's wall, the worst of SEEN_DRAWS noise draws (rl.mjx_task's start: the estimator from
@@ -414,7 +456,8 @@ def _seen(z):
 
 def build():
     from .climb_task import CONTROL_DT
-    rows, climbs, j0 = [], [], 0
+    rows, climbs, j0, dart = [], [], 0, []
+    rng = np.random.default_rng(0)
     for f, h, side, nrows, name in REFS:
         path = os.path.join(HERE, 'fixtures', name + '.npz')
         z = np.load(path)
@@ -431,6 +474,16 @@ def build():
                            action=z['target'][k]) for k in range(won)]
             how = f"taught ({z['run']})"
         keep = states[:won - MARGIN]
+        if found and f in DART:        # each successful noisy run up to MARGIN before its success,
+            ok = 0                     # its rows beside the climb's own at the same step
+            for _ in range(DART_DRAWS):
+                st, w = tracked(ref_wall(f, h, side or 1, nrows), path, DART_SIGMA, rng)
+                if w:
+                    seq = 1 + max([r['dart_seq'] for r in dart], default=-1)
+                    dart += [dict({'dart_' + key: v for key, v in row.items()}, dart_row=len(rows) + k, dart_seq=seq)
+                             for k, row in enumerate(st[:min(w - MARGIN, len(keep))])]
+                    ok += 1
+            how += f"; {ok}/{DART_DRAWS} runs with noise {DART_SIGMA:g} succeed (DART rows)"
         rows += [dict(st, start=j0 + k // EVERY, climb=len(climbs)) for k, st in enumerate(keep)]
         climbs.append((f, h, side, nrows, found, won * CONTROL_DT))
         j0 = rows[-1]['start'] + 1
@@ -439,6 +492,8 @@ def build():
     z['start_climb'] = z['climb'][np.unique(z['start'], return_index=True)[1]]
     for i, k in enumerate(('family', 'height', 'side', 'rows', 'found', 'length')):
         z['climb_' + k] = np.array([c[i] for c in climbs])
+    if dart:
+        z.update({k: np.array([r[k] for r in dart]) for k in dart[0]})
     # on disk first: _seen's batch (rl.mjx_task's tables) begins its episodes from the FILE's rows
     z['startable'] = np.ones(len(rows), bool)
     np.savez_compressed(FILE, **z)
@@ -466,6 +521,20 @@ def check(z):
         err = np.abs(z['ctrl'][j[1:]] - z['ctrl'][j[:-1]] - ACT_SCALE * z['action'][j[:-1]]).max()
         assert err < 1e-9, f"climb {label(z, c)}: its actions are not its rows' steps ({err:g})"
     assert np.isfinite(z['action']).all() and np.abs(z['action']).max() <= 1.0, "an action outside [-1, 1]"
+    if 'dart_row' in z:                # each noisy run: one climb's, step beside step, of a DART family
+        n = len(z['dart_row'])
+        assert all(len(z[k]) == n for k in z if k.startswith('dart_')), "DART arrays of unequal length"
+        assert np.isin(z['climb_family'][z['climb'][z['dart_row']]], DART).all() and np.abs(z['dart_action']).max() <= 1.0
+        for s in np.unique(z['dart_seq']):
+            r = z['dart_row'][z['dart_seq'] == s]
+            assert (np.diff(r) == 1).all() and z['climb'][r[0]] == z['climb'][r[-1]], f"DART run {s} is not one climb's"
+        c = int(z['climb'][z['dart_row'][0]])           # without noise, tracking is the climb itself
+        j = np.nonzero(z['climb'] == c)[0]
+        name = next(nm for f, h, sd, r, nm in REFS if (f, round(h, 3), sd, r) == (
+            int(z['climb_family'][c]), round(float(z['climb_height'][c]), 3), int(z['climb_side'][c]), int(z['climb_rows'][c])))
+        st, w = tracked(climb_wall(z, c), os.path.join(HERE, 'fixtures', name + '.npz'), 0.0, np.random.default_rng(0))
+        assert w and np.allclose([s['qpos'] for s in st[:len(j)]], z['qpos'][j], atol=1e-9) and \
+            np.allclose([s['action'] for s in st[:len(j)]], z['action'][j], atol=1e-9), "tracked(0) is not the climb"
     # the frontier logic on a toy book: every start passed but one, which holds the window
     ok = np.nonzero(z['start_climb'] == 0)[0]
     books = {int(j): [True] * START_WINDOW for j in ok}

@@ -597,7 +597,8 @@ class Clone(BaseCallback):
         self.act = None if self.ref is None else self.ref['action'].astype(np.float32)
         self.obs = None          # raw observations [row, CLONE_DRAWS, dim] of the climbs...
         self.seen = set()        # ...observed so far, each when first wanted
-        self.batch = None
+        self.dact = None         # [row, CLONE_DRAWS, act]: each draw's own action, once a climb has DART rows
+        self.batch = self.dbatch = None
         self.rows = np.zeros(0, int)
         self.rng = np.random.default_rng(0)
         self.hooked = None
@@ -608,27 +609,48 @@ class Clone(BaseCallback):
             return np.zeros(0, int)
         return rsi.cloned(self.cur.starts, self.ref, self.cur.levels_in())
 
-    def observe(self, climb):
-        """(its rows, [rows, CLONE_DRAWS, dim]): each row of climb `climb` observed as an episode
-        begun there observes it (its own sensor noise each draw), on JAX MJX -- a reset needs
-        no physics, and this batch never steps"""
+    def _reset_obs(self, b, ref, js, climb_of, key):
+        """the first observation of an episode begun at each of `ref`'s rows `js` (its own sensor
+        noise each) on batch `b`, whose tables hold `ref`'s rows"""
         import jax
         import jax.numpy as jp
-        from . import mjx_task as mt
-        if self.batch is None:
-            self.batch = mt.Batch(CLONE_CHUNK, bank=CLONE_CHUNK, impl='jax')
-        b, L = self.batch, len(mt.LESSON_KEYS)
-        rows = np.nonzero(self.ref['climb'] == climb)[0]
-        js = np.repeat(rows, CLONE_DRAWS)
-        key, out = jax.random.PRNGKey(int(rows[0])), []
+        L, out = len(self.mt.LESSON_KEYS), []
         for i in range(0, len(js), CLONE_CHUNK):
             part = js[i:i + CLONE_CHUNK]
             pad = np.r_[part, np.full(CLONE_CHUNK - len(part), part[-1])]
-            b.set_bank([dict(rsi.start_wall(self.ref, climb, self.rng), d0_row=L + int(j)) for j in pad])
+            b.set_bank([dict(rsi.start_wall(ref, int(climb_of[j]), self.rng), d0_row=L + int(j)) for j in pad])
             key, k = jax.random.split(key)
             _, o = b._reset(b.task.tables, jp.asarray(L + np.arange(CLONE_CHUNK)), jax.random.split(k, CLONE_CHUNK))
             out.append(np.asarray(o)[:len(part)])
-        return rows, np.concatenate(out).reshape(len(rows), CLONE_DRAWS, -1)
+        return np.concatenate(out)
+
+    def observe(self, climb):
+        """(its rows, [rows, CLONE_DRAWS, dim], [rows, CLONE_DRAWS, act] or None): each row of climb
+        `climb` observed as an episode begun there observes it (its own sensor noise each draw), on
+        JAX MJX -- a reset needs no physics, and this batch never steps. A climb with DART rows
+        (rl.rsi.tracked) has half its draws at them instead, each with its own tracking step"""
+        import jax
+        from . import mjx_task as mt
+        self.mt = mt
+        if self.batch is None:
+            self.batch = mt.Batch(CLONE_CHUNK, bank=CLONE_CHUNK, impl='jax')
+        ref, rows = self.ref, np.nonzero(self.ref['climb'] == climb)[0]
+        obs = self._reset_obs(self.batch, ref, np.repeat(rows, CLONE_DRAWS), ref['climb'],
+                              jax.random.PRNGKey(int(rows[0]))).reshape(len(rows), CLONE_DRAWS, -1)
+        dr = np.nonzero(np.isin(ref['dart_row'], rows))[0] if 'dart_row' in ref else []
+        if not len(dr):
+            return rows, obs, None
+        if self.dbatch is None:
+            self.dview = rsi.dart_view(ref)
+            self.dbatch = mt.Batch(CLONE_CHUNK, task=mt.MjxClimb(CLONE_CHUNK, 'jax', ref=self.dview))
+        dobs = self._reset_obs(self.dbatch, self.dview, dr, self.dview['climb'], jax.random.PRNGKey(int(dr[0]) + 7))
+        act = np.repeat(ref['action'][rows, None], CLONE_DRAWS, 1).astype(np.float32)
+        for r, row in enumerate(rows):
+            mine = np.nonzero(ref['dart_row'][dr] == row)[0]
+            for d in range(CLONE_DRAWS // 2, CLONE_DRAWS) if len(mine) else ():
+                k = mine[d % len(mine)]
+                obs[r, d], act[r, d] = dobs[k], ref['dart_action'][dr[k]]
+        return rows, obs, act
 
     def _on_rollout_start(self):
         if self.log:                     # the update just done, into its progress.jsonl line
@@ -639,10 +661,14 @@ class Clone(BaseCallback):
             self.log.clear()
         rows = self.wanted()
         for climb in set(self.ref['climb'][rows].tolist()) - self.seen if len(rows) else ():
-            j, o = self.observe(climb)
+            j, o, a = self.observe(climb)
             if self.obs is None:
                 self.obs = np.zeros((len(self.ref['start']), CLONE_DRAWS, o.shape[-1]), np.float32)
             self.obs[j] = o
+            if a is not None:
+                if self.dact is None:
+                    self.dact = np.repeat(self.act[:, None], CLONE_DRAWS, 1)
+                self.dact[j] = a
             self.seen.add(climb)
         self.rows = rows
         opt = self.model.policy.optimizer
@@ -662,8 +688,8 @@ class Clone(BaseCallback):
         pol = self.model.policy
         ps = [p for m in (pol.pi_features_extractor, pol.mlp_extractor.policy_net, pol.action_net)
               for p in m.parameters() if p.grad is not None]
-        j = self.rng.choice(self.rows, CLONE_BATCH)
-        obs, act = self.obs[j, self.rng.integers(CLONE_DRAWS, size=CLONE_BATCH)], self.act[j]
+        j, d = self.rng.choice(self.rows, CLONE_BATCH), self.rng.integers(CLONE_DRAWS, size=CLONE_BATCH)
+        obs, act = self.obs[j, d], (self.act[j] if self.dact is None else self.dact[j, d])
         x = torch.as_tensor(self.model.get_env().normalize_obs(obs), dtype=torch.float32, device=pol.device)
         y = torch.as_tensor(act, device=pol.device)
         with torch.enable_grad():

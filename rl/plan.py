@@ -24,6 +24,10 @@ so a posture that only passes through its target does not count. Options:
     --start P   carry on from that chain's end (a climb found in parts)
     --ik i:F    phase i's keyframes on the way to the pose in F (a 6-number base, then the
                 joints in rl.estimator.JOINTS' order), found by least squares (`ik`)
+    --noise S   each candidate judged by its mean over --draws runs with the policy's noise S
+                on every setpoint move, the keyframes still tracked, each phase begun where the
+                ones before it ended noisy: gpu14's lesson-8 climbs, found noise-free, held 22-32
+                of 40 such runs, and the policy learnt them no further than ~50 % (2026-10-24)
 
 FIXTURE: a chain as rl.rsi reads a found climb, its first setpoints and one row of them a
 control step. MIRROR: a found climb y -> -y -- the simplified robot is its own mirror image
@@ -157,9 +161,11 @@ PROVENANCE = {
     'climb_f6_r40': "search f6r40 --init f6r30", 'climb_f6m_r40': "mirror climb_f6_r40",
     'climb_f7_s60': "record gpu10 (215M)", 'climb_f7m_s60': "record gpu10 (215M)",
     'climb_f8_b35': "search f8b35 --turn 2 --ik 4:<least squares, the left hook over the back rung turned round>",
-    # each the faster search of the climb before it: f8b60 (--ik as 0.35), f8b50/55/70 (--init f8b60)
-    **{f'climb_f8_b{b}': f"search f8fb{b} --turn 2 --hill 2 --init f8b{b}, seed {s}"
-       for b, s in ((50, 61), (55, 61), (60, 61), (70, 63))},
+    # each searched again under the policy's noise from the faster one before it (seed s - 100: --init
+    # f8b{b} there, f8b60 found --ik as 0.35 and f8b50/55/70 --init f8b60). Tracked with noise 0.2 in C
+    # they finish 60/60 (0.70: 59/60) against 26-55/60 before (2026-10-24)
+    **{f'climb_f8_b{b}': f"search f8fb{b} --turn 2 --hill 2 --init f8fb{b}_s{s - 100} --noise 0.2 --draws 8 "
+                         f"--iters 40, seed {s}" for b, s in ((50, 161), (55, 161), (60, 161), (70, 163))},
     'climb_f9_g55': "search f9g55", 'climb_f9m_g55': "search f9mg55",
     'climb_f9_g60': "search f9g60", 'climb_f9m_g60': "mirror climb_f9_g60",
     **{f'climb_f9{m}_g{g}': f"search f9{m}sg{g} --init lesson 9's swing on the full robot (the other way: "
@@ -233,9 +239,12 @@ def _objective(i):
         (0.0 if ok else 0.3) + 0.2 * v
 
 
-def rollout(theta, job, record=False):
+def rollout(theta, job, record=False, seed=None):
+    """one phase from `start`; with `seed`, every control step's setpoint move is given the
+    policy's noise (--noise, of an action in [-1, 1]) and the keyframes still tracked"""
     from .climb_task import ACT_SCALE
-    i, start, ctrl0, cmin = job
+    i, start, ctrl0, cmin = job[:4]
+    rng = None if seed is None else np.random.default_rng(seed)
     hand, _, _, _, mode, T, K, hold = G['phases'][i][:8]
     anchor = hand if mode == 'slide' else ('R' if hand == 'L' else 'L')
     t, m, d, MOV = G['t'], G['m'], G['d'], G['MOV']
@@ -258,11 +267,15 @@ def rollout(theta, job, record=False):
     cmin = min(cmin, float(t._live().sum()))
     for k in range(n + nh):
         tk = (k + 1) * dt
+        was = ctrl.copy()
         tgt = np.array([np.interp(min(tk, T), times, pts[:, j]) for j in range(15)])
         ctrl[MOV] += np.clip(tgt - ctrl[MOV], -ACT_SCALE, ACT_SCALE)
         want = (OPEN if tk >= tf else SHUT) if mode in ('over', 'slide') else (SHUT if tk >= tf else ctrl[fm])
         ctrl[fm] += np.clip(want - ctrl[fm], -ACT_SCALE, ACT_SCALE)
         ctrl[fa] += np.clip(SHUT - ctrl[fa], -ACT_SCALE, ACT_SCALE)
+        if rng is not None:
+            a = (ctrl - was) / ACT_SCALE + G['opts']['noise'] * rng.standard_normal(len(ctrl))
+            ctrl = was + ACT_SCALE * np.clip(a, -1.0, 1.0)
         ctrl = np.clip(ctrl, lo, hi)
         d.ctrl[:] = ctrl
         mujoco.mj_step(m, d, SUB)
@@ -281,8 +294,16 @@ def rollout(theta, job, record=False):
 
 
 def _eval(args):
-    theta, job = args
-    return rollout(theta, job)[0]
+    """a candidate's objective: noise-free, and with --noise plus the mean over the job's bank of
+    phase starts (the previous phases run noisy), each draw its own noise. The noise-free run
+    stays in: it is the climb the fixture records, and a 2-iteration test search traded it away"""
+    theta, job, it = args
+    f = rollout(theta, job)[0]
+    if not G['opts']['noise']:
+        return f
+    i, _, _, cmin, bank = job
+    return f + float(np.mean([rollout(theta, (i, s, c, cmin), seed=it * 1000 + k)[0]
+                              for k, (s, c) in enumerate(bank)]))
 
 
 def cem(job, mean, sigma, iters, pool, pop=120, elite=12, seed=0):
@@ -292,7 +313,11 @@ def cem(job, mean, sigma, iters, pool, pop=120, elite=12, seed=0):
     for it in range(iters):
         X = mean + sigma * rng.standard_normal((pop, len(mean)))
         X[0] = best[1]
-        f = np.array(pool.map(_eval, [(x, job) for x in X]))
+        # one iteration's candidates meet the same noise (common random numbers); the best is
+        # judged again each iteration on new noise, so a lucky draw does not keep it
+        f = np.array(pool.map(_eval, [(x, job, seed * 100_003 + it) for x in X]))
+        if G['opts']['noise']:
+            best = (f[0], best[1])
         idx = np.argsort(f)[:elite]
         if f[idx[0]] < best[0]:
             best = (float(f[idx[0]]), X[idx[0]].copy())
@@ -325,6 +350,7 @@ def search(plan, seed, iters, workers, opts):
     ik = dict(kv.split(':') for kv in opts['ik'].split(',')) if opts['ik'] else {}
     cmin = float(G['t']._live().sum())
     MOV = G['MOV']
+    bank = [(start, ctrl.copy())] * opts['draws']      # --noise: where each phase may begin
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, f"{plan}_s{seed}.pkl")
     with Pool(workers, initializer=_init, initargs=(plan, opts)) as pool:
@@ -342,15 +368,23 @@ def search(plan, seed, iters, workers, opts):
             if init and i < len(init['phases']) and len(init['phases'][i]['theta']) == len(mean):
                 mean = np.array(init['phases'][i]['theta'], float)          # searched near that phase
                 sigma = np.concatenate([np.full(K * 15, 0.5 * sig), [0.15]])
-            job = (i, start, ctrl, cmin)
+            job = (i, start, ctrl, cmin, bank)
             f, theta = cem(job, mean, sigma, iters, pool, seed=seed + i)
             f2, log, ctrl = rollout(theta, job, record=True)
-            cmin = G['cmin']
+            cmin0, cmin, hill = cmin, G['cmin'], G['hill']
             start = _state()
             t = G['t']
             print(f"phase {i} {hand} {mode} {rung} [{lo:.3f}, {hi:.3f}]: objective {f2:.3f}; holding "
-                  f"{t._holding()}; live hill {G['hill'] * 1000:.0f} mm", flush=True)
-            chain['phases'].append(dict(phase=i, spec=ph, theta=theta, objective=f2, ctrl_log=log, hill=G['hill']))
+                  f"{t._holding()}; live hill {hill * 1000:.0f} mm", flush=True)
+            if opts['noise']:                  # the next phase's starts: this one run noisy from each
+                nxt, solved = [], 0
+                for k, (s, c) in enumerate(bank):
+                    fk, _, ck = rollout(theta, (i, s, c, cmin0), seed=10_000_019 + 1000 * i + k)
+                    solved += fk < 0.05
+                    nxt.append((_state(), ck.copy()) if fk < 20.0 else (start, ctrl.copy()))
+                bank = nxt
+                print(f"  phase {i} under noise {opts['noise']:g}: {solved}/{len(bank)} draws solved", flush=True)
+            chain['phases'].append(dict(phase=i, spec=ph, theta=theta, objective=f2, ctrl_log=log, hill=hill))
             pickle.dump(chain, open(path, 'wb'))
             if f2 > 0.05:
                 print(f"phase {i} not solved (objective {f2:.3f}); stopping here")
@@ -453,6 +487,11 @@ def main():
     s.add_argument('--init', default=None)
     s.add_argument('--start', default=None)
     s.add_argument('--ik', default=None)
+    s.add_argument('--noise', type=float, default=0.0,
+                   help="the policy's noise on every setpoint move (of an action in [-1, 1]): each "
+                        "candidate judged by its mean over --draws noisy runs, each phase begun where "
+                        "the phases before it ended noisy")
+    s.add_argument('--draws', type=int, default=8)
     s = sub.add_parser('fixture')
     s.add_argument('chain')
     s.add_argument('name')
@@ -470,7 +509,8 @@ def main():
     a = ap.parse_args()
     if a.cmd == 'search':
         ok = search(a.plan, a.seed, a.iters, a.workers,
-                    dict(sep=a.sep, hill=a.hill, turn=a.turn, init=a.init, start=a.start, ik=a.ik))
+                    dict(sep=a.sep, hill=a.hill, turn=a.turn, init=a.init, start=a.start, ik=a.ik,
+                         noise=a.noise, draws=a.draws))
         sys.exit(0 if ok else 1)
     if a.cmd == 'fixture':
         fixture(a.chain, a.name)

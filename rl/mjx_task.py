@@ -230,9 +230,10 @@ class MjxClimb:
     """the task over every lesson, one model. Pure functions of (tables, state) for
     one env; `Batch` vmaps them."""
 
-    def __init__(self, bank=0, impl='jax'):
+    def __init__(self, bank=0, impl='jax', ref=None):
         self.bank = bank           # generated-wall rows after the lessons' (rl.walls)
         self.impl = impl           # what steps the physics: 'jax', or 'warp' (`step_batch`)
+        self.ref = ref             # the starts' rows: rl.rsi's fixture, or another set's (rsi.dart_view)
         self.mc = scene_model()
         m = self.mc
         self.mx = mjx.put_model(m, impl='jax')
@@ -340,7 +341,7 @@ class MjxClimb:
         tau_idle = jax.vmap(lambda d: jp.abs(d.sensordata[self.s_tau]).sum())(d0)
         fight_idle = jax.vmap(lambda d: self._internal(d, self._sensors(d)))(d0)
         grabs0 = jp.zeros((L, 2), jp.int32)
-        ref = rsi.load()
+        ref = rsi.load() if self.ref is None else self.ref
         if ref is not None:
             # rl.rsi's starts after the lessons' hangs (a wall's d0_row picks one): each
             # state forwarded on the wall it was found on, its clock at 0; the effort and
