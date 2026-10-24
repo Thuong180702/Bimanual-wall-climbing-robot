@@ -28,13 +28,13 @@ Left: the full robot in MuJoCo. Right: the map its four Livox Mid-360 lidars bui
 climbs, simulated point by point along the sensor's own scan pattern. More, and how they
 were made, in [`demo/`](demo/README.md).
 
-| step up a tier (lesson 6) | round the corner (lesson 7) |
+| climb down rows standing in (lesson 4) | step up a tier (lesson 6) |
 |---|---|
-| [![lesson 6](demo/preview/lesson06_step_up.gif)](demo/lesson06_step_up.mp4) | [![lesson 7](demo/preview/lesson07_wall_corner.gif)](demo/lesson07_wall_corner.mp4) |
+| [![lesson 4](demo/preview/lesson04_climb_down.gif)](demo/lesson04_climb_down.mp4) | [![lesson 6](demo/preview/lesson06_step_up.gif)](demo/lesson06_step_up.mp4) |
 
-| climb up rows standing out (lesson 3) |
+| swing across a 0.90 m gap (lesson 9) |
 |---|
-| [![lesson 3](demo/preview/lesson03_climb_up_mirror.gif)](demo/lesson03_climb_up_mirror.mp4) |
+| [![lesson 9](demo/preview/lesson09_swing_gap.gif)](demo/lesson09_swing_gap.mp4) |
 
 ## The benchmark
 
@@ -50,8 +50,9 @@ Nine lessons, one skill each, scored on the full robot both ways round
 Training draws procedurally generated walls, one family per lesson, grown by automatic
 domain randomization, with reference climbs (CEM) where PPO's noise alone never finds the
 move. Status (v0.1.0): the pipeline is complete and checked end to end; the run that
-scores it from scratch is next. The demo policy is an earlier run's: lessons 1, 5, 6, 7
-4/4 on the full robot, 2 and 3 not yet reliable, 4 and 9 untrained.
+scores it from scratch is next. The demo policy (gpu14, 2.2B steps) climbs every lesson's
+hardest wall but lesson 8's on the full robot, 1 to 8 of 8 seeds a lesson; lesson 8 up to
+0.50 m of its 0.70 m.
 
 ## Real parts, not blocks
 
