@@ -197,11 +197,11 @@ class MjxVecEnv(VecEnv):
     """one `rl.mjx_task.Batch` as SB3's VecEnv, its walls from a bank (`set_bank`). An
     episode's end reports its reason, family, probe, start, steps and distance"""
 
-    def __init__(self, n, seed=0, impl='jax', dr=False):
+    def __init__(self, n, seed=0, impl='jax', dr=False, ablate=()):
         from . import mjx_task
         self.mt = mjx_task
         # fit: collide only what the walls in play need; impl: MJX's JAX or Warp backend
-        self.batch = mjx_task.Batch(n, seed, bank=BANK, fit=True, impl=impl, dr=dr)
+        self.batch = mjx_task.Batch(n, seed, bank=BANK, fit=True, impl=impl, dr=dr, ablate=ablate)
         self.capped = self.substeps = 0  # substeps with the solver's contact cap full, of all
         dim = np.asarray(self.batch.reset()).shape[1]
         super().__init__(n, gym.spaces.Box(-np.inf, np.inf, (dim,), np.float32),
@@ -279,11 +279,14 @@ class Curriculum(BaseCallback):
 
     enabled=False is the no-curriculum ablation: every family, every level at its last, from
     the first step, and no reference climbs -- plain domain randomization over the same walls.
+    rsi_on: reference starts drawn (default: as `enabled`); --ablate curriculum keeps them
+    with the curriculum off, --ablate rsi drops them with it on.
     """
 
-    def __init__(self, state=None, enabled=True, seed=0):
+    def __init__(self, state=None, enabled=True, seed=0, rsi_on=None):
         super().__init__()
         self.enabled = enabled
+        self.rsi_on = enabled if rsi_on is None else rsi_on
         self.ref = rsi.load()
         self.ref_sig, self.ref_climbs = (None, None) if self.ref is None else (
             rsi.signature(self.ref), rsi.climb_signatures(self.ref))
@@ -452,7 +455,7 @@ class Curriculum(BaseCallback):
 
     def share(self, f):
         """of family f's walls begun at one of its rl.rsi starts"""
-        if not self.enabled or f not in self.taught:
+        if not self.rsi_on or f not in self.taught:
             return 0.0
         if f in self.cleared:
             return rsi.SHARE[1]
@@ -526,7 +529,7 @@ class Curriculum(BaseCallback):
             self.checker = W.Checker()
         bank = W.draw(self.checker, dict(zip(self.active, self.weights())), self.levels, self.rng,
                       BANK, W.PROBE_P if self.enabled else 0.0)
-        if self.enabled and self.ref is not None:
+        if self.rsi_on and self.ref is not None:
             bank = rsi.mix(bank, self.rng, self.levels_in(), {f: self.share(f) for f in self.active},
                            self.starts, self.ref)
         env.env_method('set_bank', bank)
@@ -588,11 +591,12 @@ class Clone(BaseCallback):
     after SB3 clips it, scaled to CLONE_RATIO of that one's norm on the actor (less while far
     off: CLONE_OFF), so PPO keeps most of every step whatever the two losses' scales.
     Demonstration-augmented policy gradient (Rajeswaran et al. 2018, DAPG), only where the
-    demonstration is better (Nair et al. 2018's Q-filter). Off in the ablation."""
+    demonstration is better (Nair et al. 2018's Q-filter). Off without reference starts, and
+    with on=False (--ablate clone, rfcl)."""
 
-    def __init__(self, cur):
+    def __init__(self, cur, on=True):
         super().__init__()
-        self.cur = cur
+        self.cur, self.on = cur, on
         self.ref = cur.ref
         self.act = None if self.ref is None else self.ref['action'].astype(np.float32)
         self.obs = None          # raw observations [row, CLONE_DRAWS, dim] of the climbs...
@@ -605,7 +609,7 @@ class Clone(BaseCallback):
         self.log = []
 
     def wanted(self):
-        if self.ref is None or not self.cur.enabled:
+        if self.ref is None or not self.cur.rsi_on or not self.on:
             return np.zeros(0, int)
         return rsi.cloned(self.cur.starts, self.ref, self.cur.levels_in())
 
@@ -856,6 +860,18 @@ class Checkpoint(BaseCallback):
         return True
 
 
+# --ablate: what each one removes from the method (the paper's ablation table)
+ABLATIONS = {
+    'rsi': "no reference starts and no cloning: PPO from the hang only",
+    'frontier': "reference starts drawn evenly along each climb, not toward its frontier",
+    'rfcl': "starts at each climb's frontier start only, no window, no cloning (RFCL-style)",
+    'clone': "no cloning at the frontier",
+    'curriculum': "every family at its last levels from step 0, no gates, no ADR; starts kept",
+    'route': "the shaping potential is the straight-line distance to the goal, not the route",
+    'hold': "holds decided by distance to a rung, not contact force, everywhere in training",
+}
+
+
 def families(s):
     """'1-7' or '1,2,3' -> [1, ..., 7]"""
     out = []
@@ -874,7 +890,8 @@ def build(a, state):
                  batch_size=envs * PPO_SHAPE['n_steps'] // PPO_SHAPE['minibatches'])
     seed = a.seed or 0
     # a resumed batch draws from a key of its own, not the start's sequence again
-    base = VecMonitor(MjxVecEnv(envs, seed + state.get('timesteps', 0), impl=a.physics, dr=a.dr))
+    base = VecMonitor(MjxVecEnv(envs, seed + state.get('timesteps', 0), impl=a.physics, dr=a.dr,
+                                ablate=[x for x in a.ablate if x in ('route', 'hold')]))
     run = os.path.join('out', a.name)
     ck = 'best_' if a.from_best else ''
     if state:
@@ -913,6 +930,9 @@ def main():
                     help="a fresh run's wall families, e.g. 1-7 (default every one); a resume keeps its own")
     ap.add_argument('--no-dr', dest='dr', action='store_false',
                     help="a fresh run without dynamics randomization (mjx_task.MjxClimb's dr); a resume keeps its own")
+    ap.add_argument('--ablate', default=None,
+                    help="a fresh run without parts of the method, comma-separated: "
+                         + "; ".join(f"{k}: {v}" for k, v in ABLATIONS.items()) + ". A resume keeps its own")
     ap.add_argument('--self-check', action='store_true', help='test the curriculum logic, train nothing')
     a = ap.parse_args()
     if a.self_check:
@@ -939,23 +959,33 @@ def main():
         check_robot(state)
         if state.get('walls_mode') != a.walls:
             raise SystemExit(f"this run trained on --walls {state.get('walls_mode')}, not {a.walls}")
-        if a.families is not None:
-            raise SystemExit("--families cannot change on a resume: the run keeps its own")
-        # runs from before these two settings trained every family, without randomization
-        a.families, a.dr = state.get('families'), state.get('dr', False)
+        if a.families is not None or a.ablate is not None:
+            raise SystemExit("--families and --ablate cannot change on a resume: the run keeps its own")
+        # runs from before these settings trained every family, without randomization, whole
+        a.families, a.dr, a.ablate = state.get('families'), state.get('dr', False), state.get('ablate', [])
     else:
         a.families = families(a.families) if a.families else None
+        a.ablate = sorted(set(a.ablate.split(','))) if a.ablate else []
+        bad = set(a.ablate) - set(ABLATIONS)
+        if bad:
+            raise SystemExit(f"--ablate {','.join(sorted(bad))}: not one of {', '.join(ABLATIONS)}")
+        if 'curriculum' in a.ablate and a.walls != 'adr':
+            raise SystemExit("--ablate curriculum is --walls random with the reference starts kept: not both")
+    rsi.DRAW = 'uniform' if 'frontier' in a.ablate else 'rfcl' if 'rfcl' in a.ablate else 'frontier'
     if a.families:
         W.keep(a.families)
     model, venv = build(a, state)
-    cur = Curriculum(state, enabled=a.walls == 'adr', seed=(a.seed or 0) + state.get('timesteps', 0))
+    curriculum = a.walls == 'adr' and 'curriculum' not in a.ablate
+    cur = Curriculum(state, enabled=curriculum, seed=(a.seed or 0) + state.get('timesteps', 0),
+                     rsi_on=(curriculum or 'curriculum' in a.ablate) and 'rsi' not in a.ablate)
     cur.draw_bank(venv)                  # the first episodes' walls, before learn's reset
     ckpt = Checkpoint(run, cur, a.ckpt_every, state, a.snap_every, a.walls,
-                      setup=dict(families=a.families, dr=a.dr))
+                      setup=dict(families=a.families, dr=a.dr, ablate=a.ablate))
     print(f"{'resumed' if state else 'new run'} out/{a.name} at {model.num_timesteps:,} steps: "
           f"{venv.num_envs} envs, {venv.num_envs * model.n_steps:,} steps an update, policy on "
           f"{model.device}, {a.physics} physics, walls {a.walls}, families {a.families or 'all'}, "
-          f"dynamics randomization {'on' if a.dr else 'off'}; lessons in training {cur.active}")
+          f"dynamics randomization {'on' if a.dr else 'off'}, ablated {a.ablate or 'nothing'}; "
+          f"lessons in training {cur.active}")
     try:                                 # SIGTERM saves too, so a killed run is resumable
         signal.signal(signal.SIGTERM, lambda *_: setattr(Stop, 'asked', True))
     except (ValueError, AttributeError, OSError):
@@ -966,10 +996,11 @@ def main():
            batch_size=model.batch_size, n_epochs=model.n_epochs, gamma=model.gamma,
            gae_lambda=model.gae_lambda, ent_coef=model.ent_coef, clip_range=float(model.clip_range(1.0)),
            lr=model.lr_schedule(1.0), kl_target=ckpt.kl_target, net_arch=str(model.policy.net_arch),
-           robot=robot_stamp(), walls=a.walls, families=a.families, dr=a.dr, bank=BANK, levels=cur.levels)
+           robot=robot_stamp(), walls=a.walls, families=a.families, dr=a.dr, ablate=a.ablate, bank=BANK, levels=cur.levels)
     how = 'finished'
     try:
-        model.learn(total_timesteps=a.steps, callback=[cur, ckpt, UpdateSize(ckpt), Clone(cur), Stop()],
+        model.learn(total_timesteps=a.steps, callback=[cur, ckpt, UpdateSize(ckpt),
+                                                         Clone(cur, on=not {'clone', 'rfcl'} & set(a.ablate)), Stop()],
                     reset_num_timesteps=not a.resume)
         how = 'interrupted' if Stop.asked else how
     except KeyboardInterrupt:
@@ -1165,7 +1196,39 @@ def self_check():
     assert Stop.asked and not s._on_step(), "SIGTERM did not stop learn"   # ...learn stops here
     signal.signal(signal.SIGTERM, old); Stop.asked = False
     print("stop test: SIGTERM stops learn at its next step, through the callbacks. OK")
+    _ablation_test()
     print("self-check: OK")
+
+
+def _ablation_test():
+    """--ablate's start draws (frontier, uniform, rfcl), its switches, and a specialist's walls"""
+    ref = rsi.load()
+    ok = rsi.allowed(ref, W.last_levels())
+    sc = ref['start_climb']
+    c0 = sc[ok[0]]
+    j0 = int(ok[sc[ok] == c0][len(ok[sc[ok] == c0]) // 2])        # one climb's frontier, mid-climb
+    books = {int(j): [True] * rsi.START_WINDOW for j in ok}
+    books[j0] = [False] * rsi.START_WINDOW
+    w = {}
+    for mode in ('frontier', 'uniform', 'rfcl'):
+        rsi.DRAW = mode
+        w[mode] = rsi.weights(books, ref, ok)
+    rsi.DRAW = 'frontier'
+    assert np.allclose(w['uniform'], 1.0 / len(ok)), "uniform starts are not uniform"
+    assert set(ok[w['rfcl'] > 0]) == {j0}, "rfcl draws starts other than the frontier one"
+    assert w['frontier'][list(ok).index(j0)] > 1.0 / len(ok) and (w['frontier'] > 0).all(), \
+        "the method's draw lost its frontier focus or its spread"
+    assert _curriculum(rsi_on=False).share(3) == 0.0 and _curriculum(enabled=False, rsi_on=True).share(3) > 0, \
+        "--ablate rsi / curriculum do not switch the reference starts"
+    assert len(Clone(_curriculum(), on=False).wanted()) == 0, "--ablate clone still clones"
+    saved = [dict(W.FAMILIES), dict(W.NEEDS), dict(W.BENCHMARK), list(W.ORDER)]
+    W.keep([5])
+    assert list(W.FAMILIES) == [5] and W.NEEDS == {5: ()} and W.ORDER == [5], "no family-5 specialist"
+    for d, v in zip((W.FAMILIES, W.NEEDS, W.BENCHMARK), saved):
+        d.clear(); d.update(v)
+    W.ORDER[:] = saved[3]
+    print("ablation test: starts at the frontier, evenly, or at the frontier start alone; "
+          "no starts, no cloning; a one-family specialist. OK")
 
 
 def _toy_ppo(n_steps=16, batch=16, obs=None):
@@ -1282,7 +1345,8 @@ def clone_check():
     import torch
 
     class Cur:
-        enabled, ref = True, None
+        enabled = rsi_on = True
+        ref = None
         starts, levels_in = {}, staticmethod(lambda: {})
 
     m, venv = _toy_ppo(64, 16)

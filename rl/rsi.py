@@ -74,6 +74,10 @@ SHARE_SLOW = 0.95     # ...begin this share at a start until then. At 0.75 a qua
                       # gpu12's family-8 steps (75 hangs a 1M steps, ~1500 steps each), where the
                       # mean then learnt its own stalled reach. gpu11, which learnt 6 and 8, ran 0.95
 FOCUS = 0.75          # of the starts drawn: in each climb's frontier window
+DRAW = 'frontier'     # how starts are drawn (`weights`): 'frontier' the method; the ablations
+                      # (rl.train_ppo --ablate) 'uniform', evenly over every start, and 'rfcl',
+                      # only each climb's frontier start itself (a per-climb reverse curriculum as
+                      # in RFCL, Tao et al. 2024: no window, no spread)
 BACK = 2              # starts each side of the frontier, at the least: `back`
 START_WINDOW = 20     # a start's book: its last episodes...
 START_MIN = 10        # ...at least this many before it can count as passed...
@@ -294,6 +298,11 @@ def _window(books, ref, ok):
 def weights(books, ref, ok):
     """draw probabilities over the starts `ok`: FOCUS evenly over each climb's frontier window
     and every start booked fewer than START_MIN times, the rest evenly over every start"""
+    if DRAW == 'uniform':
+        return np.full(len(ok), 1.0 / len(ok))
+    if DRAW == 'rfcl':                   # each climb's frontier start; evenly once all are passed
+        hot = np.isin(ok, [f for f in frontier(books, ref, ok).values() if f is not None])
+        return hot / hot.sum() if hot.any() else np.full(len(ok), 1.0 / len(ok))
     hot, _ = _window(books, ref, ok)
     hot |= np.array([len(books.get(int(j), [])) < START_MIN for j in ok], bool)
     w = np.full(len(ok), (1.0 - FOCUS) / len(ok))

@@ -984,8 +984,29 @@ def check_dr():
     print("dr: OK")
 
 
+def check_ablate():
+    """--ablate's reward switches: 'route' pays the straight line to each goal, 'hold' finds
+    the start hang's holds by distance (rl.train_ppo's ablations)"""
+    import jax
+    from .mjx_task import MjxClimb, LESSON_KEYS, HOLD_DIST
+    from . import climb_task as ct
+    task = MjxClimb(ablate=('route', 'hold'))
+    T = task.tables
+    st, _ = jax.jit(task.reset)(T, LESSON_KEYS.index(1), jax.random.PRNGKey(0))
+    st, _, _, _, _, info = jax.jit(task.step)(T, st, np.zeros(17, np.float32))
+    thr, g = np.asarray(task._throat_true(st.d)), np.asarray(st.wall.goals)
+    line = np.linalg.norm(thr - g, axis=1).sum()
+    print(f"ablate: live potential {float(info['live']):.4f} m, straight lines to the goals {line:.4f} m")
+    assert abs(float(info['live']) - line) < 1e-4, "--ablate route does not pay the straight line"
+    touch = np.asarray(info['touch'])
+    print(f"ablate: hang read as {touch} N by distance (holds within {HOLD_DIST * 1000:.0f} mm)")
+    assert (touch > ct.HOLD_LOAD).all(), "--ablate hold misses the start hang's holds"
+    print("ablate: OK")
+
+
 CHECKS = dict(task=check_task, physics=check_physics, model=check_model,
-              policy=check_policy, contacts=check_contacts, warp=check_warp, dr=check_dr)
+              policy=check_policy, contacts=check_contacts, warp=check_warp, dr=check_dr,
+              ablate=check_ablate)
 
 if __name__ == '__main__':
     which = sys.argv[1:]

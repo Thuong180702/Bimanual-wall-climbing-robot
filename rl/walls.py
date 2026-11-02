@@ -104,13 +104,15 @@ BENCHMARK = {1: dict(shift=1.10), 2: dict(gaps=2, width=0.25), 3: dict(rows=2, s
 def keep(families):
     """train on `families` only: the others leave FAMILIES, NEEDS, ORDER and BENCHMARK, in
     place, so every module that read them sees the same set (rl.train_ppo --families; the
-    paper's runs are 1..7, lessons 8 and 9 being ongoing work)"""
+    paper's runs are 1..7, lessons 8 and 9 being ongoing work). A kept family stops waiting
+    for a dropped one it is made of: `--families 5` is the family-5 specialist"""
     families = sorted(families)
     assert families and set(families) <= set(FAMILIES), families
-    assert all(set(NEEDS[f]) <= set(families) for f in families), "a kept family needs a dropped one"
     for d in (FAMILIES, NEEDS, BENCHMARK):
         for f in [f for f in d if f not in families]:
             del d[f]
+    for f in NEEDS:
+        NEEDS[f] = tuple(p for p in NEEDS[f] if p in families)
     ORDER[:] = _order(NEEDS)
 
 

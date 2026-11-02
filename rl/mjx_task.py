@@ -77,6 +77,9 @@ MINVAL = 1e-15           # mujoco's mjMINVAL, for rotvec's zero-angle case
 # up any past these -- counted, as `capped`, when it does. C never had more than 17.
 WARP_CONTACTS = 48       # contacts a world, on average over the batch
 WARP_EFC = 256           # constraint rows a world: four a contact, and the joint limits
+HOLD_DIST = 0.035        # m, --ablate hold: a throat this near a rung axis "holds" it. Between the
+                         # 31 mm a seated hook reads under a 50 N side pull and the 42 mm of a
+                         # hovering hand: the best a distance can do (climb_task's hold test)
 
 
 # --- small rotation helpers, as climb_task / rl.estimator compute them -------------
@@ -235,9 +238,10 @@ class MjxClimb:
     """the task over every lesson, one model. Pure functions of (tables, state) for
     one env; `Batch` vmaps them."""
 
-    def __init__(self, bank=0, impl='jax', ref=None, dr=False):
+    def __init__(self, bank=0, impl='jax', ref=None, dr=False, ablate=()):
         self.bank = bank           # generated-wall rows after the lessons' (rl.walls)
         self.dr = dr               # dynamics randomization (climb_task.DR_*), training only
+        self.ablate = frozenset(ablate)   # rl.train_ppo --ablate: 'route', 'hold' (the reward's)
         self.impl = impl           # what steps the physics: 'jax', or 'warp' (`step_batch`)
         self.ref = ref             # the starts' rows: rl.rsi's fixture, or another set's (rsi.dart_view)
         self.mc = scene_model()
@@ -622,7 +626,8 @@ class MjxClimb:
             reach = jp.sqrt((dv[:, 0] ** 2 + dv[:, 1] ** 2) / ct.HOP ** 2 + dv[:, 2] ** 2 / ct.HOP_UP ** 2)
             out = air * jp.maximum(1.0 - 1.0 / jp.maximum(reach, 1e-9), 0.0)
             below = jp.where(w.rung_valid, jp.maximum(q[:, 2] - thr[s][2], 0.0), jp.inf).min()
-            live.append((air + ct.K_OVER * out + w.pts_g[s]).min() + ct.AIR * below)
+            live.append((air + ct.K_OVER * out + w.pts_g[s]).min() + ct.AIR * below
+                        if 'route' not in self.ablate else jp.sqrt(((thr[s] - w.goals[s]) ** 2).sum()))
         return jp.stack(d), jp.stack(live)
 
     def _internal(self, d, sen):
@@ -848,6 +853,10 @@ class MjxClimb:
         st, true, sen = self._sense(T, st, d, w_sum, z)
         touch, on = self._contact(d) if con is None else con
         thr = self._throat_true(d)
+        if 'hold' in self.ablate:        # every hold decision by distance: touching = near, loaded too
+            on = jp.stack([(self._seg_point(thr[s], w.rung_c, w.rung_a, w.rung_h)[1] < HOLD_DIST)
+                           & w.rung_valid for s in (0, 1)])
+            touch = jp.where(on.any(1), 2.0 * ct.HOLD_LOAD, 0.0)
         dd, live = self._dists(w, thr)
         live_att = jp.where((touch > 0.0).any(), live, st.live_att)
         free, held = touch <= 0.0, self._holding(w, touch, on, thr, true)
@@ -1017,8 +1026,8 @@ class Batch:
     """N envs on MJX with the auto-reset a VecEnv needs; the curriculum sets the
     lesson draw weights (`probs`, over LESSON_KEYS) without a recompile."""
 
-    def __init__(self, n, seed=0, task=None, bank=0, fit=False, impl='jax', dr=False):
-        self.task = task or MjxClimb(bank, impl, dr=dr)
+    def __init__(self, n, seed=0, task=None, bank=0, fit=False, impl='jax', dr=False, ablate=()):
+        self.task = task or MjxClimb(bank, impl, dr=dr, ablate=ablate)
         self.n = n
         self.fit = fit
         self.key = jax.random.PRNGKey(seed)
