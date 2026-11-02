@@ -21,6 +21,10 @@ FAMILIES=5 SEED=1 bash rl/gpu_run.sh b5s1            # the family-5 specialist
 python -m rl.status --name gpu1 --watch              # what a run is doing (safe while it trains)
 python -m rl.eval --name gpu1 --from-best            # the benchmark, against doing nothing
 python -m rl.eval --name gpu1 --from-best --walls 200   # 200 unseen walls a family (held-out)
+python -m rl.eval --name gpu1 --from-best --walls 50 --lessons 3 --set spacing=0.50   # past training
+python -m rl.eval --name gpu1 --from-best --episodes 100 --cond torque=0.8,lag=20       # robustness
+python -m rl.eval --name gpu1 --from-best --episodes 20 --torque     # joint torques vs ratings
+python -m rl.eval --symmetry                                         # the robot's left vs right
 python -m rl.curve --name gpu1 && python -m rl.plot --name gpu1     # learning curve, figures
 ```
 

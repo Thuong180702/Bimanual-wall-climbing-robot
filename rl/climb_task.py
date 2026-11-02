@@ -539,6 +539,7 @@ class ClimbTask:
                                held_fn=self._attached, visual=visual)
         self.est = Estimator(self.env.model)
         self.segs = rung_segments(self.env.model)
+        self.lag = 0             # substeps a new setpoint reaches the servos late (rl.eval --cond lag)
         self.goals = [np.asarray(g, float) for g in self.spec['goals']]
         self._pts, self._route_g = route_table(list(self.segs.values()), self.goals)
         self.lo = self.env.model.actuator_ctrlrange[:, 0].copy()
@@ -1196,10 +1197,10 @@ class ClimbTask:
 
     def step(self, action):
         a = np.clip(np.asarray(action, float), -1.0, 1.0)
-        self.ctrl = np.clip(self.ctrl + ACT_SCALE * a, self.lo, self.hi)
+        old, self.ctrl = self.ctrl, np.clip(self.ctrl + ACT_SCALE * a, self.lo, self.hi)
         self._flight = 0
-        for _ in range(FRAME_SKIP):
-            self.env.step(self.ctrl)
+        for i in range(FRAME_SKIP):
+            self.env.step(old if i < self.lag else self.ctrl)
         self._sense()
         con = [self._contact(s) for s in 'LR']
         touch = np.array([c[0] for c in con])
