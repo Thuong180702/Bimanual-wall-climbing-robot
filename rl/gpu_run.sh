@@ -37,6 +37,8 @@
 #     HOURS=24 TOTAL=3000000000 ENVS=4096 SEED=0 EPISODES=50 MAX_FAILS=3 SCORE=1 WALLS=adr
 #     STALL=1800 (s without a PPO update before a trainer counts as hung)
 #     CKPT=<steps> (checkpoint interval; the trainer's own default, 1M, if unset)
+#     FAMILIES=1-7 (the wall families of a fresh run; every one if unset). DR=0 (a fresh
+#     run without dynamics randomization). A resume keeps the run's own
 #     NET=64,64 (the policy and value nets' hidden sizes, a fresh run only; a run
 #                carried on keeps its checkpoint's shape; unset: the trainer's 256,256)
 # ENVS is halved by the preflight, down to 1024, until a batch fits the card, and the
@@ -92,7 +94,7 @@ mkdir -p "$RUN"
 deadline=$(( $(date +%s) + HOURS * 3600 ))
 say() { echo "[gpu_run $(date '+%F %T')] $*" | tee -a "$RUN/gpu_run.log"; }
 
-{ echo "== $(date)  HOURS=$HOURS TOTAL=$TOTAL ENVS=$ENVS SEED=$SEED WALLS=$WALLS"
+{ echo "== $(date)  HOURS=$HOURS TOTAL=$TOTAL ENVS=$ENVS SEED=$SEED WALLS=$WALLS FAMILIES=${FAMILIES:-all} DR=${DR:-1}"
   git rev-parse HEAD; git status --short
   echo "threads allowed: ulimit -u $(ulimit -u), cgroup pids.max $(cat /sys/fs/cgroup/pids.max 2>/dev/null || echo -)"
   nvidia-smi
@@ -171,7 +173,7 @@ print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
     short() {
         local phy=$1; shift
         rm -rf out/_preflight
-        { "$@" $PY -m rl.train_ppo --name _preflight --physics "$phy" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} \
+        { "$@" $PY -m rl.train_ppo --name _preflight --physics "$phy" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} ${FAMILIES:+--families "$FAMILIES"} \
           && "$@" $PY -m rl.train_ppo --name _preflight --physics "$phy" --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
             2>&1 | stamped > "$RUN/short_$phy.txt"
         local r=$?
@@ -247,6 +249,8 @@ while :; do
     [ "$need" -gt 0 ] || { say "step budget reached: $have"; break; }
     resume=; [ -f "$RUN/state.json" ] && resume=--resume
     net=; [ -z "$resume" ] && [ -n "${NET:-}" ] && net="--net $NET"
+    [ -z "$resume" ] && [ -n "${FAMILIES:-}" ] && net="$net --families $FAMILIES"
+    [ -z "$resume" ] && [ "${DR:-1}" = 0 ] && net="$net --no-dr"
     # a card fallen off the bus leaves JAX on the CPU, where a restart trained at 90 env-steps/s
     # for 7.5 h (gpu9) -- an update every 22 min, inside STALL. So the GPU check, every start
     # (its whole output first: piped, `grep -q` stopped reading and the broken pipe failed it)

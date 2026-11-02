@@ -4,6 +4,13 @@ do-nothing control.
     python -m rl.eval --name gpu15                 # every lesson in its pool
     python -m rl.eval --name gpu15 --lessons 1 --episodes 20
     python -m rl.eval --name gpu15 --lessons 1 --mirror     # the lesson toward the right
+    python -m rl.eval --name gpu15 --from-best --walls 200  # 200 unseen walls a family (held-out)
+
+A benchmark lesson is ONE wall: its episodes differ only through the sensor noise, and its
+parameters lie inside the family's training range. `--walls N` scores what the paper calls
+the held-out set instead: N walls a family drawn as training draws them (rl.walls, up to
+the checkpoint's levels or `--levels last`), from seeds no training run draws from, one
+episode each, so the episodes are independent walls and the interval is over walls.
 
 The control matters more than the score. "mean final distance 2.1 m" says nothing on
 its own -- the robot starts hanging, and hanging still is already a legal episode. So
@@ -24,12 +31,16 @@ from .climb_task import ClimbTask
 from .lessons import LESSONS, lesson_key
 
 
+WALL_SEED = 2 ** 40      # + family: past every seed + timesteps a training run draws walls from
+
+
 class Lesson(gym.Env):
     """one benchmark lesson on the full robot, as a gym env (without its visual meshes
-    unless asked: only rl.render draws them)"""
+    unless asked: only rl.render draws them); or, with `xml` and `spec`, a generated wall
+    starting from lesson `lesson`'s hang"""
 
-    def __init__(self, lesson, mirror=False, visual=False):
-        self.task = ClimbTask(lesson, visual=visual, mirror=mirror)
+    def __init__(self, lesson, mirror=False, visual=False, xml=None, spec=None):
+        self.task = ClimbTask(lesson, visual=visual, mirror=mirror, xml=xml, spec=spec)
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (self.task.obs_dim,), np.float32)
         self.action_space = gym.spaces.Box(-1.0, 1.0, (17,), np.float32)
 
@@ -70,6 +81,42 @@ def wilson(k, n, z=1.96):
     return (max(0.0, c - h), min(1.0, c + h))
 
 
+def held_out(run_dir, ck, state, families, n, levels, robot, device, jsonl):
+    """`n` unseen walls of each family, one deterministic episode each (`--walls`)"""
+    from . import walls as W
+    from .mjx_scene import c_scene
+    if state.get('families'):
+        W.keep(state['families'])
+    lv = W.last_levels() if levels == 'last' else \
+        {int(f): v for f, v in state['curriculum']['levels'].items()}
+    model = PPO.load(os.path.join(run_dir, f'{ck}model'), device=device)
+    checker = W.Checker()
+    print(f"{'family':>8} {'success':>12} {'95% CI':>12}   ends   ({n} walls, {robot} robot, {levels} levels)")
+    for f in families:
+        rng = np.random.default_rng(WALL_SEED + f)
+        ok, why = 0, []
+        for lay in W.draw(checker, {f: 1.0}, lv, rng, n, probe_p=0.0):
+            path, spec = c_scene(lay, robot)
+            try:
+                venv = DummyVecEnv([lambda: Lesson(lay['hang'], xml=path, spec=spec)])
+                venv = VecNormalize.load(os.path.join(run_dir, f'{ck}vecnorm.pkl'), venv)
+                venv.training, venv.norm_reward = False, False
+                k, _, w = run(venv, 1, model)
+                venv.close()
+            finally:
+                os.remove(path)
+            ok, why = ok + k, why + w
+        tally = {r: why.count(r) for r in sorted(set(why))}
+        lo, hi = wilson(ok, n)
+        print(f"{f:>8} {ok:>6}/{n:<5} {lo:>5.0%}-{hi:<5.0%}  {tally}", flush=True)
+        if jsonl:
+            with open(jsonl, 'a') as fh:
+                fh.write(json.dumps(dict(mode='walls', family=f, robot=robot, levels=levels,
+                                         level=lv[f], run=os.path.basename(run_dir),
+                                         checkpoint=ck + 'model', timesteps=state['timesteps'],
+                                         success=ok, episodes=n, ci95=(lo, hi), reasons=tally)) + '\n')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--name', default='climber')
@@ -85,6 +132,12 @@ def main():
                     help='also append one JSON line per lesson here (rl.plot reads it)')
     ap.add_argument('--mirror', action='store_true',
                     help='each lesson mirrored, toward the robot\'s right (rl.lessons.mirrored)')
+    ap.add_argument('--walls', type=int, default=0,
+                    help='score N unseen generated walls per family instead of the benchmark lessons')
+    ap.add_argument('--levels', default='reached', choices=['reached', 'last'],
+                    help="--walls: draw up to the checkpoint's ADR levels, or every family's last")
+    ap.add_argument('--robot', default='full', choices=['full', 'simp'],
+                    help='--walls: the full robot, or the simplified one training uses (both in C)')
     a = ap.parse_args()
 
     run_dir = os.path.join('out', a.name)
@@ -93,6 +146,9 @@ def main():
     pool = state['curriculum']['active'] if 'curriculum' in state else state['active']
     lessons = [lesson_key(x) for x in a.lessons.split(',')] if a.lessons else pool
     print(f"{run_dir}: {state['timesteps']} steps, pool {pool}\n")
+    if a.walls:
+        fams = [int(x) for x in a.lessons.split(',')] if a.lessons else pool
+        return held_out(run_dir, ck, state, fams, a.walls, a.levels, a.robot, a.device, a.jsonl)
     print(f"{'lesson':>24} {'policy':>18} {'do nothing':>18}")
 
     for k in lessons:

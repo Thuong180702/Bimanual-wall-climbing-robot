@@ -75,6 +75,16 @@ SEN_BIAS = dict(q=0.003, acc=0.1, gyro=0.005, mag=0.02, f=2.0, t=0.1)   # one pe
                          # encoder zero, IMU offsets, the motors' hard iron, F/T drift
 STEP_NOISE = dict(slam=(3,), w=(3,), sen=SEN_SHAPE)   # standard normals drawn every sense
 
+# --- dynamics randomization: what the built robot will differ by. Drawn once an episode by
+# rl.mjx_task (MjxClimb's `dr`) for training only; this task, the benchmark and every
+# cross-check run the nominal model. ponytail: assumed spreads, not measured -- narrow or
+# widen each once the hardware's system identification gives one.
+DR_MASS = 0.10           # each body's mass and inertia, x U(1 - this, 1 + this): CAD vs built
+DR_FRICTION = 0.30       # every geom's sliding friction, x one U(1 - this, 1 + this): hook pads
+DR_TORQUE = (0.80, 1.00) # each actuator's torque limit, x U(lo, hi): datasheet peak vs a warm motor
+DR_LAG = 10              # physics substeps (of FRAME_SKIP, 2 ms each) a new setpoint reaches
+                         # the servos late, U{0..this} an episode: 0-20 ms of bus and driver
+
 AHRS_TAU = 2.0           # s: how slowly the torso attitude leans on the accelerometer.
                          # The bare triad (accel + mag, no state), while the body
                          # swings, is wrong by

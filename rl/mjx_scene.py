@@ -367,9 +367,10 @@ def lesson_layout(lesson):
     return _layout(mujoco.MjModel.from_xml_path(xml_path(lesson)), LESSONS[lesson], lesson)
 
 
-def c_scene(lay):
+def c_scene(lay, robot='simp'):
     """the simplified robot in C on an rl.walls layout -- a reference climb's wall (rl.rsi,
-    rl.plan) -> (its scene file, the spec ClimbTask(spec=, xml=) takes). The wall goes through
+    rl.plan) -> (its scene file, the spec ClimbTask(spec=, xml=) takes); robot='full': the
+    full robot's scene instead (rl.eval --walls). Either file is the caller's to delete. The wall goes through
     the lesson scenes' own XML (rl.lessons: 4 decimals), so a climb found on it replays on
     exactly the rungs it was found on."""
     import tempfile
@@ -392,6 +393,8 @@ def c_scene(lay):
     full = tempfile.NamedTemporaryFile('w', suffix='.xml', dir=OUT, delete=False)
     full.write(scene_xml(spec, 'wall'))
     full.close()
+    if robot == 'full':
+        return full.name, spec
     try:
         ll = _layout(mujoco.MjModel.from_xml_path(full.name), spec, hang)
     finally:

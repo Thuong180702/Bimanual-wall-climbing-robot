@@ -338,7 +338,7 @@ def check_physics(lessons=(1, 2, 7, 8)):
     pol = _policy()
     k, li = 1, LESSON_KEYS.index(1)
     t = _task(k, c_path(k))
-    m_env = task._env_model(task.wall(task.tables, li))
+    m_env = task._env_model(task.wall(task.tables, li), task._dyn())
 
     @jax.jit
     def one(d, ctrl):
@@ -955,8 +955,37 @@ def _warp_speed(impl, envs, steps=20):
     return sps
 
 
+# --- dynamics randomization ----------------------------------------------------------
+def check_dr():
+    """MjxClimb's `dr` reaches the physics: a robot 10 % heavier hangs ~10 % more on its
+    hooks, and a lagged setpoint moves the joints less in the step it is given"""
+    import jax
+    from .mjx_task import MjxClimb, LESSON_KEYS
+    task = MjxClimb(dr=True)
+    T, step = task.tables, jax.jit(task.step)
+    st0, _ = jax.jit(task.reset)(T, LESSON_KEYS.index(1), jax.random.PRNGKey(0))
+    nom = task._dyn()
+
+    def hang(dyn, n=25):
+        st, f = st0._replace(dyn=dyn), []
+        for _ in range(n):
+            st = step(T, st, np.zeros(17, np.float32))[0]
+            f.append(float(task._contact(st.d)[0].sum()))
+        return np.mean(f[-10:])
+
+    ratio = hang(dict(nom, mass=1.1 * nom['mass'])) / hang(nom)
+    print(f"dr: hook load with every mass x1.1: x{ratio:.3f}")
+    assert 1.05 < ratio < 1.15, "the masses dr draws do not reach the physics"
+    moved = lambda dyn: float(np.abs(np.asarray(step(T, st0._replace(dyn=dyn), np.ones(17, np.float32))[0].d.qpos
+                                                - st0.d.qpos)[7:]).sum())
+    late, now = moved(dict(nom, lag=10)), moved(nom)
+    print(f"dr: joints moved in one step, setpoint 20 ms late {late:.4f} rad, on time {now:.4f} rad")
+    assert late < now, "the lag dr draws does not hold the old setpoint"
+    print("dr: OK")
+
+
 CHECKS = dict(task=check_task, physics=check_physics, model=check_model,
-              policy=check_policy, contacts=check_contacts, warp=check_warp)
+              policy=check_policy, contacts=check_contacts, warp=check_warp, dr=check_dr)
 
 if __name__ == '__main__':
     which = sys.argv[1:]

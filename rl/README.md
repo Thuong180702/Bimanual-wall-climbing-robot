@@ -11,10 +11,13 @@ python -m rl.climb_task              # the task: every reward, sensor and termin
 python -m rl.rsi                     # rebuild the reference-climb fixture and check it
 python -m rl.train_ppo --self-check  # curriculum, ADR, guard, update size, cloning
 python -m rl.mjx_check               # the GPU task against the C one: task, physics, model, policy
+python -m rl.mjx_check dr            # dynamics randomization reaches the physics (mass, lag)
 
 bash rl/gpu_setup.sh && bash rl/gpu_run.sh gpu1      # a rented GPU box: preflight, train, score
+FAMILIES=1-7 SEED=1 bash rl/gpu_run.sh p1s1          # the paper's runs: families 1..7, a seed each
 python -m rl.status --name gpu1 --watch              # what a run is doing (safe while it trains)
 python -m rl.eval --name gpu1 --from-best            # the benchmark, against doing nothing
+python -m rl.eval --name gpu1 --from-best --walls 200   # 200 unseen walls a family (held-out)
 python -m rl.curve --name gpu1 && python -m rl.plot --name gpu1     # learning curve, figures
 ```
 

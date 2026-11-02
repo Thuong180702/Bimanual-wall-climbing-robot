@@ -28,6 +28,10 @@ What had to change, and nothing else:
   * a finished env resets inside the same jitted step, onto a lesson drawn from the
     pool's weights, which the curriculum moves without a recompile.
 
+One thing the C task has not: with `dr` (training only, rl.train_ppo) each episode draws
+its own masses, friction, torque limits and setpoint lag (`_dyn`, climb_task.DR_*) into its
+own model copy. Without it the graph is the nominal one, as every cross-check runs it.
+
 Two MJX backends step it (`impl`): JAX, which tests every listed pair every substep
 however far apart, and Warp, whose broadphase tests only the near ones. Warp keeps
 the batch's contacts in one buffer, each with its world, so its step runs over the
@@ -183,6 +187,7 @@ class State(NamedTuple):
     n_steps: jax.Array
     best_live: jax.Array       # the live potential's lowest this episode, by STALL_D steps,
     best_k: jax.Array          # and the step it got there (rl.rsi.STALL)
+    dyn: dict                  # this episode's dynamics (`_dyn`): mass, friction, torque, lag
     wall: 'Wall'               # this episode's wall, copied at its reset: a new bank
                                # (Batch.set_bank) never moves a rung under a robot
 
@@ -230,8 +235,9 @@ class MjxClimb:
     """the task over every lesson, one model. Pure functions of (tables, state) for
     one env; `Batch` vmaps them."""
 
-    def __init__(self, bank=0, impl='jax', ref=None):
+    def __init__(self, bank=0, impl='jax', ref=None, dr=False):
         self.bank = bank           # generated-wall rows after the lessons' (rl.walls)
+        self.dr = dr               # dynamics randomization (climb_task.DR_*), training only
         self.impl = impl           # what steps the physics: 'jax', or 'warp' (`step_batch`)
         self.ref = ref             # the starts' rows: rl.rsi's fixture, or another set's (rsi.dart_view)
         self.mc = scene_model()
@@ -395,10 +401,31 @@ class MjxClimb:
         """row `row` of the tables' walls"""
         return jax.tree_util.tree_map(lambda x: x[row], T.walls)
 
-    def _env_model(self, w):
-        """the shared model with this wall's rungs and extra wall in the slot geoms"""
-        return self._slot_model(w.slot_pos, w.slot_quat, w.slot_size, w.wall_pos, w.wall_quat,
-                                w.front_pos, w.front_quat)
+    def _env_model(self, w, dyn):
+        """the shared model with this wall's rungs and extra wall in the slot geoms, and with
+        `dr` this episode's masses, friction and torque limits (`_dyn`)"""
+        mx = self._slot_model(w.slot_pos, w.slot_quat, w.slot_size, w.wall_pos, w.wall_quat,
+                              w.front_pos, w.front_quat)
+        if not self.dr:                  # the nominal model, the graph as it was without dr
+            return mx
+        return mx.replace(body_mass=mx.body_mass * dyn['mass'],
+                          body_inertia=mx.body_inertia * dyn['mass'][:, None],
+                          geom_friction=mx.geom_friction.at[:, 0].multiply(dyn['fric']),
+                          actuator_forcerange=mx.actuator_forcerange * dyn['torque'][:, None])
+
+    def _dyn(self, key=None):
+        """an episode's dynamics: each body's mass and inertia scale, one sliding-friction
+        scale, each actuator's torque-limit scale and the substeps a setpoint lands late --
+        drawn from `key` (climb_task.DR_*), or the nominal model's"""
+        nb, nu = self.mc.nbody, self.mc.nu
+        if key is None:
+            return dict(mass=jp.ones(nb), fric=jp.array(1.0), torque=jp.ones(nu), lag=jp.array(0))
+        km, kf, kt, kl = jax.random.split(key, 4)
+        u = lambda k, lo, hi, n=(): jax.random.uniform(k, n, minval=lo, maxval=hi)
+        return dict(mass=u(km, 1 - ct.DR_MASS, 1 + ct.DR_MASS, (nb,)),
+                    fric=u(kf, 1 - ct.DR_FRICTION, 1 + ct.DR_FRICTION),
+                    torque=u(kt, *ct.DR_TORQUE, (nu,)),
+                    lag=jax.random.randint(kl, (), 0, ct.DR_LAG + 1))
 
     def _slot_model(self, pos, quat, size, wpos, wquat, fpos, fquat):
         mx = self.mx
@@ -713,15 +740,20 @@ class MjxClimb:
             d = d_like.replace(**{f: getattr(T.d0, f)[r0] for f in self.public})
             con = (T.con0[r0], T.on0[r0])
         key, k1, k2 = jax.random.split(key, 3)
+        dyn = None
+        if self.dr:                      # a key of its own: without dr the draws are as they were
+            key, k3 = jax.random.split(key)
+            dyn = self._dyn(k3)
         return self.start(T, lesson, d, T.ctrl0[r0], T.ngt0[r0], key,
                           self._normals(k1, ct.episode_noise(N_RUNG)), self._normals(k2, ct.STEP_NOISE),
-                          con)
+                          con, dyn)
 
-    def start(self, T, lesson, d, ctrl, ngt, key, ep, z, con=None):
+    def start(self, T, lesson, d, ctrl, ngt, key, ep, z, con=None, dyn=None):
         """the rest of climb_task.reset once the fingers are shut: the map, the holds,
         the first sense and the books. `ep`: the episode's draws
         (climb_task.episode_noise(N_RUNG)); `z`: the first sense's; `con`: `_contact`
-        at `d`, when it is not to be read from it (Warp)"""
+        at `d`, when it is not to be read from it (Warp); `dyn`: the episode's dynamics (`_dyn`),
+        nominal if None"""
         w = self.wall(T, lesson)
         thr = self._throat_true(d)
         seen = lidar.visible(jp, self.rig, d.site_xpos, d.site_xmat, w.rung_c, w.rung_a, w.rung_h,
@@ -765,7 +797,8 @@ class MjxClimb:
                    grabs=T.grabs0[w.d0_row], grab_paid=T.grabs0[w.d0_row] > 0,
                    cross_axis=jp.zeros(3), cross_sign=jp.array(1.0),
                    off_t=z2, held_t=z2, slide_rung=jp.full(2, -1), slide_ref=z2, slide_net=z2,
-                   n_steps=jp.array(0), best_live=jp.array(0.0), best_k=jp.array(0), wall=w)
+                   n_steps=jp.array(0), best_live=jp.array(0.0), best_k=jp.array(0),
+                   dyn=self._dyn() if dyn is None else dyn, wall=w)
         st, true, sen = self._sense(T, st, d, jp.zeros(3), z)
         dd, live = self._dists(w, thr)
         _, seat_d, _ = self._seg_point(thr[0], w.rung_c, w.rung_a, w.rung_h)
@@ -789,11 +822,12 @@ class MjxClimb:
         per-substep books -> (state, flight substeps, gyro sum)"""
         a = jp.clip(action, -1.0, 1.0)
         ctrl = jp.clip(st.ctrl + ct.ACT_SCALE * a, self.lo, self.hi)
-        m = self._env_model(st.wall)
+        m = self._env_model(st.wall, st.dyn)
 
-        def sub(carry, _):
+        def sub(carry, i):
             d, flight, ngt, w, capped = carry
-            d = mjx.step(m, d.replace(ctrl=ctrl))
+            # with dr the servos hold the old setpoint for the episode's lag
+            d = mjx.step(m, d.replace(ctrl=jp.where(i < st.dyn['lag'], st.ctrl, ctrl) if self.dr else ctrl))
             con, _ = self._contact(d)
             return (d, flight + ~(con > ct.HOLD_LOAD).any(),
                     jp.where((con > 0.0).any(), 0.0, ngt + self.dt),
@@ -801,8 +835,7 @@ class MjxClimb:
                     capped + (d._impl.contact.dist <= 0.0).all()), None
 
         (d, flight, ngt, w, capped), _ = jax.lax.scan(
-            sub, (st.d, jp.array(0), st.no_grip_t, jp.zeros(3), jp.array(0)), None,
-            length=ct.FRAME_SKIP)
+            sub, (st.d, jp.array(0), st.no_grip_t, jp.zeros(3), jp.array(0)), jp.arange(ct.FRAME_SKIP))
         return st._replace(d=d, ctrl=ctrl, no_grip_t=ngt), flight, w, capped
 
     def update(self, T, st, action, flight, w_sum, z, con=None):
@@ -953,11 +986,13 @@ class MjxClimb:
         d = jax.vmap(self._place_static)(st.d, st.wall).replace(ctrl=ctrl)
         # each env's model made inside the vmap, as `physics` does: made outside, every
         # field of it would come out one a world, the meshes too
-        one = jax.vmap(lambda w, d: mjx.step(self._env_model(w), d))
+        one = jax.vmap(lambda w, dyn, d: mjx.step(self._env_model(w, dyn), d))
 
-        def sub(carry, _):
+        def sub(carry, i):
             d, flight, ngt, w, capped = carry
-            d = one(st.wall, d)
+            if self.dr:                  # `physics`'s lag, each env its own
+                d = d.replace(ctrl=jp.where((i < st.dyn['lag'])[:, None], st.ctrl, ctrl))
+            d = one(st.wall, st.dyn, d)
             con, _, over = self._contacts(d)
             return (d, flight + ~(con > ct.HOLD_LOAD).any(-1),
                     jp.where((con > 0.0).any(-1), 0.0, ngt + self.dt),
@@ -965,7 +1000,7 @@ class MjxClimb:
 
         z = jp.zeros(n, jp.int32)
         (d, flight, ngt, w, capped), _ = jax.lax.scan(
-            sub, (d, z, st.no_grip_t, jp.zeros((n, 3)), z), None, length=ct.FRAME_SKIP)
+            sub, (d, z, st.no_grip_t, jp.zeros((n, 3)), z), jp.arange(ct.FRAME_SKIP))
         st = st._replace(d=d, ctrl=ctrl, no_grip_t=ngt)
         con, on, _ = self._contacts(d)
 
@@ -982,8 +1017,8 @@ class Batch:
     """N envs on MJX with the auto-reset a VecEnv needs; the curriculum sets the
     lesson draw weights (`probs`, over LESSON_KEYS) without a recompile."""
 
-    def __init__(self, n, seed=0, task=None, bank=0, fit=False, impl='jax'):
-        self.task = task or MjxClimb(bank, impl)
+    def __init__(self, n, seed=0, task=None, bank=0, fit=False, impl='jax', dr=False):
+        self.task = task or MjxClimb(bank, impl, dr=dr)
         self.n = n
         self.fit = fit
         self.key = jax.random.PRNGKey(seed)

@@ -197,11 +197,11 @@ class MjxVecEnv(VecEnv):
     """one `rl.mjx_task.Batch` as SB3's VecEnv, its walls from a bank (`set_bank`). An
     episode's end reports its reason, family, probe, start, steps and distance"""
 
-    def __init__(self, n, seed=0, impl='jax'):
+    def __init__(self, n, seed=0, impl='jax', dr=False):
         from . import mjx_task
         self.mt = mjx_task
         # fit: collide only what the walls in play need; impl: MJX's JAX or Warp backend
-        self.batch = mjx_task.Batch(n, seed, bank=BANK, fit=True, impl=impl)
+        self.batch = mjx_task.Batch(n, seed, bank=BANK, fit=True, impl=impl, dr=dr)
         self.capped = self.substeps = 0  # substeps with the solver's contact cap full, of all
         dim = np.asarray(self.batch.reset()).shape[1]
         super().__init__(n, gym.spaces.Box(-np.inf, np.inf, (dim,), np.float32),
@@ -712,10 +712,11 @@ class Checkpoint(BaseCallback):
     statistics sees another observation scale); the best of them kept; the guard; the
     snapshots rl.curve scores; and the console's status line."""
 
-    def __init__(self, run_dir, cur, every, state=None, snap_every=0, walls='adr'):
+    def __init__(self, run_dir, cur, every, state=None, snap_every=0, walls='adr', setup=None):
         super().__init__()
         st = state or {}
         self.dir, self.cur, self.every, self.walls = run_dir, cur, every, walls
+        self.setup = setup or {}         # what a resume must keep: families, dr
         self.snap_every, self.snapped = snap_every, None
         self.best = st.get('best', -1.0)
         self.best_active = st.get('best_active', [])     # the families the best had passed...
@@ -789,7 +790,7 @@ class Checkpoint(BaseCallback):
                  'walls_mode': self.walls, 'best': self.best, 'best_active': self.best_active,
                  'best_held': self.best_held, 'lr': self.model.lr_schedule(1.0),
                  'kl_target': self.kl_target, 'std_cap': self.std_cap, 'rollbacks': self.rollbacks,
-                 **self.cur.state()}
+                 **self.setup, **self.cur.state()}
         with open(p + 'state.tmp.json', 'w') as f:
             json.dump(state, f, indent=1)
         for f in ('model.zip', 'vecnorm.pkl', 'state.json'):
@@ -855,6 +856,15 @@ class Checkpoint(BaseCallback):
         return True
 
 
+def families(s):
+    """'1-7' or '1,2,3' -> [1, ..., 7]"""
+    out = []
+    for part in s.split(','):
+        lo, _, hi = part.partition('-')
+        out += range(int(lo), int(hi or lo) + 1)
+    return sorted(set(out))
+
+
 def build(a, state):
     """(model, VecNormalize env) for a fresh run or a resume"""
     import torch
@@ -864,7 +874,7 @@ def build(a, state):
                  batch_size=envs * PPO_SHAPE['n_steps'] // PPO_SHAPE['minibatches'])
     seed = a.seed or 0
     # a resumed batch draws from a key of its own, not the start's sequence again
-    base = VecMonitor(MjxVecEnv(envs, seed + state.get('timesteps', 0), impl=a.physics))
+    base = VecMonitor(MjxVecEnv(envs, seed + state.get('timesteps', 0), impl=a.physics, dr=a.dr))
     run = os.path.join('out', a.name)
     ck = 'best_' if a.from_best else ''
     if state:
@@ -899,6 +909,10 @@ def main():
                     help='steps between kept snapshots for the learning curve (rl.curve); 0 = none')
     ap.add_argument('--seed', type=int, default=None,
                     help="a fresh run's policy init and its batch's draws; a paper reports several")
+    ap.add_argument('--families', default=None,
+                    help="a fresh run's wall families, e.g. 1-7 (default every one); a resume keeps its own")
+    ap.add_argument('--no-dr', dest='dr', action='store_false',
+                    help="a fresh run without dynamics randomization (mjx_task.MjxClimb's dr); a resume keeps its own")
     ap.add_argument('--self-check', action='store_true', help='test the curriculum logic, train nothing')
     a = ap.parse_args()
     if a.self_check:
@@ -925,13 +939,23 @@ def main():
         check_robot(state)
         if state.get('walls_mode') != a.walls:
             raise SystemExit(f"this run trained on --walls {state.get('walls_mode')}, not {a.walls}")
+        if a.families is not None:
+            raise SystemExit("--families cannot change on a resume: the run keeps its own")
+        # runs from before these two settings trained every family, without randomization
+        a.families, a.dr = state.get('families'), state.get('dr', False)
+    else:
+        a.families = families(a.families) if a.families else None
+    if a.families:
+        W.keep(a.families)
     model, venv = build(a, state)
     cur = Curriculum(state, enabled=a.walls == 'adr', seed=(a.seed or 0) + state.get('timesteps', 0))
     cur.draw_bank(venv)                  # the first episodes' walls, before learn's reset
-    ckpt = Checkpoint(run, cur, a.ckpt_every, state, a.snap_every, a.walls)
+    ckpt = Checkpoint(run, cur, a.ckpt_every, state, a.snap_every, a.walls,
+                      setup=dict(families=a.families, dr=a.dr))
     print(f"{'resumed' if state else 'new run'} out/{a.name} at {model.num_timesteps:,} steps: "
           f"{venv.num_envs} envs, {venv.num_envs * model.n_steps:,} steps an update, policy on "
-          f"{model.device}, {a.physics} physics, walls {a.walls}; lessons in training {cur.active}")
+          f"{model.device}, {a.physics} physics, walls {a.walls}, families {a.families or 'all'}, "
+          f"dynamics randomization {'on' if a.dr else 'off'}; lessons in training {cur.active}")
     try:                                 # SIGTERM saves too, so a killed run is resumable
         signal.signal(signal.SIGTERM, lambda *_: setattr(Stop, 'asked', True))
     except (ValueError, AttributeError, OSError):
@@ -942,7 +966,7 @@ def main():
            batch_size=model.batch_size, n_epochs=model.n_epochs, gamma=model.gamma,
            gae_lambda=model.gae_lambda, ent_coef=model.ent_coef, clip_range=float(model.clip_range(1.0)),
            lr=model.lr_schedule(1.0), kl_target=ckpt.kl_target, net_arch=str(model.policy.net_arch),
-           robot=robot_stamp(), walls=a.walls, bank=BANK, levels=cur.levels)
+           robot=robot_stamp(), walls=a.walls, families=a.families, dr=a.dr, bank=BANK, levels=cur.levels)
     how = 'finished'
     try:
         model.learn(total_timesteps=a.steps, callback=[cur, ckpt, UpdateSize(ckpt), Clone(cur), Stop()],
