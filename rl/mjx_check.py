@@ -985,12 +985,13 @@ def check_dr():
 
 
 def check_ablate():
-    """--ablate's reward switches: 'route' pays the straight line to each goal, 'hold' finds
-    the start hang's holds by distance (rl.train_ppo's ablations)"""
+    """--ablate's reward switches, all on at once: 'route' pays the straight line to each goal,
+    'hold' finds the start hang's holds by distance; and 'oneway' alone pays a step exactly
+    K_REACH x the retreat more than the method does (rl.train_ppo's ablations)"""
     import jax
-    from .mjx_task import MjxClimb, LESSON_KEYS, HOLD_DIST
+    from .mjx_task import MjxClimb, LESSON_KEYS, HOLD_DIST, REWARD_ABLATIONS
     from . import climb_task as ct
-    task = MjxClimb(ablate=('route', 'hold'))
+    task = MjxClimb(ablate=REWARD_ABLATIONS)
     T = task.tables
     st, _ = jax.jit(task.reset)(T, LESSON_KEYS.index(1), jax.random.PRNGKey(0))
     st, _, _, _, _, info = jax.jit(task.step)(T, st, np.zeros(17, np.float32))
@@ -1001,6 +1002,16 @@ def check_ablate():
     touch = np.asarray(info['touch'])
     print(f"ablate: hang read as {touch} N by distance (holds within {HOLD_DIST * 1000:.0f} mm)")
     assert (touch > ct.HOLD_LOAD).all(), "--ablate hold misses the start hang's holds"
+    a = np.full(17, -1.0, np.float32)                # every setpoint one way: the hooks move
+    r = {}
+    for name, t in (('method', MjxClimb()), ('oneway', MjxClimb(ablate=('oneway',)))):
+        s0, _ = jax.jit(t.reset)(t.tables, LESSON_KEYS.index(1), jax.random.PRNGKey(0))
+        s1, _, r[name], *_ = jax.jit(t.step)(t.tables, s0, a)
+    back = np.maximum(np.asarray(s1.prev_live) - np.asarray(s0.prev_live), 0.0).sum()
+    extra = float(r['oneway'] - r['method'])
+    print(f"ablate: oneway pays {extra:+.5f} more for a step that retreats {back:.5f} m (K_REACH x that "
+          f"{ct.K_REACH * back:+.5f})")
+    assert back > 0 and abs(extra - ct.K_REACH * back) < 1e-4, "--ablate oneway does not pay retreat free"
     print("ablate: OK")
 
 

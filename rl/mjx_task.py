@@ -77,6 +77,9 @@ MINVAL = 1e-15           # mujoco's mjMINVAL, for rotvec's zero-angle case
 # up any past these -- counted, as `capped`, when it does. C never had more than 17.
 WARP_CONTACTS = 48       # contacts a world, on average over the batch
 WARP_EFC = 256           # constraint rows a world: four a contact, and the joint limits
+# rl.train_ppo --ablate's switches inside the reward: each puts back the weaker rule that
+# climb_task's comments (and the paper's exploit table) say a policy found a way around
+REWARD_ABLATIONS = ('route', 'hold', 'oneway', 'world', 'grab', 'refund')
 HOLD_DIST = 0.035        # m, --ablate hold: a throat this near a rung axis "holds" it. Between the
                          # 31 mm a seated hook reads under a 50 N side pull and the 42 mm of a
                          # hovering hand: the best a distance can do (climb_task's hold test)
@@ -241,7 +244,8 @@ class MjxClimb:
     def __init__(self, bank=0, impl='jax', ref=None, dr=False, ablate=()):
         self.bank = bank           # generated-wall rows after the lessons' (rl.walls)
         self.dr = dr               # dynamics randomization (climb_task.DR_*), training only
-        self.ablate = frozenset(ablate)   # rl.train_ppo --ablate: 'route', 'hold' (the reward's)
+        self.ablate = frozenset(ablate)   # rl.train_ppo --ablate: REWARD_ABLATIONS
+        assert self.ablate <= set(REWARD_ABLATIONS), self.ablate
         self.impl = impl           # what steps the physics: 'jax', or 'warp' (`step_batch`)
         self.ref = ref             # the starts' rows: rl.rsi's fixture, or another set's (rsi.dart_view)
         self.mc = scene_model()
@@ -893,10 +897,14 @@ class MjxClimb:
             u = g[k] - self._rung_pt(w, thr[k])       # climb_task: the partner's slide
             u = u / jp.maximum(jp.sqrt(u @ u), 1e-9)
             rel = approach[k] - (dp[o] @ ax[o]) * (ax[o] @ u)
+            if 'world' in self.ablate:   # progress in the world frame: the partner's slide counts
+                rel = approach[k]
             credit.append(jp.where(both[k], 0.0, jp.where(both[o], rel, jp.minimum(0.0, approach[k]))))
         credit = jp.stack(credit)
         acc = st.credit + credit
         first = took & ~st.grab_paid & (acc >= ct.GRAB_MIN)     # climb_task: K_GRAB's hold
+        if 'grab' in self.ablate:        # any first hold paid, however little it banks
+            first = took & ~st.grab_paid
         bank = jp.where(took, acc, 0.0).sum()
         acc = jp.where(took, 0.0, acc)
         shared = on[0] & on[1]                     # climb_task._sep_error: one rung only
@@ -906,7 +914,8 @@ class MjxClimb:
         effort = jp.maximum(0.0, jp.abs(true['tau']).sum() - T.tau_idle[w.d0_row])
         fight = jp.maximum(0.0, self._internal(d, true) - T.fight_idle[w.d0_row])
         r = (ct.K_BANK * bank + ct.K_GRAB * first.sum()
-             + ct.K_REACH * (st.prev_live - live).sum()
+             + ct.K_REACH * (jp.maximum(st.prev_live - live, 0.0) if 'oneway' in self.ablate   # approach paid,
+                             else st.prev_live - live).sum()                             # retreat free
              - ct.K_DANGLE * parked - ct.K_STALE * stale - ct.K_SEP * sep_err
              - ct.K_EFFORT * effort - ct.K_FIGHT * fight - ct.K_TIME - ct.K_FLIGHT * flight
              - ct.K_SLIDE * slide
@@ -942,6 +951,8 @@ class MjxClimb:
         # a fall (fell, released) gets back the live term charged since a hook last
         # touched a rung, as in ClimbTask
         refund = jp.where((why == 3) | (why == 4), ct.K_REACH * (live - live_att).sum(), 0.0)
+        if 'refund' in self.ablate:      # the fall billed through the live term as well
+            refund = jp.zeros_like(refund)
         r = jp.where(why == 5, ct.FAIL_R,       # a blowup is FAIL_R alone, as in ClimbTask
                      r + jp.where(success, ct.SUCCESS_R, jp.where(terminated, ct.FAIL_R, 0.0)) + refund)
         info = dict(reason=why, lesson=lesson, family=w.family, probe=w.probe,

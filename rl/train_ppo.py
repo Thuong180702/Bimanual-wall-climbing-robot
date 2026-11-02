@@ -290,7 +290,8 @@ class Curriculum(BaseCallback):
         self.ref = rsi.load()
         self.ref_sig, self.ref_climbs = (None, None) if self.ref is None else (
             rsi.signature(self.ref), rsi.climb_signatures(self.ref))
-        self.taught = set() if self.ref is None else {int(f) for f in self.ref['climb_family']}
+        self.taught = set() if self.ref is None else {     # families with climbs in play (rsi.TAUGHT)
+            int(f) for f, found in zip(self.ref['climb_family'], self.ref['climb_found']) if found or rsi.TAUGHT}
         self.lag = episode_steps(W.TIMEOUT)
         self.lag_start = {f: episode_steps(rsi.timeout(self.ref, f)) for f in self.taught}
         self.rng = np.random.default_rng(seed)
@@ -869,6 +870,11 @@ ABLATIONS = {
     'curriculum': "every family at its last levels from step 0, no gates, no ADR; starts kept",
     'route': "the shaping potential is the straight-line distance to the goal, not the route",
     'hold': "holds decided by distance to a rung, not contact force, everywhere in training",
+    'oneway': "shaping pays approach only, retreat is free",
+    'world': "a free hand's credit in the world frame, its partner's slide not subtracted",
+    'grab': "K_GRAB paid for any first hold, not only one banking 0.03 m",
+    'refund': "no refund of the live term on a fall",
+    'taught': "reference climbs found by search only, none recorded from a policy",
 }
 
 
@@ -889,9 +895,10 @@ def build(a, state):
     shape = dict(n_steps=PPO_SHAPE['n_steps'], n_epochs=PPO_SHAPE['n_epochs'],
                  batch_size=envs * PPO_SHAPE['n_steps'] // PPO_SHAPE['minibatches'])
     seed = a.seed or 0
+    from .mjx_task import REWARD_ABLATIONS          # jax: only where the batch is made
     # a resumed batch draws from a key of its own, not the start's sequence again
     base = VecMonitor(MjxVecEnv(envs, seed + state.get('timesteps', 0), impl=a.physics, dr=a.dr,
-                                ablate=[x for x in a.ablate if x in ('route', 'hold')]))
+                                ablate=[x for x in a.ablate if x in REWARD_ABLATIONS]))
     run = os.path.join('out', a.name)
     ck = 'best_' if a.from_best else ''
     if state:
@@ -972,6 +979,7 @@ def main():
         if 'curriculum' in a.ablate and a.walls != 'adr':
             raise SystemExit("--ablate curriculum is --walls random with the reference starts kept: not both")
     rsi.DRAW = 'uniform' if 'frontier' in a.ablate else 'rfcl' if 'rfcl' in a.ablate else 'frontier'
+    rsi.TAUGHT = 'taught' not in a.ablate
     if a.families:
         W.keep(a.families)
     model, venv = build(a, state)
@@ -1221,6 +1229,12 @@ def _ablation_test():
     assert _curriculum(rsi_on=False).share(3) == 0.0 and _curriculum(enabled=False, rsi_on=True).share(3) > 0, \
         "--ablate rsi / curriculum do not switch the reference starts"
     assert len(Clone(_curriculum(), on=False).wanted()) == 0, "--ablate clone still clones"
+    rsi.TAUGHT = False
+    some = rsi.allowed(ref, W.last_levels())
+    taught = {int(f) for f in _curriculum().taught}
+    rsi.TAUGHT = True
+    assert ref['climb_found'][sc[some]].all() and len(some) < len(ok), "--ablate taught kept a recorded climb"
+    assert 5 not in taught and 7 not in taught and 3 in taught, taught
     saved = [dict(W.FAMILIES), dict(W.NEEDS), dict(W.BENCHMARK), list(W.ORDER)]
     W.keep([5])
     assert list(W.FAMILIES) == [5] and W.NEEDS == {5: ()} and W.ORDER == [5], "no family-5 specialist"
@@ -1228,7 +1242,7 @@ def _ablation_test():
         d.clear(); d.update(v)
     W.ORDER[:] = saved[3]
     print("ablation test: starts at the frontier, evenly, or at the frontier start alone; "
-          "no starts, no cloning; a one-family specialist. OK")
+          "no starts, no cloning, searched climbs only; a one-family specialist. OK")
 
 
 def _toy_ppo(n_steps=16, batch=16, obs=None):

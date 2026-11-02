@@ -78,6 +78,8 @@ DRAW = 'frontier'     # how starts are drawn (`weights`): 'frontier' the method;
                       # (rl.train_ppo --ablate) 'uniform', evenly over every start, and 'rfcl',
                       # only each climb's frontier start itself (a per-climb reverse curriculum as
                       # in RFCL, Tao et al. 2024: no window, no spread)
+TAUGHT = True         # the climbs recorded from a policy in play; False (--ablate taught): only
+                      # those found by search, and their mirrors
 BACK = 2              # starts each side of the frontier, at the least: `back`
 START_WINDOW = 20     # a start's book: its last episodes...
 START_MIN = 10        # ...at least this many before it can count as passed...
@@ -253,7 +255,8 @@ def allowed(ref, levels):
     fam, c = ref['climb_family'], ref['start_climb']
     top = np.array([lim.get(int(f), -np.inf) for f in fam])[c]
     some = np.bincount(ref['start'], weights=ref['startable'], minlength=len(c)) > 0
-    return np.nonzero((ref['climb_height'][c] <= top + 1e-9) & some)[0]
+    found = ref['climb_found'][c].astype(bool) | TAUGHT
+    return np.nonzero((ref['climb_height'][c] <= top + 1e-9) & some & found)[0]
 
 
 def passed(h):
