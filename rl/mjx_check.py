@@ -1026,7 +1026,7 @@ if __name__ == '__main__':
         RUN = which[i + 1]
         del which[i:i + 2]
     opts = {}
-    for flag, kind in (('--envs', int), ('--out', str)):       # check_warp's
+    for flag, kind in (('--envs', int), ('--out', str), ('--episodes', int)):   # check_warp's; policy's
         if flag in which:
             i = which.index(flag)
             opts[flag[2:]] = kind(which[i + 1])

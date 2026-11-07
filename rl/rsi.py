@@ -78,6 +78,8 @@ DRAW = 'frontier'     # how starts are drawn (`weights`): 'frontier' the method;
                       # (rl.train_ppo --ablate) 'uniform', evenly over every start, and 'rfcl',
                       # only each climb's frontier start itself (a per-climb reverse curriculum as
                       # in RFCL, Tao et al. 2024: no window, no spread)
+CLONE = 'frontier'    # where rl.train_ppo.Clone clones (`cloned`): the frontier; 'all' (--ablate
+                      # cloneall) every startable row of every start let in, as DAPG clones all
 TAUGHT = True         # the climbs recorded from a policy in play; False (--ablate taught): only
                       # those found by search, and their mirrors
 BACK = 2              # starts each side of the frontier, at the least: `back`
@@ -322,6 +324,8 @@ def cloned(books, ref, levels):
     climb's later steps, and gpu14's lesson 8 at 0.55 sat 100M steps at 7.8 s with the back-rung
     swing's starts (8.6-11.0 s) at 45-65 %, under PASS but over FAIL, never cloned (2026-10-24)"""
     ok = allowed(ref, levels)
+    if CLONE == 'all':
+        return np.nonzero(np.isin(ref['start'], ok) & ref['startable'])[0]
     hot, learnt = _window(books, ref, ok)
     sc = ref['start_climb']
     for c, f in frontier(books, ref, ok).items():

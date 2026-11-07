@@ -291,13 +291,15 @@ class Curriculum(BaseCallback):
         self.ref_sig, self.ref_climbs = (None, None) if self.ref is None else (
             rsi.signature(self.ref), rsi.climb_signatures(self.ref))
         self.taught = set() if self.ref is None else {     # families with climbs in play (rsi.TAUGHT)
-            int(f) for f, found in zip(self.ref['climb_family'], self.ref['climb_found']) if found or rsi.TAUGHT}
+            int(f) for f, found in zip(self.ref['climb_family'], self.ref['climb_found'])
+            if (found or rsi.TAUGHT) and self.rsi_on}   # --ablate rsi: none, so a stuck family is capped
         self.lag = episode_steps(W.TIMEOUT)
         self.lag_start = {f: episode_steps(rsi.timeout(self.ref, f)) for f in self.taught}
         self.rng = np.random.default_rng(seed)
         self.checker = None
         self.pending, self.n, self.clock = [], 0, 0
         self.ends = collections.Counter()        # (family, end reason) since the last checkpoint
+        self.epstats = collections.defaultdict(list)   # family -> [(return, final distance)], the same
         self.load(state or {})
 
     # ---- books ------------------------------------------------------------------
@@ -361,6 +363,8 @@ class Curriculum(BaseCallback):
                 continue
             f = info['lesson']
             self.ends[f, info['reason']] += 1
+            if 'episode' in info:            # VecMonitor's return, and where the hooks ended
+                self.epstats[f].append((info['episode']['r'], info.get('dist', np.nan)))
             t0 = self.clock - (info.get('steps') or 0)
             if t0 < self.since:
                 continue
@@ -370,8 +374,9 @@ class Curriculum(BaseCallback):
                 'lesson', 'reason', 'steps', 'probe', 'probe_val', 'start')}))
         while self.pending and self.pending[0][0] <= self.clock:
             self._count(heapq.heappop(self.pending)[2])
-        if self.enabled:
-            self._unlock()
+        # also with the curriculum off (every family already in the pool, nothing unlocks):
+        # the gate's `cleared` drives the guard and the step shares, as in the method
+        self._unlock()
         return True
 
     def _count(self, ep):
@@ -543,8 +548,7 @@ class Curriculum(BaseCallback):
         self.model._last_episode_starts = np.ones(self.training_env.num_envs, dtype=bool)
 
     def _on_rollout_start(self):
-        if self.enabled:
-            self.track()
+        self.track()                     # with the curriculum off too: `stalled` reads it
         self.draw_bank(self.training_env)
 
 
@@ -843,11 +847,15 @@ class Checkpoint(BaseCallback):
             for (f, why), k in self.cur.ends.items():
                 ends[str(f)][why] = k
             self.cur.ends.clear()
+            # each family's mean return and final distance to its goals (both hands), from the
+            # hang (f) and from its starts (f + rsi.BOOK): the exploit runs' return against progress
+            ret = {str(f): [float(np.mean(v)) for v in zip(*x)] + [len(x)] for f, x in self.cur.epstats.items()}
+            self.cur.epstats.clear()
             ref = self.cur.ref
             record('checkpoint', timesteps=int(n), pool=self.cur.active,
                    rate={str(f): self.cur.rate(f) for f in self.cur.active},
                    length={str(f): self.cur.length(f) for f in self.cur.active},
-                   ends=ends, best=self.best, held=self.held(), best_held=self.best_held,
+                   ends=ends, ret=ret, best=self.best, held=self.held(), best_held=self.best_held,
                    lr=self.model.lr_schedule(1.0), kl_target=self.kl_target, rollbacks=self.rollbacks,
                    contact_cap=cap, std=float(self.model.policy.log_std.detach().exp().mean()),
                    levels=self.cur.levels, progress=W.progress(self.cur.levels),
@@ -867,6 +875,7 @@ ABLATIONS = {
     'frontier': "reference starts drawn evenly along each climb, not toward its frontier",
     'rfcl': "starts at each climb's frontier start only, no window, no cloning (RFCL-style)",
     'clone': "no cloning at the frontier",
+    'cloneall': "cloning at every reference start let in, not only the frontier (DAPG-style)",
     'curriculum': "every family at its last levels from step 0, no gates, no ADR; starts kept",
     'route': "the shaping potential is the straight-line distance to the goal, not the route",
     'hold': "holds decided by distance to a rung, not contact force, everywhere in training",
@@ -876,6 +885,30 @@ ABLATIONS = {
     'refund': "no refund of the live term on a fall",
     'taught': "reference climbs found by search only, none recorded from a policy",
 }
+
+
+# --weights: the reward weights a sensitivity run may scale (climb_task's, read by rl.mjx_task)
+WEIGHTS = ('K_BANK', 'K_REACH', 'K_GRAB', 'K_SLIDE', 'K_FLIGHT', 'K_TIME', 'K_EFFORT', 'K_FIGHT',
+           'K_DANGLE', 'K_STALE', 'K_SEP', 'K_OVER', 'K_ACT', 'K_VEL')
+
+
+def set_weights(w):
+    """{'K_BANK': x, ...} -> climb_task's weights x those factors (before the batch is built)"""
+    from . import climb_task as ct
+    for k, x in (w or {}).items():
+        setattr(ct, k, getattr(ct, k) * x)
+
+
+def code_version():
+    """this checkout's commit, '-dirty' with tracked files changed; None outside git. A resume
+    on another refuses (--new-code), so a run is one version of the code, as a paper reports it"""
+    import subprocess
+    git = lambda *a: subprocess.run(['git', *a], capture_output=True, text=True,
+                                    cwd=os.path.dirname(os.path.abspath(__file__)))
+    head = git('rev-parse', 'HEAD')
+    if head.returncode:
+        return None
+    return head.stdout.strip() + ('-dirty' if git('diff', '--quiet', 'HEAD').returncode else '')
 
 
 def families(s):
@@ -940,6 +973,11 @@ def main():
     ap.add_argument('--ablate', default=None,
                     help="a fresh run without parts of the method, comma-separated: "
                          + "; ".join(f"{k}: {v}" for k, v in ABLATIONS.items()) + ". A resume keeps its own")
+    ap.add_argument('--weights', default=None,
+                    help="a fresh run's reward weights scaled, e.g. K_BANK=0.5,K_REACH=2 (factors; one of "
+                         + ", ".join(WEIGHTS) + "). A resume keeps its own")
+    ap.add_argument('--new-code', action='store_true',
+                    help="resume on another commit than the run's (recorded in state.json's code_changes)")
     ap.add_argument('--self-check', action='store_true', help='test the curriculum logic, train nothing')
     a = ap.parse_args()
     if a.self_check:
@@ -966,20 +1004,34 @@ def main():
         check_robot(state)
         if state.get('walls_mode') != a.walls:
             raise SystemExit(f"this run trained on --walls {state.get('walls_mode')}, not {a.walls}")
-        if a.families is not None or a.ablate is not None:
-            raise SystemExit("--families and --ablate cannot change on a resume: the run keeps its own")
+        if a.families is not None or a.ablate is not None or a.weights is not None:
+            raise SystemExit("--families, --ablate and --weights cannot change on a resume: the run keeps its own")
+        code, was = code_version(), state.get('code')
+        if was and code != was:
+            if not a.new_code:
+                raise SystemExit(f"this run trained on code {was}, the checkout is {code}: a run is one "
+                                 "version of the code (--new-code, NEW_CODE=1 in gpu_run.sh, to go on anyway)")
+            state['code_changes'] = state.get('code_changes', []) + [
+                dict(timesteps=state.get('timesteps', 0), was=was, now=code)]
         # runs from before these settings trained every family, without randomization, whole
         a.families, a.dr, a.ablate = state.get('families'), state.get('dr', False), state.get('ablate', [])
+        a.weights = state.get('weights') or {}
     else:
         a.families = families(a.families) if a.families else None
         a.ablate = sorted(set(a.ablate.split(','))) if a.ablate else []
         bad = set(a.ablate) - set(ABLATIONS)
         if bad:
             raise SystemExit(f"--ablate {','.join(sorted(bad))}: not one of {', '.join(ABLATIONS)}")
+        a.weights = {k: float(v) for k, _, v in (p.partition('=') for p in a.weights.split(','))} \
+            if a.weights else {}
+        if set(a.weights) - set(WEIGHTS):
+            raise SystemExit(f"--weights {','.join(sorted(set(a.weights) - set(WEIGHTS)))}: not one of {', '.join(WEIGHTS)}")
         if 'curriculum' in a.ablate and a.walls != 'adr':
             raise SystemExit("--ablate curriculum is --walls random with the reference starts kept: not both")
     rsi.DRAW = 'uniform' if 'frontier' in a.ablate else 'rfcl' if 'rfcl' in a.ablate else 'frontier'
     rsi.TAUGHT = 'taught' not in a.ablate
+    rsi.CLONE = 'all' if 'cloneall' in a.ablate else 'frontier'
+    set_weights(a.weights)
     if a.families:
         W.keep(a.families)
     model, venv = build(a, state)
@@ -988,11 +1040,13 @@ def main():
                      rsi_on=(curriculum or 'curriculum' in a.ablate) and 'rsi' not in a.ablate)
     cur.draw_bank(venv)                  # the first episodes' walls, before learn's reset
     ckpt = Checkpoint(run, cur, a.ckpt_every, state, a.snap_every, a.walls,
-                      setup=dict(families=a.families, dr=a.dr, ablate=a.ablate))
+                      setup=dict(families=a.families, dr=a.dr, ablate=a.ablate, weights=a.weights, code=code_version(),
+                                 code_changes=state.get('code_changes', [])))
     print(f"{'resumed' if state else 'new run'} out/{a.name} at {model.num_timesteps:,} steps: "
           f"{venv.num_envs} envs, {venv.num_envs * model.n_steps:,} steps an update, policy on "
           f"{model.device}, {a.physics} physics, walls {a.walls}, families {a.families or 'all'}, "
-          f"dynamics randomization {'on' if a.dr else 'off'}, ablated {a.ablate or 'nothing'}; "
+          f"dynamics randomization {'on' if a.dr else 'off'}, ablated {a.ablate or 'nothing'}, "
+          f"reward weights x{a.weights or 1}; "
           f"lessons in training {cur.active}")
     try:                                 # SIGTERM saves too, so a killed run is resumable
         signal.signal(signal.SIGTERM, lambda *_: setattr(Stop, 'asked', True))
@@ -1004,7 +1058,7 @@ def main():
            batch_size=model.batch_size, n_epochs=model.n_epochs, gamma=model.gamma,
            gae_lambda=model.gae_lambda, ent_coef=model.ent_coef, clip_range=float(model.clip_range(1.0)),
            lr=model.lr_schedule(1.0), kl_target=ckpt.kl_target, net_arch=str(model.policy.net_arch),
-           robot=robot_stamp(), walls=a.walls, families=a.families, dr=a.dr, ablate=a.ablate, bank=BANK, levels=cur.levels)
+           robot=robot_stamp(), walls=a.walls, families=a.families, dr=a.dr, ablate=a.ablate, weights=a.weights, bank=BANK, levels=cur.levels)
     how = 'finished'
     try:
         model.learn(total_timesteps=a.steps, callback=[cur, ckpt, UpdateSize(ckpt),
@@ -1229,6 +1283,14 @@ def _ablation_test():
     assert _curriculum(rsi_on=False).share(3) == 0.0 and _curriculum(enabled=False, rsi_on=True).share(3) > 0, \
         "--ablate rsi / curriculum do not switch the reference starts"
     assert len(Clone(_curriculum(), on=False).wanted()) == 0, "--ablate clone still clones"
+    rsi.CLONE = 'all'
+    every = rsi.cloned({}, ref, W.last_levels())
+    rsi.CLONE = 'frontier'
+    assert len(every) > len(rsi.cloned(books, ref, W.last_levels())), "--ablate cloneall clones no more than the method"
+    assert not _curriculum(rsi_on=False).taught, "--ablate rsi leaves families taught: a stuck one is never capped"
+    c = _curriculum(enabled=False, rsi_on=True)   # --ablate curriculum keeps the gate's books
+    _feed(c, 1, True, WINDOW)
+    assert 1 in c.cleared and 1 in c.guarded(), "--ablate curriculum lost the gate, so the guard and the step shares"
     rsi.TAUGHT = False
     some = rsi.allowed(ref, W.last_levels())
     taught = {int(f) for f in _curriculum().taught}

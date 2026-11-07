@@ -12,12 +12,15 @@ python -m rl.rsi                     # rebuild the reference-climb fixture and c
 python -m rl.train_ppo --self-check  # curriculum, ADR, guard, update size, cloning
 python -m rl.mjx_check               # the GPU task against the C one: task, physics, model, policy
 python -m rl.mjx_check dr            # dynamics randomization reaches the physics (mass, lag)
-python -m rl.mjx_check ablate        # --ablate's reward switches (route, hold) do what they say
+python -m rl.mjx_check ablate        # --ablate's reward switches (route, hold, oneway) do what they say
 
 bash rl/gpu_setup.sh && bash rl/gpu_run.sh gpu1      # a rented GPU box: preflight, train, score
-FAMILIES=1-7 SEED=1 bash rl/gpu_run.sh p1s1          # the paper's runs: families 1..7, a seed each
-FAMILIES=1-7 ABLATE=rsi SEED=1 bash rl/gpu_run.sh a1s1   # an ablation (python -m rl.train_ppo -h lists them)
-FAMILIES=5 SEED=1 bash rl/gpu_run.sh b5s1            # the family-5 specialist
+FAMILIES=1-7 SEED=1 bash rl/gpu_run.sh p_s1          # the paper's runs: families 1..7, a seed each
+FAMILIES=1-7 ABLATE=rsi SEED=1 bash rl/gpu_run.sh a_rsi_s1   # an ablation (python -m rl.train_ppo -h lists them)
+FAMILIES=5 SEED=1 bash rl/gpu_run.sh b5_s1           # the family-5 specialist
+NEW_CODE=1 bash rl/gpu_run.sh p_s1                     # resume on another commit (refused without; logged)
+FAMILIES=1-7 WEIGHTS=K_BANK=0.5 bash rl/gpu_run.sh w_bank05_s0   # a reward-weight sensitivity run
+python -m rl.paper_eval --list && python -m rl.paper_eval --jobs 8   # every paper evaluation (CPU)
 python -m rl.status --name gpu1 --watch              # what a run is doing (safe while it trains)
 python -m rl.eval --name gpu1 --from-best            # the benchmark, against doing nothing
 python -m rl.eval --name gpu1 --from-best --walls 200   # 200 unseen walls a family (held-out)

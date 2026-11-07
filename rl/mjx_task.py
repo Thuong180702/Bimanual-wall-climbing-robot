@@ -249,6 +249,7 @@ class MjxClimb:
         self.impl = impl           # what steps the physics: 'jax', or 'warp' (`step_batch`)
         self.ref = ref             # the starts' rows: rl.rsi's fixture, or another set's (rsi.dart_view)
         self.mc = scene_model()
+        self._mass0 = jp.asarray(self.mc.body_mass)    # nominal masses, dr's idle scale
         m = self.mc
         self.mx = mjx.put_model(m, impl='jax')
         self.dt = float(m.opt.timestep)
@@ -862,7 +863,10 @@ class MjxClimb:
                            & w.rung_valid for s in (0, 1)])
             touch = jp.where(on.any(1), 2.0 * ct.HOLD_LOAD, 0.0)
         dd, live = self._dists(w, thr)
-        live_att = jp.where((touch > 0.0).any(), live, st.live_att)
+        # one-way shaping pays approach only, so what a fall's refund must take back is the
+        # approach paid since the touch: carried as live + that (it rises by every retreat)
+        drift = jp.maximum(live - st.prev_live, 0.0) if 'oneway' in self.ablate else 0.0
+        live_att = jp.where((touch > 0.0).any(), live, st.live_att + drift)
         free, held = touch <= 0.0, self._holding(w, touch, on, thr, true)
         dp = thr - st.prev_thr
         loaded = touch > ct.HOLD_LOAD
@@ -911,8 +915,11 @@ class MjxClimb:
         sa = w.rung_a[jp.argmax(shared)]
         sep, o = (thr[0] - thr[1]) @ sa, self._order(w, st, sa)
         sep_err = jp.where(shared.any(), jp.maximum(0.0, ct.MIN_SEP - jp.where(o != 0, o * sep, jp.abs(sep))), 0.0)
-        effort = jp.maximum(0.0, jp.abs(true['tau']).sum() - T.tau_idle[w.d0_row])
-        fight = jp.maximum(0.0, self._internal(d, true) - T.fight_idle[w.d0_row])
+        # the idle hang's torque and internal force, measured on the nominal robot; with dr
+        # scaled by this episode's mass. ponytail: total-mass ratio, a body's own share is finer
+        idle = (self._mass0 * st.dyn['mass']).sum() / self._mass0.sum() if self.dr else 1.0
+        effort = jp.maximum(0.0, jp.abs(true['tau']).sum() - idle * T.tau_idle[w.d0_row])
+        fight = jp.maximum(0.0, self._internal(d, true) - idle * T.fight_idle[w.d0_row])
         r = (ct.K_BANK * bank + ct.K_GRAB * first.sum()
              + ct.K_REACH * (jp.maximum(st.prev_live - live, 0.0) if 'oneway' in self.ablate   # approach paid,
                              else st.prev_live - live).sum()                             # retreat free

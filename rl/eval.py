@@ -9,6 +9,9 @@ do-nothing control.
     python -m rl.eval --name gpu15 --from-best --episodes 100 --cond torque=0.8,lag=20     # robustness
     python -m rl.eval --name gpu15 --from-best --episodes 20 --torque   # joint torques against ratings
     python -m rl.eval --symmetry                                        # the robot's left vs its right
+    python -m rl.eval --name gpu15 --from-best --walls 100 --distract below   # rungs outside the move
+    python -m rl.eval --name gpu15 --from-best --open-loop --episodes 20       # the reference climbs
+                                                                        # played open loop, vs the policy
 
 A benchmark lesson is ONE wall: its episodes differ only through the sensor noise, and its
 parameters lie inside the family's training range. `--walls N` scores what the paper calls
@@ -42,7 +45,8 @@ RATED = {120.0: 48.0, 72.0: 24.0, 24.0: 8.0}   # N.m, peak -> continuous rating:
                                                # AK45-36 (CubeMars datasheets, urdf/README.md)
 # --cond: what each condition scales. noise: every sensor, SLAM and map sigma (climb_task's
 # module constants, so for the whole process); the rest the episode's own model
-CONDS = ('noise', 'mass', 'torque', 'friction', 'lag')
+CONDS = ('noise', 'mass', 'torque', 'friction', 'lag', 'kp')   # kp: every servo's stiffness x
+DISTRACT = ('above', 'below', 'long')   # --distract: rungs that take no part in the move
 _NOISE = dict(SEN_SIG=dict(ct.SEN_SIG), SEN_BIAS=dict(ct.SEN_BIAS), SLAM_SIG=ct.SLAM_SIG,
               MAP_SIG=ct.MAP_SIG, MAP_ROT_SIG=ct.MAP_ROT_SIG, MAP_END_SIG=ct.MAP_END_SIG)
 
@@ -70,6 +74,7 @@ def scale_noise(x):
 def perturb(task, cond):
     """the episode's model as `cond` says (`conditions`; noise is `scale_noise`'s)"""
     m = task.env.model
+    task.peak0 = m.actuator_forcerange[:, 1].copy()   # the datasheet peaks, before --cond torque
     if 'mass' in cond:
         m.body_mass[:] *= cond['mass']
         m.body_inertia[:] *= cond['mass']
@@ -78,8 +83,14 @@ def perturb(task, cond):
         m.jnt_actfrcrange[:] *= cond['torque']
     if 'friction' in cond:
         m.geom_friction[:, 0] *= cond['friction']
+    if 'kp' in cond:                     # position servos: force = kp (ctrl - q) - kv qdot
+        assert (m.actuator_biasprm[:, 1] == -m.actuator_gainprm[:, 0]).all(), "not position servos"
+        m.actuator_gainprm[:, 0] *= cond['kp']
+        m.actuator_biasprm[:, 1] *= cond['kp']
     if 'lag' in cond:
         task.lag = int(round(cond['lag'] / 1000 / m.opt.timestep))
+        if task.lag > ct.FRAME_SKIP:     # ClimbTask holds the last setpoint only, one control step
+            raise SystemExit(f"--cond lag {cond['lag']:g} ms: at most {ct.FRAME_SKIP * m.opt.timestep * 1000:g} ms")
 
 
 class Lesson(gym.Env):
@@ -114,7 +125,7 @@ def torque_report(task, episodes):
     eps = [np.abs(np.asarray(e)) for e in episodes if len(e)]
     out = {}
     for i in range(m.nu):
-        peak = float(m.actuator_forcerange[i, 1])
+        peak = float(getattr(task, 'peak0', m.actuator_forcerange[:, 1])[i])
         rated = RATED[peak]
         x = np.concatenate([e[:, i] for e in eps])
         longest = 0
@@ -199,9 +210,49 @@ def wilson(k, n, z=1.96):
     return (max(0.0, c - h), min(1.0, c + h))
 
 
-def held_out(run_dir, ck, state, families, n, levels, robot, device, jsonl, exact=None, cond=None):
+def _seg_dist(p, c, a, h):
+    """distance from points p (n, 3) to the segment centre c, axis a, half length h"""
+    s = np.clip((p - c) @ a, -h, h)
+    return np.linalg.norm(p - c - s[:, None] * a, axis=1)
+
+
+def distract(lay, mode, rng, L=0.5, keep=0.25):
+    """`lay` with rungs that take no part in its move (`--distract`), or None where they do not
+    fit: 'above' a full row 0.45-0.65 m over the highest row and OUT further out (as a family-3
+    row), 'below' one 0.90-1.30 m under the lowest (under the hanging robot), as far out as it; 'long' every rung end
+    carried on by L where that stays `keep` from every other rung and FACE from every wall.
+    rl.walls.Checker then keeps the robot's start and goal hangs clear of them, as for any wall"""
+    from .walls import FACE, OUT, R
+    rungs = list(lay['rungs'])
+    along = [r for r in rungs if abs(r[2][1]) > 0.99]           # rows along y
+    if mode == 'long':
+        out = []
+        for i, (nm, c, a, h, r) in enumerate(rungs):
+            lo, hi = -h, h
+            for sgn in (-1, 1):
+                ext = c + a * (sgn * h + sgn * np.linspace(0.0, L, 11)[1:, None])
+                near = min([_seg_dist(ext, o[1], o[2], o[3]).min() for j, o in enumerate(rungs) if j != i]
+                           + [np.abs((ext - w[1]) @ w[2]).min() + keep - FACE + 1e-6 for w in lay['walls']] + [np.inf])
+                if near >= keep:
+                    lo, hi = (lo - L, hi) if sgn < 0 else (lo, hi + L)
+            out.append((nm, c + a * (lo + hi) / 2, a, (hi - lo) / 2, r))
+        return dict(lay, rungs=out) if any(o[3] > r[3] for o, r in zip(out, rungs)) else None
+    if not along:
+        return None
+    top = max(along, key=lambda r: r[1][2]) if mode == 'above' else min(along, key=lambda r: r[1][2])
+    y0 = min(r[1][1] - r[3] for r in along)
+    y1 = max(r[1][1] + r[3] for r in along)
+    dz = rng.uniform(0.45, 0.65) if mode == 'above' else -rng.uniform(0.90, 1.30)
+    x = top[1][0] - (OUT if mode == 'above' else 0.0)
+    c = np.array([x, (y0 + y1) / 2, top[1][2] + dz])
+    return dict(lay, rungs=rungs + [(f'rung_g{len(rungs)}', c, np.array([0.0, 1.0, 0.0]), (y1 - y0) / 2, R)])
+
+
+def held_out(run_dir, ck, state, families, n, levels, robot, device, jsonl, exact=None, cond=None,
+             distract_mode=None):
     """`n` unseen walls of each family, one deterministic episode each (`--walls`); `exact`
-    ({parameter: value}, --set): those parameters at that value, past training's range too"""
+    ({parameter: value}, --set): those parameters at that value, past training's range too;
+    `distract_mode` (--distract): each wall with rungs that take no part in the move"""
     from . import walls as W
     from .mjx_scene import c_scene
     if state.get('families'):
@@ -214,12 +265,21 @@ def held_out(run_dir, ck, state, families, n, levels, robot, device, jsonl, exac
     for f in families:
         rng = np.random.default_rng(WALL_SEED + f)
         ok, why = 0, []
-        if exact:
+        if exact or distract_mode:       # the walls one by one: each must be usable as changed
             ints = {p[0]: isinstance(p[1], int) for p in W.FAMILIES[f]}
-            ex = {k: int(v) if ints[k] else v for k, v in exact.items()}
-            walls = [lay for lay in (W.sample(f, lv[f], rng, ex) for _ in range(50 * n)) if checker.ok(lay)][:n]
+            ex = {k: int(v) if ints[k] else v for k, v in (exact or {}).items()}
+            walls = []
+            for _ in range(50 * n):
+                lay = W.sample(f, lv[f], rng, ex)
+                if distract_mode and checker.ok(lay):    # usable before, so the change is what differs
+                    lay = distract(lay, distract_mode, rng)
+                if lay is not None and checker.ok(lay):
+                    walls.append(lay)
+                if len(walls) == n:
+                    break
             if len(walls) < n:
-                raise SystemExit(f"family {f} at {ex}: {len(walls)} usable walls in {50 * n} draws")
+                raise SystemExit(f"family {f} at {ex} {distract_mode or ''}: {len(walls)} usable walls "
+                                 f"in {50 * n} draws")
         else:
             walls = W.draw(checker, {f: 1.0}, lv, rng, n, probe_p=0.0)
         for lay in walls:
@@ -240,9 +300,62 @@ def held_out(run_dir, ck, state, families, n, levels, robot, device, jsonl, exac
             with open(jsonl, 'a') as fh:
                 fh.write(json.dumps(dict(mode='walls', family=f, robot=robot, levels=levels,
                                          level=lv[f], set=exact or {}, cond=cond or {},
+                                         distract=distract_mode,
                                          run=os.path.basename(run_dir),
                                          checkpoint=ck + 'model', timesteps=state['timesteps'],
                                          success=ok, episodes=n, ci95=(lo, hi), reasons=tally)) + '\n')
+
+
+def open_loop(run_dir, ck, families, episodes, robot, device, jsonl, cond=None):
+    """the reference climbs themselves as a controller (`--open-loop`): each climb of rl.rsi.REFS
+    in `families` played open loop on its own wall from the hang -- a searched climb's setpoints,
+    a recorded one's actions, then the last setpoints held --, against the policy's `episodes`
+    on the same wall when `run_dir` is given. The climbs are open loop, so one episode is all of
+    them; the sensor noise reaches only the policy"""
+    from . import rsi
+    from .mjx_scene import c_scene
+    model = PPO.load(os.path.join(run_dir, f'{ck}model'), device=device) if run_dir else None
+    print(f"{'climb':>14} {'open loop':>10} {'policy':>12}   ({robot} robot, {cond or 'nominal'})")
+    for f, h, side, rows, name in rsi.REFS:
+        if f not in families:
+            continue
+        z = np.load(os.path.join(rsi.HERE, 'fixtures', name + '.npz'))
+        found = 'ctrl0' in z.files
+        lay = dict(rsi.ref_wall(f, h, side or 1, rows), timeout=90.0)   # as rsi.replay: room to finish
+        path, spec = c_scene(lay, robot)
+        try:
+            env = Lesson(lay['hang'], xml=path, spec=spec, cond=cond)
+            env.reset(seed=0)
+            t, why = env.task, None
+            plan = z['ctrl'] if found else z['target'][:int(z['won'])]
+            for k in range(int(lay['timeout'] / ct.CONTROL_DT) + 1):
+                if k < len(plan):
+                    a = np.clip((plan[k] - t.ctrl) / ct.ACT_SCALE, -1, 1) if found else plan[k]
+                else:
+                    a = np.zeros(17)                     # the last setpoints held
+                _, _, te, tr, info = env.step(a)
+                if te or tr:
+                    why = info.get('reason', 'timeout')
+                    break
+            res = dict(mode='openloop', climb=name, family=f, height=h, side=side, rows=rows,
+                       found=found, robot=robot, cond=cond or {}, openloop=why)
+            row = f"{name:>14} {why:>10}"
+            if model is not None:
+                venv = DummyVecEnv([lambda: Lesson(lay['hang'], xml=path, spec=spec, cond=cond)])
+                venv = VecNormalize.load(os.path.join(run_dir, f'{ck}vecnorm.pkl'), venv)
+                venv.training, venv.norm_reward = False, False
+                k, _, w = run(venv, episodes, model)
+                venv.close()
+                res.update(run=os.path.basename(run_dir), checkpoint=ck + 'model', success=k,
+                           episodes=episodes, ci95=wilson(k, episodes),
+                           reasons={r: w.count(r) for r in sorted(set(w))})
+                row += f" {k:>5}/{episodes:<6}"
+            print(row, flush=True)
+        finally:
+            os.remove(path)
+        if jsonl:
+            with open(jsonl, 'a') as fh:
+                fh.write(json.dumps(res) + '\n')
 
 
 def main():
@@ -265,7 +378,8 @@ def main():
     ap.add_argument('--levels', default='reached', choices=['reached', 'last'],
                     help="--walls: draw up to the checkpoint's ADR levels, or every family's last")
     ap.add_argument('--robot', default='full', choices=['full', 'simp'],
-                    help='--walls: the full robot, or the simplified one training uses (both in C)')
+                    help='the full robot, or the simplified one training uses (both in C): --walls, '
+                         '--open-loop, and the benchmark lessons (toward the left only)')
     ap.add_argument('--set', default=None,
                     help="--walls: 'param=value,...' fixed on every wall of the families in --lessons, "
                          "past training's last level too")
@@ -274,6 +388,11 @@ def main():
                          "(scales; lag in ms)")
     ap.add_argument('--torque', action='store_true',
                     help="also report each joint's torque against its continuous rating")
+    ap.add_argument('--distract', default=None, choices=DISTRACT,
+                    help="--walls: each wall with rungs that take no part in the move (`distract`)")
+    ap.add_argument('--open-loop', dest='open_loop', action='store_true',
+                    help="play rl.rsi's reference climbs open loop on their walls, against the policy "
+                         "(--name; '' for the climbs alone) on the same walls")
     ap.add_argument('--symmetry', action='store_true', help="compare the robot's left and right sides, and exit")
     a = ap.parse_args()
     if a.symmetry:
@@ -281,16 +400,27 @@ def main():
     cond = conditions(a.cond)
     scale_noise(cond.get('noise', 1.0))
 
+    if a.open_loop and not a.name:
+        return open_loop(None, '', [int(x) for x in (a.lessons or '1,2,3,4,5,6,7').split(',')],
+                         a.episodes, a.robot, a.device, a.jsonl, cond)
     run_dir = os.path.join('out', a.name)
     ck = a.ckpt if a.ckpt is not None else ('best_' if a.from_best else '')
     state = json.load(open(os.path.join(run_dir, f'{ck}state.json')))
     pool = state['curriculum']['active'] if 'curriculum' in state else state['active']
     lessons = [lesson_key(x) for x in a.lessons.split(',')] if a.lessons else pool
     print(f"{run_dir}: {state['timesteps']} steps, pool {pool}\n")
+    if a.open_loop:
+        return open_loop(run_dir, ck, [int(x) for x in a.lessons.split(',')] if a.lessons else pool,
+                         a.episodes, a.robot, a.device, a.jsonl, cond)
     if a.walls:
         fams = [int(x) for x in a.lessons.split(',')] if a.lessons else pool
         exact = {k: float(v) for k, _, v in (p.partition('=') for p in a.set.split(','))} if a.set else None
-        return held_out(run_dir, ck, state, fams, a.walls, a.levels, a.robot, a.device, a.jsonl, exact, cond)
+        return held_out(run_dir, ck, state, fams, a.walls, a.levels, a.robot, a.device, a.jsonl, exact, cond,
+                        a.distract)
+    if a.robot == 'simp' and a.mirror:
+        raise SystemExit("--robot simp: the simplified robot's lesson scenes go toward the left only")
+    from .mjx_scene import c_path
+    xml_of = (lambda k: c_path(k)) if a.robot == 'simp' else (lambda k: None)
     if cond:
         print(f"conditions: {cond}")
     print(f"{'lesson':>24} {'policy':>18} {'do nothing':>18}")
@@ -298,7 +428,8 @@ def main():
     for k in lessons:
         row = []
         for policy_on in (True, False):
-            venv = DummyVecEnv([lambda: Lesson(k, mirror=a.mirror, cond=cond, torque=a.torque and policy_on)])
+            venv = DummyVecEnv([lambda: Lesson(k, mirror=a.mirror, cond=cond, torque=a.torque and policy_on,
+                                               xml=xml_of(k))])
             venv = VecNormalize.load(os.path.join(run_dir, f'{ck}vecnorm.pkl'), venv)
             venv.training = False          # freeze the statistics; an eval that keeps
             venv.norm_reward = False       # updating them is scoring a moving target
@@ -328,7 +459,7 @@ def main():
                       f"{t['longest_s']:.1f} s at most in a row")
         if a.jsonl:
             with open(a.jsonl, 'a') as f:
-                f.write(json.dumps(dict(lesson=k, name=LESSONS[k]['name'], mirror=a.mirror,
+                f.write(json.dumps(dict(lesson=k, name=LESSONS[k]['name'], mirror=a.mirror, robot=a.robot,
                                         run=a.name, checkpoint=ck + 'model',
                                         timesteps=state['timesteps'], **res)) + '\n')
 

@@ -39,7 +39,9 @@
 #     CKPT=<steps> (checkpoint interval; the trainer's own default, 1M, if unset)
 #     FAMILIES=1-7 (the wall families of a fresh run; every one if unset; one family: its
 #     specialist). DR=0 (a fresh run without dynamics randomization). ABLATE=rsi,clone (a
-#     fresh run without those parts: python -m rl.train_ppo -h). A resume keeps the run's own
+#     fresh run without those parts: python -m rl.train_ppo -h). A resume keeps the run's own,
+#     and refuses another commit than the run's unless NEW_CODE=1 (logged in state.json).
+#     WEIGHTS=K_BANK=0.5,K_REACH=2 (a fresh run's reward weights scaled: the sensitivity runs)
 #     NET=64,64 (the policy and value nets' hidden sizes, a fresh run only; a run
 #                carried on keeps its checkpoint's shape; unset: the trainer's 256,256)
 # ENVS is halved by the preflight, down to 1024, until a batch fits the card, and the
@@ -95,7 +97,7 @@ mkdir -p "$RUN"
 deadline=$(( $(date +%s) + HOURS * 3600 ))
 say() { echo "[gpu_run $(date '+%F %T')] $*" | tee -a "$RUN/gpu_run.log"; }
 
-{ echo "== $(date)  HOURS=$HOURS TOTAL=$TOTAL ENVS=$ENVS SEED=$SEED WALLS=$WALLS FAMILIES=${FAMILIES:-all} DR=${DR:-1} ABLATE=${ABLATE:-}"
+{ echo "== $(date)  HOURS=$HOURS TOTAL=$TOTAL ENVS=$ENVS SEED=$SEED WALLS=$WALLS FAMILIES=${FAMILIES:-all} DR=${DR:-1} ABLATE=${ABLATE:-} WEIGHTS=${WEIGHTS:-}"
   git rev-parse HEAD; git status --short
   echo "threads allowed: ulimit -u $(ulimit -u), cgroup pids.max $(cat /sys/fs/cgroup/pids.max 2>/dev/null || echo -)"
   nvidia-smi
@@ -174,7 +176,7 @@ print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
     short() {
         local phy=$1; shift
         rm -rf out/_preflight
-        { "$@" $PY -m rl.train_ppo --name _preflight --physics "$phy" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} ${FAMILIES:+--families "$FAMILIES"} ${ABLATE:+--ablate "$ABLATE"} \
+        { "$@" $PY -m rl.train_ppo --name _preflight --physics "$phy" --envs 256 --walls "$WALLS" --steps 16384 --ckpt-every 8192 ${NET:+--net "$NET"} ${FAMILIES:+--families "$FAMILIES"} ${ABLATE:+--ablate "$ABLATE"} ${WEIGHTS:+--weights "$WEIGHTS"} \
           && "$@" $PY -m rl.train_ppo --name _preflight --physics "$phy" --envs 256 --walls "$WALLS" --steps 8192 --resume; } \
             2>&1 | stamped > "$RUN/short_$phy.txt"
         local r=$?
@@ -253,6 +255,8 @@ while :; do
     [ -z "$resume" ] && [ -n "${FAMILIES:-}" ] && net="$net --families $FAMILIES"
     [ -z "$resume" ] && [ "${DR:-1}" = 0 ] && net="$net --no-dr"
     [ -z "$resume" ] && [ -n "${ABLATE:-}" ] && net="$net --ablate $ABLATE"
+    [ -z "$resume" ] && [ -n "${WEIGHTS:-}" ] && net="$net --weights $WEIGHTS"
+    [ -n "$resume" ] && [ -n "${NEW_CODE:-}" ] && net="$net --new-code"
     # a card fallen off the bus leaves JAX on the CPU, where a restart trained at 90 env-steps/s
     # for 7.5 h (gpu9) -- an update every 22 min, inside STALL. So the GPU check, every start
     # (its whole output first: piped, `grep -q` stopped reading and the broken pipe failed it)
