@@ -419,7 +419,8 @@ class MjxClimb:
             return mx
         return mx.replace(body_mass=mx.body_mass * dyn['mass'],
                           body_inertia=mx.body_inertia * dyn['mass'][:, None],
-                          geom_friction=mx.geom_friction.at[:, 0].multiply(dyn['fric']),
+                          # every contact is an explicit <pair> (rl.mjx_scene): geom_friction is never read
+                          pair_friction=mx.pair_friction.at[:, :2].multiply(dyn['fric']),
                           actuator_forcerange=mx.actuator_forcerange * dyn['torque'][:, None])
 
     def _dyn(self, key=None):

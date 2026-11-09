@@ -82,7 +82,8 @@ def perturb(task, cond):
         m.actuator_forcerange[:] *= cond['torque']
         m.jnt_actfrcrange[:] *= cond['torque']
     if 'friction' in cond:
-        m.geom_friction[:, 0] *= cond['friction']
+        m.geom_friction[:, 0] *= cond['friction']   # the full robot's contacts mix these...
+        m.pair_friction[:, :2] *= cond['friction']  # ...the simplified robot's are explicit pairs
     if 'kp' in cond:                     # position servos: force = kp (ctrl - q) - kv qdot
         assert (m.actuator_biasprm[:, 1] == -m.actuator_gainprm[:, 0]).all(), "not position servos"
         m.actuator_gainprm[:, 0] *= cond['kp']
@@ -98,8 +99,10 @@ class Lesson(gym.Env):
     unless asked: only rl.render draws them); or, with `xml` and `spec`, a generated wall
     starting from lesson `lesson`'s hang"""
 
-    def __init__(self, lesson, mirror=False, visual=False, xml=None, spec=None, cond=None, torque=False):
+    def __init__(self, lesson, mirror=False, visual=False, xml=None, spec=None, cond=None, torque=False, seed=None):
         self.task = ClimbTask(lesson, visual=visual, mirror=mirror, xml=xml, spec=spec)
+        if seed is not None:                 # the sensor noise reproducible, and the same for every run compared
+            self.task.rng = np.random.default_rng(seed)
         perturb(self.task, cond or {})
         self.tau = [] if torque else None    # each episode's actuator torques, a row a control step
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (self.task.obs_dim,), np.float32)
@@ -282,10 +285,11 @@ def held_out(run_dir, ck, state, families, n, levels, robot, device, jsonl, exac
                                  f"in {50 * n} draws")
         else:
             walls = W.draw(checker, {f: 1.0}, lv, rng, n, probe_p=0.0)
-        for lay in walls:
+        for i, lay in enumerate(walls):
             path, spec = c_scene(lay, robot)
             try:
-                venv = DummyVecEnv([lambda: Lesson(lay['hang'], xml=path, spec=spec, cond=cond)])
+                venv = DummyVecEnv([lambda: Lesson(lay['hang'], xml=path, spec=spec, cond=cond,
+                                                   seed=WALL_SEED + 1000 * f + i)])
                 venv = VecNormalize.load(os.path.join(run_dir, f'{ck}vecnorm.pkl'), venv)
                 venv.training, venv.norm_reward = False, False
                 k, _, w = run(venv, 1, model)
@@ -341,7 +345,7 @@ def open_loop(run_dir, ck, families, episodes, robot, device, jsonl, cond=None):
                        found=found, robot=robot, cond=cond or {}, openloop=why)
             row = f"{name:>14} {why:>10}"
             if model is not None:
-                venv = DummyVecEnv([lambda: Lesson(lay['hang'], xml=path, spec=spec, cond=cond)])
+                venv = DummyVecEnv([lambda: Lesson(lay['hang'], xml=path, spec=spec, cond=cond, seed=WALL_SEED)])
                 venv = VecNormalize.load(os.path.join(run_dir, f'{ck}vecnorm.pkl'), venv)
                 venv.training, venv.norm_reward = False, False
                 k, _, w = run(venv, episodes, model)
@@ -429,7 +433,7 @@ def main():
         row = []
         for policy_on in (True, False):
             venv = DummyVecEnv([lambda: Lesson(k, mirror=a.mirror, cond=cond, torque=a.torque and policy_on,
-                                               xml=xml_of(k))])
+                                               xml=xml_of(k), seed=WALL_SEED + k)])
             venv = VecNormalize.load(os.path.join(run_dir, f'{ck}vecnorm.pkl'), venv)
             venv.training = False          # freeze the statistics; an eval that keeps
             venv.norm_reward = False       # updating them is scoring a moving target

@@ -38,6 +38,9 @@ def jobs_of(run, quick=False):
     """[(key, argv)] of one run, by its role"""
     E = lambda n: str(2 if quick else n)
     ev = ['-m', 'rl.eval', '--name', run, '--from-best', '--jsonl', os.path.join(OUT, run, 'paper.jsonl')]
+    # every lesson and family named: left to its default rl.eval scores the checkpoint's pool, and an
+    # ablation that never let a family in would have no number for it -- its score is what it does there
+    ALL = ['--lessons', ','.join(map(str, FAM))]
     bench = [(f'bench{m}', ev + ['--episodes', E(100)] + ([m] if m else [])) for m in ('', '--mirror')]
     last = [('heldout_last', ev + ['--walls', E(200), '--levels', 'last'])]
     m = re.fullmatch(r'b(\d)_s\d+', run)
@@ -45,21 +48,21 @@ def jobs_of(run, quick=False):
         f = m.group(1)
         return [(k, a + ['--lessons', f]) for k, a in bench + last]
     if run.startswith(('a_', 'w_')):
-        return bench + last
+        return [(k, a + ALL) for k, a in bench + last]
     if not run.startswith('p_s'):
         return []
-    out = bench + last + [
+    out = [(k, a + ALL) for k, a in bench + last + [
         ('heldout_reached', ev + ['--walls', E(200), '--levels', 'reached']),
         ('bench_simp', ev + ['--episodes', E(100), '--robot', 'simp']),
-        ('sim2sim_mjx', ['-m', 'rl.mjx_check', 'policy', '--run', os.path.join(OUT, run), '--episodes', E(50)]),
         ('torque', ev + ['--episodes', E(20), '--torque']),
         ('torque_m', ev + ['--episodes', E(20), '--torque', '--mirror']),
-    ]
+    ]]
+    out += [('sim2sim_mjx', ['-m', 'rl.mjx_check', 'policy', '--run', os.path.join(OUT, run), '--episodes', E(50)])]
     out += [(f'beyond{f}', ev + ['--walls', E(50), '--levels', 'last', '--lessons', str(f), '--set', BEYOND[f]])
             for f in FAM]
-    out += [(f'distract_{d}', ev + ['--walls', E(100), '--levels', 'last', '--distract', d])
+    out += [(f'distract_{d}', ev + ['--walls', E(100), '--levels', 'last', '--distract', d] + ALL)
             for d in ('above', 'below', 'long')]
-    out += [(f'robust_{c}{m}', ev + ['--episodes', E(50), '--cond', c] + ([m] if m else []))
+    out += [(f'robust_{c}{m}', ev + ['--episodes', E(50), '--cond', c] + ([m] if m else []) + ALL)
             for c in CONDS for m in ('', '--mirror')]
     out += [(f'openloop_{c or "nominal"}', ev + ['--open-loop', '--episodes', E(20), '--lessons', '1,2,3,4,5,6,7']
              + (['--cond', c] if c else []))

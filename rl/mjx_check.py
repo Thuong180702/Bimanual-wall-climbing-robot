@@ -958,7 +958,8 @@ def _warp_speed(impl, envs, steps=20):
 # --- dynamics randomization ----------------------------------------------------------
 def check_dr():
     """MjxClimb's `dr` reaches the physics: a robot 10 % heavier hangs ~10 % more on its
-    hooks, and a lagged setpoint moves the joints less in the step it is given"""
+    hooks, a lagged setpoint moves the joints less in the step it is given, and the friction
+    scale reaches every contact"""
     import jax
     from .mjx_task import MjxClimb, LESSON_KEYS
     task = MjxClimb(dr=True)
@@ -981,6 +982,11 @@ def check_dr():
     late, now = moved(dict(nom, lag=10)), moved(nom)
     print(f"dr: joints moved in one step, setpoint 20 ms late {late:.4f} rad, on time {now:.4f} rad")
     assert late < now, "the lag dr draws does not hold the old setpoint"
+    from mujoco import mjx
+    fr = lambda dyn: np.asarray(mjx.forward(task._env_model(st0.wall, dyn), st0.d)._impl.contact.friction)[:, 0]
+    x = fr(dict(nom, fric=0.5 * nom['fric'])) / fr(nom)
+    print(f"dr: contact sliding friction with friction x0.5: x{x.min():.3f}..{x.max():.3f}")
+    assert np.allclose(x, 0.5, atol=1e-3), "the friction dr draws does not reach the contacts"
     print("dr: OK")
 
 

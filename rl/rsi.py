@@ -305,8 +305,11 @@ def weights(books, ref, ok):
     and every start booked fewer than START_MIN times, the rest evenly over every start"""
     if DRAW == 'uniform':
         return np.full(len(ok), 1.0 / len(ok))
-    if DRAW == 'rfcl':                   # each climb's frontier start; evenly once all are passed
-        hot = np.isin(ok, [f for f in frontier(books, ref, ok).values() if f is not None])
+    if DRAW == 'rfcl':                   # each climb's latest start not yet PASSed, RFCL's step back at a
+        sc, hot = ref['start_climb'][ok], np.zeros(len(ok), bool)   # success threshold; evenly once all are
+        todo = np.array([not passed(books.get(int(j), [])) for j in ok], bool)
+        for c in np.unique(sc[todo]):
+            hot[np.nonzero((sc == c) & todo)[0][-1]] = True
         return hot / hot.sum() if hot.any() else np.full(len(ok), 1.0 / len(ok))
     hot, _ = _window(books, ref, ok)
     hot |= np.array([len(books.get(int(j), [])) < START_MIN for j in ok], bool)
@@ -377,9 +380,18 @@ def mix(layouts, rng, levels, share, books, ref):
 
 
 # --- building the fixture ----------------------------------------------------------
-def replay(lay, path):
+def _terms(i):
+    """one step's reward, term by term, from ClimbTask.step's info (the shaping telescopes: not here)"""
+    from . import climb_task as ct
+    return dict(bank=ct.K_BANK * i['bank'], grab=ct.K_GRAB * i['first'], slide=-ct.K_SLIDE * i['slide'],
+                flight=-ct.K_FLIGHT * i['flight'], dangle=-ct.K_DANGLE * i['parked'], stale=-ct.K_STALE * i['stale'],
+                sep=-ct.K_SEP * i['sep_err'], effort=-ct.K_EFFORT * i['effort'], fight=-ct.K_FIGHT * i['fight'])
+
+
+def replay(lay, path, book=None):
     """a found climb (its setpoints) through ClimbTask.step on the simplified robot, on its
-    wall -> (states, success step, live potential's hill)"""
+    wall -> (states, success step, live potential's hill). `book`: a dict that takes each reward
+    term's sum (`_terms`) and the whole return"""
     from .climb_task import ClimbTask, ACT_SCALE
     from .mjx_scene import c_scene
     xml, spec = c_scene(dict(lay, timeout=90.0))
@@ -397,7 +409,10 @@ def replay(lay, path):
         a = np.clip((c - t.ctrl) / ACT_SCALE, -1, 1)
         out.append(dict(qpos=d.qpos.copy(), qvel=d.qvel.copy(), ctrl=t.ctrl.copy(),
                         grabs=t.grabs.copy(), action=a))
-        _, _, te, tr, info = t.step(a)
+        _, r, te, tr, info = t.step(a)
+        if book is not None:
+            for key, x in dict(_terms(info), ret=r).items():
+                book[key] = book.get(key, 0.0) + x
         hill = max(hill, info['live'] - cmin)
         cmin = min(cmin, info['live'])
         if te or tr:
@@ -577,5 +592,28 @@ def check(z):
     print("rsi: OK")
 
 
+def ledger(families=range(1, 8)):
+    """the searched climbs of `families` replayed, each reward term summed on its own: a correct
+    motion must earn a positive return; printed: the share of it the largest charge takes"""
+    share = []
+    for f, h, side, nrows, name in REFS:
+        path = os.path.join(HERE, 'fixtures', name + '.npz')
+        if f not in families or 'ctrl0' not in np.load(path).files:
+            continue
+        b = {}
+        replay(ref_wall(f, h, side or 1, nrows), path, b)
+        ret, worst = b.pop('ret'), min(b, key=b.get)
+        print(f"ledger {name:>16}: return {ret:+6.2f}  worst {worst} {b[worst]:+.2f}  "
+              + ' '.join(f"{k} {v:+.2f}" for k, v in b.items()), flush=True)
+        assert ret > 0, f"{name}: a correct climb earns {ret:+.2f}"
+        share.append((-b[worst] / ret, ret, name, worst))
+    print(f"ledger: OK, returns {min(s[1] for s in share):+.2f}..{max(s[1] for s in share):+.2f}, largest charge "
+          f"{max(share)[0]:.0%} of a return ({max(share)[2]}, {max(share)[3]})")
+
+
 if __name__ == '__main__':
-    check(build())
+    import sys
+    if sys.argv[1:] == ['ledger']:
+        ledger()
+    else:
+        check(build())
