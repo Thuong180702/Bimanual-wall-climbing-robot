@@ -80,7 +80,7 @@ STEP_NOISE = dict(slam=(3,), w=(3,), sen=SEN_SHAPE)   # standard normals drawn e
 # cross-check run the nominal model. ponytail: assumed spreads, not measured -- narrow or
 # widen each once the hardware's system identification gives one.
 DR_MASS = 0.10           # each body's mass and inertia, x U(1 - this, 1 + this): CAD vs built
-DR_FRICTION = 0.30       # every geom's sliding friction, x one U(1 - this, 1 + this): hook pads
+DR_FRICTION = 0.30       # every contact pair's sliding friction, x one U(1 - this, 1 + this): hook pads
 DR_TORQUE = (0.80, 1.00) # each actuator's torque limit, x U(lo, hi): datasheet peak vs a warm motor
 DR_LAG = 10              # physics substeps (of FRAME_SKIP, 2 ms each) a new setpoint reaches
                          # the servos late, U{0..this} an episode: 0-20 ms of bus and driver

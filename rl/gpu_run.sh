@@ -212,6 +212,14 @@ print(*(','.join(map(str, c[i * n:(i + 1) * n] or c)) for i in range(4)))")"
     # `python -m rl.mjx_check warp --speed --envs N` still times them, by hand.
     say "physics: $(cat "$RUN/physics")"
     PHY=$(cat "$RUN/physics")
+    # the dynamics randomization, on the physics the run steps: friction was drawn and never
+    # reached a contact until 2026-11-08, and nothing on the card said so
+    if [ "${DR:-1}" != 0 ]; then
+        say "preflight: each env's own masses, friction, torque limits and lag reach $PHY ($RUN/check_dr.txt)"
+        step $PY -m rl.mjx_check dr --impl "$PHY" 2>&1 | stamped | tee "$RUN/check_dr.txt" \
+            || { say "the dynamics randomization does not reach the physics on $PHY: $RUN/check_dr.txt"; exit 1; }
+        cat "$RUN/check_dr.txt" >> "$RUN/preflight.txt"
+    fi
     if [ "$PHY" = warp ] && [ $r4 -eq 0 ]; then
         say "preflight 4/4: a short training run on warp saved and resumed, beside step 3 ($RUN/short_warp.txt)"
     else

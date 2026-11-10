@@ -28,12 +28,12 @@ VIEW = {7: (232.0, -24.0, 4.2), 8: (250.0, -26.0, 4.2)}   # lessons whose side o
 WALLS = 5                     # the geom group the walls are moved to: cast into, never drawn
 
 
-def load(run):
+def load(run, deterministic=True):
     from stable_baselines3 import PPO
     model = PPO.load(os.path.join(run, 'best_model.zip'), device='cpu')
     with open(os.path.join(run, 'best_vecnorm.pkl'), 'rb') as f:
         vn = pickle.load(f)
-    return lambda o: model.predict(vn.normalize_obs(o[None].astype(np.float32)), deterministic=True)[0][0]
+    return lambda o: model.predict(vn.normalize_obs(o[None].astype(np.float32)), deterministic=deterministic)[0][0]
 
 
 def reference(task, name):

@@ -17,7 +17,7 @@ terrain curriculum, Rudin et al. 2022):
     candidate becomes the level (rl.train_ppo.Curriculum).
 
 So training never draws past what has been passed, and a new level reaches the walls only
-once it is learnt -- a candidate is a fifth of a family's walls however hard it is.
+once it is learnt -- the candidates are a quarter of a family's walls however hard they are.
 
 Every wall is a layout in rl.mjx_scene.lesson_layout's format -- rungs (name, centre, axis,
 half length, radius), walls (name, point on the inner face, normal), the two goals [L, R],

@@ -11,15 +11,16 @@ python -m rl.climb_task              # the task: every reward, sensor and termin
 python -m rl.rsi                     # rebuild the reference-climb fixture and check it
 python -m rl.train_ppo --self-check  # curriculum, ADR, guard, update size, cloning
 python -m rl.mjx_check               # the GPU task against the C one: task, physics, model, policy
-python -m rl.mjx_check dr            # dynamics randomization reaches the physics (mass, lag)
+python -m rl.mjx_check dr            # dynamics randomization reaches each env's physics (--impl warp on a GPU)
 python -m rl.mjx_check ablate        # --ablate's reward switches (route, hold, oneway) do what they say
 
 bash rl/gpu_setup.sh && bash rl/gpu_run.sh gpu1      # a rented GPU box: preflight, train, score
-FAMILIES=1-7 SEED=1 bash rl/gpu_run.sh p_s1          # the paper's runs: families 1..7, a seed each
-FAMILIES=1-7 ABLATE=rsi SEED=1 bash rl/gpu_run.sh a_rsi_s1   # an ablation (python -m rl.train_ppo -h lists them)
-FAMILIES=5 SEED=1 bash rl/gpu_run.sh b5_s1           # the family-5 specialist
-NEW_CODE=1 bash rl/gpu_run.sh p_s1                     # resume on another commit (refused without; logged)
-FAMILIES=1-7 WEIGHTS=K_BANK=0.5 bash rl/gpu_run.sh w_bank05_s0   # a reward-weight sensitivity run
+bash rl/paper_run.sh p_s1                            # the paper's runs, by name: the method, seed 1 (1.5B)
+bash rl/paper_run.sh a_rsi_s1                        # an ablation, 0.75B (rl/paper_run.sh lists every name)
+bash rl/paper_run.sh b5_s1                           # the family-5 specialist
+bash rl/paper_run.sh w_bank05_s0                     # a reward-weight sensitivity run
+bash rl/paper_run.sh x_oneway                        # a weaker reward rule, 100M steps on families 1-3
+NEW_CODE=1 bash rl/paper_run.sh p_s1                 # resume on another commit (refused without; logged)
 python -m rl.paper_eval --list && python -m rl.paper_eval --jobs 8   # every paper evaluation (CPU)
 python -m rl.status --name gpu1 --watch              # what a run is doing (safe while it trains)
 python -m rl.eval --name gpu1 --from-best            # the benchmark, against doing nothing
@@ -39,7 +40,7 @@ python -m rl.curve --name gpu1 && python -m rl.plot --name gpu1     # learning c
 | `estimator.py`, `lidar.py` | what the robot knows of itself and of the wall, from its own sensors |
 | `mjx_scene.py`, `mjx_task.py` | the robot as MJX can simulate it, and the task ported to JAX |
 | `rsi.py`, `plan.py` | the reference climbs: how they are used, and how they were made |
-| `train_ppo.py` | PPO, the curriculum, the guard; `gpu_run.sh` runs it unattended |
+| `train_ppo.py` | PPO, the curriculum, the guard; `gpu_run.sh` runs it unattended, `paper_run.sh` the paper's runs by name |
 | `mjx_check.py` | the GPU path cross-checked against the C one |
 | `eval.py`, `curve.py`, `plot.py`, `status.py`, `render.py` | scoring, figures, watching |
 | `demo.py` | demo videos: a policy climbing, beside the map its simulated lidars build (`demo/`) |

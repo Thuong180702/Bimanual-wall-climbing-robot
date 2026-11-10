@@ -956,37 +956,63 @@ def _warp_speed(impl, envs, steps=20):
 
 
 # --- dynamics randomization ----------------------------------------------------------
-def check_dr():
-    """MjxClimb's `dr` reaches the physics: a robot 10 % heavier hangs ~10 % more on its
-    hooks, a lagged setpoint moves the joints less in the step it is given, and the friction
-    scale reaches every contact"""
-    import jax
-    from .mjx_task import MjxClimb, LESSON_KEYS
-    task = MjxClimb(dr=True)
-    T, step = task.tables, jax.jit(task.step)
-    st0, _ = jax.jit(task.reset)(T, LESSON_KEYS.index(1), jax.random.PRNGKey(0))
+def check_dr(impl='jax'):
+    """MjxClimb's `dr` reaches each env's OWN physics on the backend that trains (`impl`): of five
+    envs begun alike in one batch, the one 10 % heavier hangs ~10 % more on its hooks, the one at
+    friction x0.5 has its contacts at half the sliding friction, the one at torque limits x0.05
+    never passes them, and the one whose setpoints land 20 ms late moves its joints less in the
+    step they are given. A batch, not one env: what Warp could get wrong is a field taken from
+    the model, or from world 0, for every world"""
+    import jax, jax.numpy as jp
+    from .mjx_task import Batch
+    TQ = 0.05
+    b = Batch(5, impl=impl, dr=True)
+    task = b.task
+    b.set_probs({1: 1.0})
     nom = task._dyn()
+    dyn = jax.tree_util.tree_map(lambda *x: jp.stack(x), *[
+        nom, dict(nom, mass=1.1 * nom['mass']), dict(nom, fric=0.5 * nom['fric']),
+        dict(nom, torque=TQ * nom['torque']), dict(nom, lag=nom['lag'] + 10)])
 
-    def hang(dyn, n=25):
-        st, f = st0._replace(dyn=dyn), []
-        for _ in range(n):
-            st = step(T, st, np.zeros(17, np.float32))[0]
-            f.append(float(task._contact(st.d)[0].sum()))
-        return np.mean(f[-10:])
+    def start():
+        b.reset()
+        b.state = b.state._replace(dyn=dyn)
+        return np.asarray(b.state.d.qpos)
 
-    ratio = hang(dict(nom, mass=1.1 * nom['mass'])) / hang(nom)
-    print(f"dr: hook load with every mass x1.1: x{ratio:.3f}")
-    assert 1.05 < ratio < 1.15, "the masses dr draws do not reach the physics"
-    moved = lambda dyn: float(np.abs(np.asarray(step(T, st0._replace(dyn=dyn), np.ones(17, np.float32))[0].d.qpos
-                                                - st0.d.qpos)[7:]).sum())
-    late, now = moved(dict(nom, lag=10)), moved(nom)
-    print(f"dr: joints moved in one step, setpoint 20 ms late {late:.4f} rad, on time {now:.4f} rad")
-    assert late < now, "the lag dr draws does not hold the old setpoint"
-    from mujoco import mjx
-    fr = lambda dyn: np.asarray(mjx.forward(task._env_model(st0.wall, dyn), st0.d)._impl.contact.friction)[:, 0]
-    x = fr(dict(nom, fric=0.5 * nom['fric'])) / fr(nom)
-    print(f"dr: contact sliding friction with friction x0.5: x{x.min():.3f}..{x.max():.3f}")
-    assert np.allclose(x, 0.5, atol=1e-3), "the friction dr draws does not reach the contacts"
+    q0 = start()
+    b.step(np.ones((5, 17), np.float32))
+    moved = np.abs(np.asarray(b.state.d.qpos) - q0)[:, 7:].sum(1)
+    print(f"dr ({impl}): joints moved in one step, setpoint 20 ms late {moved[4]:.4f} rad, on time {moved[0]:.4f} rad")
+    assert moved[4] < 0.9 * moved[0], "the lag dr draws does not hold the old setpoint"
+
+    start()
+    limit = TQ * np.asarray(task.mc.actuator_forcerange[:, 1])
+    load, tau, alive = [], [], np.ones(5, bool)
+    for _ in range(25):
+        *_, term, trunc, info = b.step(np.zeros((5, 17), np.float32))
+        alive &= ~np.asarray(term | trunc)      # a reset draws the env new dynamics
+        load.append(np.asarray(info['touch']).sum(1))
+        if alive[3] and len(tau) < 5:
+            tau.append(np.abs(np.asarray(b.state.d.sensordata)[:, task.s_tau]))
+    assert alive[:3].all(), "an env hanging still ended"
+    ratio = np.mean(load[-10:], axis=0)
+    print(f"dr ({impl}): hook load with every mass x1.1: x{ratio[1] / ratio[0]:.3f}")
+    assert 1.05 < ratio[1] / ratio[0] < 1.15, "the masses dr draws do not reach the physics"
+    tau = np.max(tau, axis=0)                   # [env, actuator], over the first steps
+    print(f"dr ({impl}): torque limits x{TQ}: the largest torque is {(tau[3] / limit).max():.3f} of its limit "
+          f"(nominal env: {(tau[0] / limit).max():.1f})")
+    assert len(tau) and (tau[3] <= limit * 1.001).all() and (tau[0] > limit).any(), \
+        "the torque limits dr draws do not reach the actuators"
+    c = b.state.d._impl
+    if impl == 'warp':                          # one buffer for the batch, each contact with its world
+        live = np.arange(c.contact__dist.shape[0]) < int(np.asarray(c.nacon).ravel()[0])
+        wid, fr = np.asarray(c.contact__worldid)[live], np.asarray(c.contact__friction)[live, 0]
+        f0, f2 = fr[wid == 0], fr[wid == 2]
+    else:
+        f0, f2 = (np.asarray(c.contact.friction)[i, :, 0] for i in (0, 2))
+    x = (f2.min() / f0.min(), f2.max() / f0.max())
+    print(f"dr ({impl}): contact sliding friction with friction x0.5: x{x[0]:.3f}..{x[1]:.3f}")
+    assert len(f0) and np.allclose(x, 0.5, atol=1e-3), "the friction dr draws does not reach the contacts"
     print("dr: OK")
 
 
@@ -1032,7 +1058,7 @@ if __name__ == '__main__':
         RUN = which[i + 1]
         del which[i:i + 2]
     opts = {}
-    for flag, kind in (('--envs', int), ('--out', str), ('--episodes', int)):   # check_warp's; policy's
+    for flag, kind in (('--envs', int), ('--out', str), ('--episodes', int), ('--impl', str)):   # check_warp's; policy's; dr's
         if flag in which:
             i = which.index(flag)
             opts[flag[2:]] = kind(which[i + 1])
