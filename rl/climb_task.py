@@ -1796,12 +1796,13 @@ def main():
         for _ in range(100):
             t.step(z)
             wander.append(abs(stale()))
-        p0 = t._throat_true(t.anchor).copy()
+        a0 = t.anchor                  # the hand held to: the pull may hand the anchor over
+        p0 = t._throat_true(a0).copy()
         for _ in range(150):
             t.env.data.xfrc_applied[t.env.base, :3] = 0.23 * t.weight * ax
             t.step(z)
         t.env.data.xfrc_applied[t.env.base, :3] = 0.0
-        return t, ax, stale, max(wander), float((t._throat_true(t.anchor) - p0) @ ax)
+        return t, ax, stale, max(wander), float((t._throat_true(a0) - p0) @ ax)
 
     t, ax, stale, wander, crept = pull(1)
     flat = stale()

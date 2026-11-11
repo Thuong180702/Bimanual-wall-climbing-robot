@@ -152,13 +152,19 @@ PLANS['f9mtg90'] = (9, 0.90, -1, 1, mirrored(_f9t(0.90)))
 # rl/fixtures/<file>.npz <- how it was made (searches on the robot as of 2026-10; their chains in
 # out/climb_demo/ on the machine that ran them)
 PROVENANCE = {
-    'climb_f3_s20': "search f3r20 --hill 2, seed 42", 'climb_f3_s25': "search f3r25 --hill 2 --init f3_s20, seed 43",
-    'climb_f3_s30': "search f3r30 --hill 2 --init f3_s20, seed 47",
+    # lesson 3's three searched again on the robot of 2026-11-11 (the pelvis drawn for legs, the
+    # chest's bay: the old ones were released at the upper row's seat); seed 142 left phase 0 at 0.128
+    'climb_f3_s20': "search f3r20 --hill 2, seed 42", 'climb_f3_s25': "search f3r25 --hill 2 --iters 250 --init f3r20_s42, seed 43",
+    'climb_f3_s30': "search f3r30 --hill 2 --iters 250 --init f3r25_s43, seed 48 of 47-48",
+    # every taught climb recorded again from the same teacher on 2026-11-11: the old rows put
+    # the pelvis drawn for legs 20-77 mm into the wall
     'climb_f3x2_s20': "record gpu7 (173M) --hide-below", 'climb_f3x2_s25': "record gpu7 (173M) --hide-below",
     'climb_f3x2_s35': "record gpu11 (100M)", 'climb_f3x2_s40': "record gpu11 (100M)",
     'climb_f5_d30': "record gpu8 (162M)", 'climb_f5m_d30': "record gpu8 (162M)",
     'climb_f6_r30': "search f6r30", 'climb_f6m_r30': "mirror climb_f6_r30",
-    'climb_f6_r40': "search f6r40 --init f6r30", 'climb_f6m_r40': "mirror climb_f6_r40",
+    'climb_f6_r40': "search f6r40 --hill 2 --init f6r40_s81 (its own chain, out/climb_demo/, before "
+                    "the pelvis was drawn for legs on 2026-11-11), seed 182",
+    'climb_f6m_r40': "mirror climb_f6_r40",
     'climb_f7_s60': "record gpu10 (215M)", 'climb_f7m_s60': "record gpu10 (215M)",
     'climb_f8_b35': "search f8b35 --turn 2 --ik 4:<least squares, the left hook over the back rung turned round>",
     # each searched again under the policy's noise from the faster one before it (seed s - 100: --init
@@ -175,7 +181,8 @@ PROVENANCE = {
     'climb_f9m_g90': "search f9mtg90 --start <climb_f9m_g90's first 4 phases> --init <climb_f9_g90 mirrored>, "
                      "seed 55 of 3 (93/93; the old failed from every start before its catch)",
     'climb_f4_r20': "search f4r20 --hill 2, seed 0",
-    'climb_f4_r30': "search f4r30 --hill 2 --init f4r20, seed 1",
+    'climb_f4_r30': "search f4r30 --hill 2 --init f4r30_s1 (its own chain before the waist dropped "
+                    "0.10 m on 2026-11-11, on which it fell), seed 101",
     'climb_f4_r40': "search f4r40 --hill 2 --init f4r30, seed 2",
     'climb_f4x2_r40': "search f4x2r40 --hill 2 --init f4r40, seed 3",
 }

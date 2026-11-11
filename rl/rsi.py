@@ -48,6 +48,12 @@ HISTORY = os.path.join(HERE, 'fixtures', 'rsi_history.json')
 # (family, height, side, rows, file in rl/fixtures). height: the value of the family's TOP
 # parameter the climb is on; side 1 the wall as rl.walls draws it, -1 mirrored, 0 either (a
 # row of full length: any wall of the family with those rows and that height fits).
+# lesson 8-9 climbs that no longer pass on the robot of 2026-11-11 (CAD joints redrawn, the
+# waist 0.10 m lower, the pelvis drawn for legs, the chest's bay): f9's swings fell, f9 0.55 and f8 0.60
+# climbs 116 mm of live potential. Lessons 8-9 are not in the paper's runs, so they wait
+# for a new search (rl.plan) and are left out of the table: (family, height, side)
+DROPPED = {(9, 0.55, 1), (9, 0.70, -1), (9, 0.80, 1), (9, 0.80, -1), (9, 0.90, 1), (9, 0.90, -1),
+           (8, 0.60, 1)}
 REFS = [
     (3, 0.20, 0, 1, 'climb_f3_s20'), (3, 0.25, 0, 1, 'climb_f3_s25'), (3, 0.30, 0, 1, 'climb_f3_s30'),
     (3, 0.20, 0, 2, 'climb_f3x2_s20'), (3, 0.25, 0, 2, 'climb_f3x2_s25'),    # taught, the rows
@@ -58,11 +64,12 @@ REFS = [
     (6, 0.30, 1, 1, 'climb_f6_r30'), (6, 0.30, -1, 1, 'climb_f6m_r30'),
     (6, 0.40, 1, 1, 'climb_f6_r40'), (6, 0.40, -1, 1, 'climb_f6m_r40'),
     (7, 0.60, 1, 1, 'climb_f7_s60'), (7, 0.60, -1, 1, 'climb_f7m_s60'),      # taught
-    *[(8, b, 1, 1, f'climb_f8_b{round(b * 100)}') for b in (0.35, 0.50, 0.55, 0.60, 0.70)],
+    *[(8, b, 1, 1, f'climb_f8_b{round(b * 100)}') for b in (0.35, 0.50, 0.55, 0.60, 0.70)
+      if (8, b, 1) not in DROPPED],
     *[(9, g, s, 1, f'climb_f9{"m" if s < 0 else ""}_g{round(g * 100)}')
       for g in (0.55, 0.60, 0.70, 0.80, 0.90) for s in (1, -1)
-      if (g, s) != (0.70, -1)],  # its swing falls on the 2026-11-11 robot (-101 g); lessons 8-9
-]                                # are not in the paper's runs, so it waits for a new search
+      if (9, g, s) not in DROPPED],
+]
 TOP = {3: 'spacing', 4: 'spacing', 5: 'drop', 6: 'rise', 7: 'side', 8: 'behind', 9: 'gap'}
 
 SHARE = (0.75, 0.25)  # of a family's walls begun at a start: until its gate is first passed --

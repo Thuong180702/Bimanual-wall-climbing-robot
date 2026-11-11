@@ -151,7 +151,14 @@ IFACE = {
 D = math.radians
 
 
-SH_Y, SH_Z = 0.085, 0.165      # shoulder pitch axis in the torso frame
+# The waist turns where a person's does, about navel height: 0.10 m above the lower
+# torso's floor (where hip joints will go), 0.305 m under the shoulders -- for the
+# 1.40 m person this arm is (upper arm 0.186 H, forearm 0.146 H), 0.07 H and 0.218 H.
+# It sat 0.20 m up until 2026-11-11, 0.205 m under the shoulders. The axis is
+# vertical, so lowering it moves nothing on the arms: DROP comes off the lower torso
+# and goes on the chest, and everything on the chest keeps its place in the world.
+DROP = 0.100
+SH_Y, SH_Z = 0.085, 0.165 + DROP   # shoulder pitch axis in the torso frame
 SH_ROLL = 0.070                 # pitch output -> roll axis, sideways
 
 
@@ -188,20 +195,34 @@ def _arm(s, sg):
 
 
 JOINTS = ([("waist_yaw", "base_link", "waist_link", (0, 0, 1),
-            (0.0, 0.0, 0.200), (D(-45), D(45)), (0, 0, -1))]
+            (0.0, 0.0, 0.200 - DROP), (D(-45), D(45)), (0, 0, -1))]
           + _arm("L", 1) + _arm("R", -1))
 
 FIXED = [("torso_fixed", "waist_link", "torso_upper", (0.0, 0.0, 0.040))]
 
+# The pelvis (base_link) is drawn ready for legs: each hip's first actuator, a PITCH
+# AK80-64 as on Unitree G1 (pitch -> roll -> yaw), bolts its front face to a pelvis
+# side wall from inside, its output showing through -- the way the shoulders sit in
+# the chest. Only the mounting is drawn: no hip actuator, no leg, no mass, no joint in
+# the model yet. HIP_Y puts the walls' outer faces at y = +-71 mm, so the wall plate's
+# edge stays 86 mm from the waist axis (TORSO_LOW_R) and a hanging forearm (88 mm)
+# clears the pelvis as the waist turns; the hips are then 146 mm apart (a 1.40 m
+# person's ~150). HIP_Z puts each body's top 1.5 mm under the waist actuator's pilot.
+HIP_KEY = "AK80-64"
+HIP_Y, HIP_Z = 0.073, -0.020
+HIPS = [("hip_%s_pitch" % s, "base_link", None, (0, 1, 0), (0.0, sg * HIP_Y, HIP_Z),
+         (D(-150), D(60)), (0, -sg, 0)) for s, sg in (("L", 1), ("R", -1))]
+LOW_Z0 = -0.076                       # the pelvis floor's underside, under the hips
+
 # ------------------------------------------------------------------ structure
-TORSO_LOW = (0.140, 0.180, 0.200)     # d, w, h; w 0.210 -> 0.180 to clear the elbow motors
+TORSO_LOW = (0.140, 2 * (HIP_Y - 0.002), 0.200 - DROP - LOW_Z0)  # d, w, h from LOW_Z0; w 0.210 -> 0.180 to clear the elbow motors
 # ...and the four vertical corners are rounded away, because the waist turns the
 # arms over a STATIONARY lower torso: with the arms down, the elbow motor's
 # inboard face sweeps a circle of radius 93.1 mm about the waist axis, so every
 # point of the lower torso has to stay inside R = 90 mm. A 140 x 180 box corner
 # reaches 114 mm. The section is therefore that box intersected with a 180 mm
 # circle - a stadium, flat front and back, round left and right.
-TORSO_LOW_R = 0.090
+TORSO_LOW_R = 0.0865    # 0.090 until the pelvis reached down past the forearms (2026-11-11)
 # The chest is a box round the two shoulder pitch actuators (build.torso_upper):
 # as deep as the lower torso; as wide as its side walls, which are 6 mm plates
 # on the actuators' front faces (y = SH_Y - 8 mm .. - 2 mm); as tall as the
@@ -223,10 +244,30 @@ WALL = 0.003                           # 3 mm webs and tube walls: at 120 N.m a
 SHELL = 0.0025                         # 2.5 mm torso panels
 AL = 2700.0                            # 6061-T6, kg/m^3
 
-# Non-actuator, non-structural masses carried in the lower torso.
-PAYLOAD = [("battery_48V_6Ah", 1.60, (0.0, 0.0, 0.070)),
-           ("compute_and_can", 0.55, (0.0, 0.0, 0.140)),
-           ("dcdc_and_wiring", 0.35, (0.0, 0.0, 0.040))]
+# What the chest carries besides its actuators and lidars, each as (centre, size, mass)
+# in torso_upper's frame (deck top z = 6 mm): drawn as boxes in STEP/robot.step,
+# checked for room against the structure, actuators and lidars (tools/check_bay.py),
+# and carried in the model as point masses (PAYLOAD).
+#   battery  48 V 6 Ah 13S2P drawer: slides in from the back on two rails, under the
+#            back panel's bottom band, onto a stop at the front
+#   jetson   Jetson Orin NX on a Seeed reComputer J401 carrier (100 x 80 mm PCB, DC 9-19 V,
+#            10-40 W) with its heatsink and fan, standing on the bulkhead between the two
+#            sunk lidars. ponytail: J401's hole pattern was not found in its public docs,
+#            so the bulkhead carries an M3 grid on 10 mm; drill its own four once Seeed's
+#            mechanical drawing is in hand
+#   imu      Xsens MTi-630 (31.5 x 28 x 13 mm, 8.9 g, 3 x M2: Xsens MTi 600-series HW
+#            integration manual, fig. 13), on the tray behind the bulkhead
+#   can      the CAN interface for the actuators' buses, on the tray beside the IMU
+#   dcdc     a quarter-brick 48 V -> 19 V converter (58.4 x 36.8 x 12.7 mm) for the Jetson,
+#            and the wiring, on the tray in front of the bulkhead
+PAYLOAD_LINK = "torso_upper"
+BAY = {"battery": ((-0.007, 0.0, 0.055), (0.120, 0.104, 0.070), 1.60),
+       "jetson": ((0.0005, 0.0, 0.1525), (0.055, 0.100, 0.085), 0.35),
+       "imu": ((-0.046, 0.0, 0.1035), (0.028, 0.0315, 0.013), 0.01),
+       "can": ((-0.046, 0.040, 0.1045), (0.030, 0.040, 0.015), 0.10),
+       "dcdc": ((0.043, 0.0, 0.10335), (0.0368, 0.0584, 0.0127), 0.44)}
+PAYLOAD = [(k, m, c) for k, (c, _, m) in BAY.items()]
+TRAY_Z = 0.094            # the electronics tray's underside, over the battery's 90 mm top
 
 # ------------------------------------------------------------------ lidars
 # Four Livox Mid-360 (livoxtech.com/mid-360/specs; the STEP is Livox's own):
@@ -261,10 +302,10 @@ _C45 = math.sqrt(0.5)
 # under the shoulder actuators, back to back, only their windows outside, and
 # a cage of tube stands proud of all four (lidar.cage).
 LIDARS = {
-    "lidar_head_front": ("torso_upper", (0.030, 0.0, 0.252), (_C45, 0.0, _C45), (_C45, 0.0, -_C45)),
-    "lidar_head_back": ("torso_upper", (-0.030, 0.0, 0.252), (-_C45, 0.0, _C45), (-_C45, 0.0, -_C45)),
-    "lidar_chest": ("torso_upper", (0.040, 0.0, 0.068), (1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),
-    "lidar_back": ("torso_upper", (-0.040, 0.0, 0.068), (-1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),
+    "lidar_head_front": ("torso_upper", (0.030, 0.0, 0.252 + DROP), (_C45, 0.0, _C45), (_C45, 0.0, -_C45)),
+    "lidar_head_back": ("torso_upper", (-0.030, 0.0, 0.252 + DROP), (-_C45, 0.0, _C45), (-_C45, 0.0, -_C45)),
+    "lidar_chest": ("torso_upper", (0.040, 0.0, 0.068 + DROP), (1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),
+    "lidar_back": ("torso_upper", (-0.040, 0.0, 0.068 + DROP), (-1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),
 }
 # A cage of bent 6061 tube guards the four: one bar per corner of the torso, and a
 # ring over the head joining their tops. Each bar leaves the front (back) panel's
@@ -277,7 +318,8 @@ LIDARS = {
 # rung could settle into, against the head lidar's lower edge. A strut ties each bar
 # to the panel's top band at z strut.
 GUARD = dict(tube_d=0.016, tube_t=0.002, standoff=0.040, bend_r=0.020, y=0.071, head_y=0.050,
-             foot_z=0.011, jog=(0.190, 0.230), strut_z=0.2095, ring_z=0.345)
+             foot_z=0.011 + DROP, jog=(0.190 + DROP, 0.230 + DROP), strut_z=0.2095 + DROP,
+             ring_z=0.345 + DROP)
 
 # Where along its own axis an actuator's OUTPUT FLANGE sits, measured from the
 # joint origin in the body_dir direction, metres. The joint axis is a line, so
@@ -370,7 +412,11 @@ def motor_placements(q=None):
         a = MOUNT_AT.get(name, 0.0)
         flange = tuple(o[k] + wbd[k] * a for k in range(3))
         out.append((name, MOTOR_OF[name], flange, wax, wbd))
+    po, pR = F["base_link"]              # the hips' actuators, where legs will bolt on
+    rot = lambda v: tuple(sum(pR[i][k] * v[k] for k in range(3)) for i in range(3))
+    for name, _par, _ch, ax, off, _lim, bd in HIPS:
+        out.append((name, HIP_KEY, tuple(po[i] + rot(off)[i] for i in range(3)), rot(ax), rot(bd)))
     return out
 
 
-BODY_DIR = {j[0]: j[6] for j in JOINTS}
+BODY_DIR = {j[0]: j[6] for j in JOINTS + HIPS}

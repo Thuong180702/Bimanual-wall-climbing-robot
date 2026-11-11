@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "cad", "tools"))
 from lib.build import BUILDERS, CHILD_OF, PJOINT
 from lib.collide import link_collision, named_collision
 from lib.motors import MOTORS
-from lib.spec import FIXED, JOINTS, LIDARS, MID360, MOTOR_OF, MOUNT_ROT, TORSO_UP, HOOK
+from lib.spec import BAY, FIXED, JOINTS, LIDARS, MID360, MOTOR_OF, MOUNT_ROT, TORSO_UP, HOOK
 
 A = json.load(open(os.path.join(HERE, "_actuators.json")))
 PROPS = A["links"]
@@ -191,8 +191,9 @@ def body_tree():
             x = geom_xml(*g)
             L.append("%s  %s" % (p, x.replace('<geom ', '<geom name="%s" ' % gn, 1) if gn else x))
         if name == "torso_upper":
-            L.append('%s  <site name="s_imu" type="box" pos="0 0 %.5f" '
-                     'size="0.02 0.02 0.01"/>' % (p, TORSO_UP[2] / 2))
+            c, sz, _ = BAY["imu"]                  # the MTi-630 on the chest's tray
+            L.append('%s  <site name="s_imu" type="box" pos="%.5f %.5f %.5f" '
+                     'size="%.5f %.5f %.5f"/>' % ((p,) + tuple(c) + tuple(v / 2 for v in sz)))
         # each lidar's optical origin, z its axis and x toward its plug (rl.lidar)
         for ln, (host, o, z, x) in LIDARS.items():
             if host == name:

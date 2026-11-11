@@ -9,7 +9,7 @@ import itertools, math, sys, os
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 from build123d import Cylinder, Box, Plane, Pos, Rot, Vector, Axis, Align
-from lib.spec import (JOINTS, IFACE, MOTOR_OF, TORSO_LOW, TORSO_LOW_R, TORSO_UP,
+from lib.spec import (HIPS, JOINTS, IFACE, MOTOR_OF, LOW_Z0, TORSO_LOW, TORSO_LOW_R, TORSO_UP,
                       WAIST_DIA, WAIST_H, motor_placements, fk)
 
 MM = 0.001
@@ -33,9 +33,10 @@ def envelopes(q=None):
         o, R = F[link]
         pl = Plane(origin=o, x_dir=(R[0][0], R[1][0], R[2][0]),
                    z_dir=(R[0][2], R[1][2], R[2][2]))
-        b = Pos(0, 0, h / 2) * Box(d, w, h)
+        z0 = LOW_Z0 if name == "#torso_low" else 0.0
+        b = Pos(0, 0, z0 + h / 2) * Box(d, w, h)
         if name == "#torso_low":
-            b &= Pos(0, 0, h / 2) * Cylinder(radius=TORSO_LOW_R, height=h)
+            b &= Pos(0, 0, z0 + h / 2) * Cylinder(radius=TORSO_LOW_R, height=h)
         out[name] = pl * b
     o, R = F["waist_link"]
     out["#waist"] = Plane(origin=o, z_dir=(R[0][2], R[1][2], R[2][2])) * (
@@ -56,6 +57,8 @@ for _j in JOINTS:
         ADJACENT.add(frozenset((_j[0], "#torso_low")))
     if _j[1] == "torso_upper":
         ADJACENT.add(frozenset((_j[0], "#torso_up")))
+for _j in HIPS:                     # bolted into the pelvis's side walls
+    ADJACENT.add(frozenset((_j[0], "#torso_low")))
 ADJACENT.add(frozenset(("#torso_low", "#waist")))
 ADJACENT.add(frozenset(("#torso_up", "#waist")))
 ADJACENT.add(frozenset(("waist_yaw", "#waist")))

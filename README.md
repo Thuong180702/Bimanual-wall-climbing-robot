@@ -63,8 +63,8 @@ and `urdf/_gen_scene.py` write it.
 
 The robot this replaced — aluminium cylinders with masses derived from geometry,
 11.13 kg, fine in simulation and impossible to build — is in git history. The cost of
-being real is **21.42 kg instead of 11.13**, more than half of it in the actuators,
-and 24.06 kg with the four Livox Mid-360 lidars and the tube cage that guards them
+being real is **21.86 kg instead of 11.13**, more than half of it in the actuators,
+and 24.50 kg with the four Livox Mid-360 lidars and the tube cage that guards them
 (`urdf/README.md`, "The lidars"). The shoulder is pitch-first, like ten of the twelve
 humanoids it was checked against. Its vertical reach is 0.56 m, above the 0.45 m the
 rung rows are spaced.

@@ -16,9 +16,9 @@ from . import lidar
 from .connect import (_disc, access_r, bolt_access, bolt_ring, cheek, face_od, face_plate,
                       hook_profile, mate_bore_r, output_plate,
                       plane_at)
-from .spec import (BODY_DIR, CLEAR, FIXED, HOOK, IFACE, JOINTS, MOTOR_OF,
+from .spec import (BAY, BODY_DIR, CLEAR, FIXED, HOOK, IFACE, JOINTS, MOTOR_OF,
                    MOUNT_AT, MOUNT_ROT, PLATE, SHELL, TORSO_BC, TORSO_LOW,
-                   TORSO_LOW_R, TORSO_N, TORSO_TH, TORSO_UP, WAIST_DIA,
+                   TORSO_LOW_R, TORSO_N, HIPS, HIP_KEY, LOW_Z0, TORSO_TH, TORSO_UP, TRAY_Z, WAIST_DIA,
                    WALL)
 
 MM = 0.001
@@ -628,6 +628,8 @@ CMIN = (_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN)
 FLOOR = 0.005               # the lower torso's floor, under the battery
 DECK = 0.006
 CHEST_BAND = 0.018          # the metal left round a window in the chest
+CABLE_SLOT = (0.044, 0.016)  # the harness slots through the chest's deck, long along x...
+CABLE_Y = 0.0635             # ...between the waist flange (50 mm) and the walls (77 mm)
 
 
 def _prism(face, z0, h):
@@ -651,31 +653,61 @@ def _windows(d, w, h, zs):
 
 
 def base_link():
-    """The lower torso: a stadium-section shell carrying the waist actuator on
-    a deck, with the battery and the electronics below it.
+    """The pelvis: the waist actuator nose-up in its top, and under it the two
+    side walls that each hip's first actuator (spec.HIPS, a pitch AK80-64) will
+    bolt its front face to from inside, output out through the wall -- the
+    chest's shoulder mounting, a floor lower. No hip actuator is fitted yet.
 
-    The section is the 140 x 180 box cut back to R90 because the waist turns
-    the whole upper body over this shell - stationary - and the elbow actuator
-    sweeps a 93 mm circle about the waist axis, so nothing here may reach past
-    90. The waist actuator is held by its REAR flange and sits nose-up in the
-    top of the shell, its output finishing flush with the rim.
+    The section is the 140 x 146 box cut back to TORSO_LOW_R: the waist turns
+    the whole upper body over this pelvis, stationary, and a hanging forearm
+    sweeps a circle 88 mm round the waist axis down here. The front and the back
+    are a 2.5 mm shell with lightening windows; the floor closes it under the hip
+    actuators. The waist actuator is held by its REAR flange on a deck, its
+    output finishing flush with the rim.
     """
     cj = CHILD_OF["base_link"][0]                    # waist_yaw
     c_key = MOTOR_OF[cj[0]]
     dc = IFACE[c_key]
     pl_c = mount_plane(cj, cj[4])
     d, w, h = TORSO_LOW
+    z0 = LOW_Z0
+    sec = _prism(_low_section(), z0, h)
 
-    wall = _prism(_low_section(), 0.0, h) - _prism(_low_section(SHELL), FLOOR, h)
-    wall -= _windows(d, w, h, (0.30, 0.60))
-    floor = _prism(_low_section(), 0.0, FLOOR)
-    floor -= bolt_ring(0.110, 6, 0.030, -0.001, FLOOR + 0.001)
+    shell = sec - _prism(_low_section(SHELL), z0 + FLOOR, h)
+    for sy in (1, -1):                                       # its sides are the hip walls
+        shell -= _bd.Pos(0, sy * w / 2, 0) * _bd.Box(2 * d, 2 * PLATE, 4 * h)
+    for zc in (0.30, 0.62):                                  # windows front and back
+        shell -= _bd.Pos(0, 0, z0 + h * zc) * _bd.Box(d * 3, w * 0.44, h * 0.15)
+    parts = {"shell": shell}
+
+    floor = _prism(_low_section(), z0, FLOOR)
+    floor -= bolt_ring(0.110, 6, 0.030, z0 - 0.001, z0 + FLOOR + 0.001)
+    parts["floor"] = floor
+
+    for hj in HIPS:                                          # the legs' sockets
+        pl_h = mount_plane(hj, hj[4])
+        b_od = face_od(HIP_KEY, "front")
+        ya = _pt(pl_h, IFACE[HIP_KEY]["hou_z"] * MM)[1]
+        yb = _pt(pl_h, IFACE[HIP_KEY]["hou_z"] * MM + PLATE)[1]
+        assert abs(max(abs(ya), abs(yb)) - w / 2) < 1e-6, \
+            "TORSO_LOW's width is not the hip walls' outer faces"
+        zc = hj[4][2]
+        z_lo, z_hi = zc + b_od / 2 + CHEST_BAND, z0 + h - CHEST_BAND
+        prof = (_bd.Pos(0, z0 + h / 2) * _bd.Rectangle(d, h)
+                - _bd.Pos(0, zc) * _bd.Circle(b_od / 2))
+        if z_hi - z_lo > 0.02:
+            prof -= _bd.Pos(0, (z_lo + z_hi) / 2) * _bd.RectangleRounded(
+                d - 2 * CHEST_BAND, z_hi - z_lo, 0.008)
+        wall = _bd.extrude(_bd.Plane.XZ * prof, amount=PLATE)   # along -Y
+        wall = _bd.Pos(0, min(ya, yb) - wall.bounding_box().min.Y, 0) * wall
+        parts["hip_" + hj[0].split("_")[1]] = (wall + pl_h * face_plate(HIP_KEY, "front", b_od)) & sec
 
     z_rear = _pt(pl_c, dc["rear_z"] * MM)[2]
     deck = (pl_c * face_plate(c_key, "rear", 0.40)) & _prism(
         _low_section(), z_rear - PLATE - 0.005, PLATE + 0.005)
     deck -= bolt_ring(0.150, 8, 0.024, z_rear - PLATE - 0.01, z_rear + 0.01)
-    return {"wall": wall, "floor": floor, "deck": deck}
+    parts["deck"] = deck
+    return parts
 
 
 def waist_link():
@@ -708,6 +740,61 @@ def waist_link():
     flange -= bolt_ring(TORSO_BC, TORSO_N, TORSO_TH + 0.0004, zt - 2 * PLATE,
                         zt + PLATE)
     return {"plate_out": top, "cone": cone, "flange": flange}
+
+
+def _blk(x0, x1, y0, y1, z0, z1):
+    (x0, x1), (y0, y1), (z0, z1) = sorted((x0, x1)), sorted((y0, y1)), sorted((z0, z1))
+    return _bd.Pos((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2) * _bd.Box(x1 - x0, y1 - y0, z1 - z0)
+
+
+def _grid(x0, x1, y0, y1, z0, z1, axis="z", pitch=0.010, d=0.0034):
+    """M3 clearance holes on a 10 mm grid through a plate, for boards bolted on standoffs"""
+    cut = None
+    for i in range(int(round((x1 - x0) / pitch)) + 1):
+        for j in range(int(round((y1 - y0) / pitch)) + 1):
+            u, v = x0 + i * pitch, y0 + j * pitch
+            if axis == "z":
+                c = _bd.Pos(u, v, (z0 + z1) / 2) * _bd.Cylinder(d / 2, z1 - z0)
+            else:                                # through x: u is y, v is z
+                c = _bd.Pos((z0 + z1) / 2, u, v) * _bd.Cylinder(d / 2, z1 - z0, rotation=(0, 90, 0))
+            cut = c if cut is None else cut + c
+    return cut
+
+
+def _bay_frame():
+    """What holds spec.BAY's boards and battery in the chest: a drawer for the battery
+    on the deck -- two L rails it slides in on from the back, under the back panel's
+    bottom band, and a stop at the front with a window for its connector -- four posts
+    carrying the electronics tray over it, and on the tray the bulkhead the Jetson
+    stands on between the two sunk lidars. The tray and the bulkhead are drilled on an
+    M3 grid; the tray is notched over the deck's two harness slots."""
+    (bx, by, bz), (bl, bw, bh), _ = BAY["battery"]
+    x0, x1, z0, z1 = bx - bl / 2, bx + bl / 2, bz - bh / 2, bz + bh / 2
+    p = {}
+    for sy, k in ((1, "l"), (-1, "r")):
+        ledge = _blk(x0, x1 + 0.002, sy * (bw / 2 - 0.006), sy * (bw / 2 + 0.0035), DECK, z0)
+        guide = _blk(x0, x1 + 0.002, sy * (bw / 2 + 0.0005), sy * (bw / 2 + 0.0035), z0, z0 + 0.012)
+        p["batt_rail_" + k] = ledge + guide
+    stop = _blk(x1 + 0.0005, x1 + 0.0065, -bw / 2 + 0.008, bw / 2 - 0.008, DECK, z0 + 0.025)
+    p["batt_stop"] = stop - _blk(x1, x1 + 0.007, -0.020, 0.020, z0 + 0.004, z0 + 0.020)
+    t = WALL
+    for sx in (1, -1):
+        for sy in (1, -1):
+            p["post_%s%s" % ("f" if sx > 0 else "b", "l" if sy > 0 else "r")] = _blk(sx * 0.055, sx * 0.061, sy * 0.0565, sy * 0.0625,
+                                               DECK, TRAY_Z)
+    tray = _blk(-0.062, 0.062, -0.0625, 0.0625, TRAY_Z, TRAY_Z + t)
+    for sy in (1, -1):                                   # over the harness slots
+        tray -= _blk(-0.026, 0.026, sy * 0.0535, sy * 0.07, TRAY_Z - 0.001, TRAY_Z + t + 0.001)
+    tray -= _grid(-0.055, 0.055, -0.045, 0.045, TRAY_Z - 0.001, TRAY_Z + t + 0.001)
+    p["tray"] = tray
+    zt = TRAY_Z + t
+    (jx, _, jz), (jl, jw, jh), _ = BAY["jetson"]
+    xb = jx - jl / 2                                     # the bulkhead's front face
+    bulk = _blk(xb - t, xb, -0.055, 0.055, zt, jz + jh / 2 + 0.005)
+    bulk -= _grid(-0.045, 0.045, zt + 0.015, zt + 0.085, xb - t - 0.001, xb + 0.001, axis="x")
+    foot = _blk(xb - t, xb + 0.013, -0.055, 0.055, zt, zt + t)
+    p["bulkhead"] = bulk + foot
+    return p
 
 
 def torso_upper():
@@ -757,10 +844,18 @@ def torso_upper():
         _bd.Rectangle(d, w)
         - _bd.RectangleRounded(d - 2 * CHEST_BAND, w - 2 * CHEST_BAND, 0.012)),
         amount=WALL)
-    deck = _bd.extrude(_bd.Plane.XY * (_bd.Rectangle(d, w) - _bd.Circle(0.038)),
+    # Neither actuator is hollow (an 8 mm rod down an AK60-39's axis meets 5.3 cm3 of
+    # it), so nothing passes THROUGH the waist: the harness from the pelvis -- legs in
+    # through the window over each hip, the waist actuator's own -- leaves the pelvis's
+    # open top beside the waist actuator, hangs a loop in the 40 mm under this deck for
+    # the waist's +-45 deg, and comes up through these two slots, clear of the waist
+    # flange (R50) and of the side walls.
+    slots = [_bd.Pos(0, sy * CABLE_Y, 0) * _bd.SlotOverall(*CABLE_SLOT) for sy in (1, -1)]
+    deck = _bd.extrude(_bd.Plane.XY * (_bd.Rectangle(d, w) - _bd.Circle(0.038) - slots[0] - slots[1]),
                        amount=DECK)
     parts["deck"] = deck - bolt_ring(TORSO_BC, TORSO_N, TORSO_TH + 0.0004,
                                      -0.005, DECK + 0.005)
+    parts.update(_bay_frame())
     mounts, cuts = lidar.torso_upper_mounts()
     for k, c in cuts.items():
         parts[k] -= c

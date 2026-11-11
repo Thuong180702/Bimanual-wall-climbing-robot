@@ -15,7 +15,7 @@ from cadgen import build123d as bd
 from cadgen import report, step, track
 
 from lib.build import BUILDERS, fuse
-from lib.spec import BODY_DIR, IFACE, LIDARS, MOTOR_OF, fk, motor_placements
+from lib.spec import BAY, BODY_DIR, IFACE, LIDARS, MOTOR_OF, fk, motor_placements
 from purchased.ak45_36 import ak45_36
 from purchased.ak60_39 import ak60_39
 from purchased.ak80_64 import ak80_64
@@ -43,6 +43,8 @@ def robot():
     built = {k: MOTOR_MODEL[k]() for k in MOTOR_MODEL}
     for name, key, o, ax, bd_ in track(motor_placements(),
                                        label=lambda r: r[0]):
+        if name.startswith("hip_"):      # spec.HIPS: the pelvis is ready for them, none is fitted
+            continue
         # The vendor part is drawn in mm in the joint frame with its body on
         # NEGATIVE z and the output face at z = 0, so its +Z has to point the
         # way the output faces - the opposite of body_dir.
@@ -60,6 +62,15 @@ def robot():
         s = bd.Location(link_pl) * bd.Location(bd.Plane(
             origin=tuple(v * 1000 for v in o), x_dir=x, z_dir=z)) * sensor
         s.label = "%s  Livox Mid-360" % name
+        kids.append(s)
+
+    report("chest bay")                      # spec.BAY: what the chest carries, as boxes
+    lo, R = F["torso_upper"]
+    link_pl = bd.Plane(origin=tuple(v * 1000 for v in lo), x_dir=(R[0][0], R[1][0], R[2][0]),
+                       z_dir=(R[0][2], R[1][2], R[2][2]))
+    for name, (c, sz, _m) in BAY.items():
+        s = bd.Location(link_pl) * bd.Pos(*(v * 1000 for v in c)) * bd.Box(*(v * 1000 for v in sz))
+        s.label = "bay: " + name
         kids.append(s)
 
     report("structure")

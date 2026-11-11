@@ -45,10 +45,10 @@ the two sections after "What moved".
 
 | | before | now |
 |---|---|---|
-| total mass | 11.13 kg | **24.06 kg** (21.42 before the lidars) |
+| total mass | 11.13 kg | **24.50 kg** (21.86 before the lidars) |
 | of which actuators | - | 12.73 kg (53 %) |
-| of which structure | - | 7.78 kg (6061-T6; 1.59 of it the lidar mounts and cage) |
-| of which payload | - | 2.50 kg (battery, compute, wiring) |
+| of which structure | - | 8.22 kg (6061-T6; 1.59 of it the lidar mounts and cage) |
+| of which payload | - | 2.50 kg (battery, Jetson, IMU, CAN, DC-DC and wiring) |
 | of which lidars | - | 1.06 kg (4 × Livox Mid-360) |
 | arm root to arm root | 0.310 m | 0.310 m |
 | base to shoulder axis | 0.405 m | 0.405 m |
@@ -222,6 +222,7 @@ boolean intersection now.
 | `wrist_dev → finger` z | −0.020 | **−0.072** | Ø79 + Ø55 need 70 mm |
 | torso_upper | 0.240 wide | **a box 0.140 × 0.166 × 0.219** | its side walls are the pitch actuators' mounting plates |
 | lower torso width | 0.210 | **0.180**, corners rounded to R90 | the waist turns the arms over a *stationary* lower torso; the elbow actuator sweeps a circle of radius 93.1 mm, so nothing may stick out past 90 mm |
+| lower torso (pelvis) | 140 x 180 x 200 box over the waist | **140 x 142**, R86.5, from 76 mm under the old floor to the waist (2026-11-11) | the pelvis is drawn for legs: two side walls for each hip's pitch AK80-64, 146 mm apart, 425 mm under the shoulders; the waist 0.10 m lower, 305 mm under the shoulders (a 1.40 m person's navel); a hanging forearm sweeps 88 mm round the waist axis |
 
 The first two cancel: the arm's root is at y = ±0.155, world z = 0.405,
 exactly where v1 put it. **Everything between the shoulder and the wrist is
@@ -330,7 +331,7 @@ in `cad/STEP/robot.step`.
   measured off the files match the datasheets: 61.9 × 98 × 98, 67 × 79 × 79,
   54 × 55 × 55 mm.
 - All three canonicalised to +Z = joint axis, output flange at z = 0.
-- Link masses sum to structure + actuators + payload (and lidars) = 24.0635 kg,
+- Link masses sum to structure + actuators + payload (and lidars) = 24.4983 kg,
   and MuJoCo agrees to 1 mg.
 - All 19 inertia tensors positive definite and obeying the triangle inequality.
 - All 17 joints: axis, range and forcerange match spec and datasheet.

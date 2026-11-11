@@ -5,7 +5,7 @@
 <!-- Joint sign convention: about Y, NEGATIVE = flexion / forward / closing. -->
 <!-- effort = the actuator PEAK torque from its datasheet. -->
 <!-- velocity = the actuator NO-LOAD speed from its datasheet. -->
-<!-- Total mass 24.0635 kg. -->
+<!-- Total mass 24.4983 kg. -->
 <robot name="bimanual_wall_climber_v2">
   <mujoco>
     <compiler meshdir="." balanceinertia="true" discardvisual="false"/>
@@ -16,9 +16,9 @@
 
   <link name="base_link">
     <inertial>
-      <origin xyz="0.000000 -0.000000 0.097305" rpy="0 0 0"/>
-      <mass value="4.389528"/>
-      <inertia ixx="0.0191369306" ixy="2.15423512e-18" ixz="3.79904811e-17" iyy="0.0181137554" iyz="-4.01342675e-18" izz="0.00931721799"/>
+      <origin xyz="-0.000000 -0.000000 0.028056" rpy="0 0 0"/>
+      <mass value="1.791998"/>
+      <inertia ixx="0.00870712898" ixy="1.14688376e-15" ixz="7.82367767e-13" iyy="0.00846276175" iyz="5.38583531e-17" izz="0.00553647769"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -26,16 +26,24 @@
       <material name="aluminium"/>
     </visual>
     <collision>
-      <origin xyz="0.000000 0.000000 0.166000" rpy="0.000000 -0.000000 1.570796"/>
+      <origin xyz="0.000000 0.000000 0.066000" rpy="0.000000 -0.000000 1.570796"/>
       <geometry><cylinder radius="0.039500" length="0.067000"/></geometry>
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
-      <geometry><mesh filename="meshes/base_link_col_wall.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="meshes/base_link_col_shell.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
       <geometry><mesh filename="meshes/base_link_col_floor.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/base_link_col_hip_L.stl" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
+      <geometry><mesh filename="meshes/base_link_col_hip_R.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
     <collision>
       <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 -0.000000 0.000000"/>
@@ -70,9 +78,9 @@
 
   <link name="torso_upper">
     <inertial>
-      <origin xyz="-0.000000 -0.000000 0.151650" rpy="0 0 0"/>
-      <mass value="5.390151"/>
-      <inertia ixx="0.0569352208" ixy="-1.05166741e-07" ixz="1.82224868e-08" iyy="0.0567033588" iyz="1.05356712e-08" izz="0.0293743153"/>
+      <origin xyz="0.000242 0.000475 0.184436" rpy="0 0 0"/>
+      <mass value="8.422437"/>
+      <inertia ixx="0.134404393" ixy="0.000184862028" ixz="-0.000125704676" iyy="0.134841685" iyz="0.000319733117" izz="0.0359415321"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -80,11 +88,11 @@
       <material name="aluminium"/>
     </visual>
     <collision>
-      <origin xyz="0.000000 0.053050 0.165000" rpy="-1.570796 -0.000000 0.000000"/>
+      <origin xyz="0.000000 0.053050 0.265000" rpy="-1.570796 -0.000000 0.000000"/>
       <geometry><cylinder radius="0.049000" length="0.061900"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.000000 -0.053050 0.165000" rpy="1.570796 -0.000000 0.000000"/>
+      <origin xyz="0.000000 -0.053050 0.265000" rpy="1.570796 -0.000000 0.000000"/>
       <geometry><cylinder radius="0.049000" length="0.061900"/></geometry>
     </collision>
     <collision>
@@ -116,99 +124,99 @@
       <geometry><mesh filename="meshes/torso_upper_col_lidar_head_roof.stl" scale="0.001 0.001 0.001"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.041667 0.000000 0.263667" rpy="0.000000 0.785398 0.000000"/>
+      <origin xyz="0.041667 0.000000 0.363667" rpy="0.000000 0.785398 0.000000"/>
       <geometry><box size="0.064800 0.064800 0.033000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.062916 0.000000 0.284916" rpy="0.000000 0.785398 0.000000"/>
+      <origin xyz="0.062916 0.000000 0.384916" rpy="0.000000 0.785398 0.000000"/>
       <geometry><cylinder radius="0.025500" length="0.027100"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.041667 0.000000 0.263667" rpy="0.000000 0.785398 3.141593"/>
+      <origin xyz="-0.041667 0.000000 0.363667" rpy="0.000000 0.785398 3.141593"/>
       <geometry><box size="0.064800 0.064800 0.033000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.062916 0.000000 0.284916" rpy="-0.000000 -0.785398 0.000000"/>
+      <origin xyz="-0.062916 0.000000 0.384916" rpy="-0.000000 -0.785398 0.000000"/>
       <geometry><cylinder radius="0.025500" length="0.027100"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.056500 0.000000 0.068000" rpy="-0.000000 1.570796 0.000000"/>
+      <origin xyz="0.056500 0.000000 0.168000" rpy="-0.000000 1.570796 0.000000"/>
       <geometry><box size="0.064800 0.064800 0.033000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.086550 0.000000 0.068000" rpy="-3.141593 -1.570796 0.000000"/>
+      <origin xyz="0.086550 0.000000 0.168000" rpy="-3.141593 -1.570796 0.000000"/>
       <geometry><cylinder radius="0.025500" length="0.027100"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.056500 0.000000 0.068000" rpy="-3.141593 1.570796 0.000000"/>
+      <origin xyz="-0.056500 0.000000 0.168000" rpy="-3.141593 1.570796 0.000000"/>
       <geometry><box size="0.064800 0.064800 0.033000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.086550 0.000000 0.068000" rpy="-0.000000 -1.570796 0.000000"/>
+      <origin xyz="-0.086550 0.000000 0.168000" rpy="-0.000000 -1.570796 0.000000"/>
       <geometry><cylinder radius="0.025500" length="0.027100"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.102000 0.071000 0.100500" rpy="0.000000 -0.000000 1.570796"/>
+      <origin xyz="0.102000 0.071000 0.200500" rpy="0.000000 -0.000000 1.570796"/>
       <geometry><cylinder radius="0.008000" length="0.179000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.102000 0.060500 0.210000" rpy="0.483447 -0.000000 0.000000"/>
+      <origin xyz="0.102000 0.060500 0.310000" rpy="0.483447 -0.000000 0.000000"/>
       <geometry><cylinder radius="0.008000" length="0.045177"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.102000 0.050000 0.287500" rpy="0.000000 -0.000000 1.570796"/>
+      <origin xyz="0.102000 0.050000 0.387500" rpy="0.000000 -0.000000 1.570796"/>
       <geometry><cylinder radius="0.008000" length="0.115000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.102000 -0.071000 0.100500" rpy="0.000000 -0.000000 1.570796"/>
+      <origin xyz="0.102000 -0.071000 0.200500" rpy="0.000000 -0.000000 1.570796"/>
       <geometry><cylinder radius="0.008000" length="0.179000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.102000 -0.060500 0.210000" rpy="-0.483447 -0.000000 0.000000"/>
+      <origin xyz="0.102000 -0.060500 0.310000" rpy="-0.483447 -0.000000 0.000000"/>
       <geometry><cylinder radius="0.008000" length="0.045177"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.102000 -0.050000 0.287500" rpy="0.000000 -0.000000 1.570796"/>
+      <origin xyz="0.102000 -0.050000 0.387500" rpy="0.000000 -0.000000 1.570796"/>
       <geometry><cylinder radius="0.008000" length="0.115000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.102000 0.071000 0.100500" rpy="0.000000 -0.000000 1.570796"/>
+      <origin xyz="-0.102000 0.071000 0.200500" rpy="0.000000 -0.000000 1.570796"/>
       <geometry><cylinder radius="0.008000" length="0.179000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.102000 0.060500 0.210000" rpy="0.483447 -0.000000 0.000000"/>
+      <origin xyz="-0.102000 0.060500 0.310000" rpy="0.483447 -0.000000 0.000000"/>
       <geometry><cylinder radius="0.008000" length="0.045177"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.102000 0.050000 0.287500" rpy="0.000000 -0.000000 1.570796"/>
+      <origin xyz="-0.102000 0.050000 0.387500" rpy="0.000000 -0.000000 1.570796"/>
       <geometry><cylinder radius="0.008000" length="0.115000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.102000 -0.071000 0.100500" rpy="0.000000 -0.000000 1.570796"/>
+      <origin xyz="-0.102000 -0.071000 0.200500" rpy="0.000000 -0.000000 1.570796"/>
       <geometry><cylinder radius="0.008000" length="0.179000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.102000 -0.060500 0.210000" rpy="-0.483447 -0.000000 0.000000"/>
+      <origin xyz="-0.102000 -0.060500 0.310000" rpy="-0.483447 -0.000000 0.000000"/>
       <geometry><cylinder radius="0.008000" length="0.045177"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.102000 -0.050000 0.287500" rpy="0.000000 -0.000000 1.570796"/>
+      <origin xyz="-0.102000 -0.050000 0.387500" rpy="0.000000 -0.000000 1.570796"/>
       <geometry><cylinder radius="0.008000" length="0.115000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.102000 0.000000 0.345000" rpy="1.570796 -0.000000 0.000000"/>
+      <origin xyz="0.102000 0.000000 0.445000" rpy="1.570796 -0.000000 0.000000"/>
       <geometry><cylinder radius="0.008000" length="0.100000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.000000 -0.050000 0.345000" rpy="-0.000000 -1.570796 0.000000"/>
+      <origin xyz="0.000000 -0.050000 0.445000" rpy="-0.000000 -1.570796 0.000000"/>
       <geometry><cylinder radius="0.008000" length="0.204000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="-0.102000 0.000000 0.345000" rpy="-1.570796 -0.000000 0.000000"/>
+      <origin xyz="-0.102000 0.000000 0.445000" rpy="-1.570796 -0.000000 0.000000"/>
       <geometry><cylinder radius="0.008000" length="0.100000"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.000000 0.050000 0.345000" rpy="-3.141593 -1.570796 0.000000"/>
+      <origin xyz="0.000000 0.050000 0.445000" rpy="-3.141593 -1.570796 0.000000"/>
       <geometry><cylinder radius="0.008000" length="0.204000"/></geometry>
     </collision>
   </link>
@@ -250,7 +258,7 @@
     <inertial>
       <origin xyz="-0.000000 0.027748 -0.055859" rpy="0 0 0"/>
       <mass value="0.956637"/>
-      <inertia ixx="0.00111936857" ixy="-5.08119026e-14" ixz="9.22095229e-14" iyy="0.00132936608" iyz="0.000106019832" izz="0.000951459933"/>
+      <inertia ixx="0.00111936857" ixy="-5.08119103e-14" ixz="9.22095255e-14" iyy="0.00132936608" iyz="0.000106019832" izz="0.000951459933"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -680,7 +688,7 @@
   <joint name="waist_yaw" type="revolute">
     <parent link="base_link"/>
     <child link="waist_link"/>
-    <origin xyz="0.000000 0.000000 0.200000" rpy="0 0 0"/>
+    <origin xyz="0.000000 0.000000 0.100000" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
     <limit lower="-0.785398" upper="0.785398" effort="72" velocity="10.2625"/>
     <dynamics damping="0.1" friction="0.0"/>
@@ -689,7 +697,7 @@
   <joint name="shoulder_L_flexion" type="revolute">
     <parent link="torso_upper"/>
     <child link="shoulder_L"/>
-    <origin xyz="0.000000 0.085000 0.165000" rpy="0 0 0"/>
+    <origin xyz="0.000000 0.085000 0.265000" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <limit lower="-2.967060" upper="1.047198" effort="120" velocity="7.8540"/>
     <dynamics damping="0.1" friction="0.0"/>
@@ -761,7 +769,7 @@
   <joint name="shoulder_R_flexion" type="revolute">
     <parent link="torso_upper"/>
     <child link="shoulder_R"/>
-    <origin xyz="0.000000 -0.085000 0.165000" rpy="0 0 0"/>
+    <origin xyz="0.000000 -0.085000 0.265000" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <limit lower="-2.967060" upper="1.047198" effort="120" velocity="7.8540"/>
     <dynamics damping="0.1" friction="0.0"/>

@@ -84,12 +84,14 @@ def named_collision(link):
 @functools.lru_cache(maxsize=None)
 def col_parts(link):
     """[(mesh name, solid in metres)], one per CAD part of a non-hook link - but the
-    lidar mounts: the cage is capsules (link_collision), the hats inside the torso
-    nothing, and the head's roof one part"""
+    lidar mounts: the cage is capsules (link_collision), the hats and the bay frame
+    inside the torso nothing, and the head's roof one part"""
     parts, roof = [], []
     for k, v in BUILDERS[link]().items():
         if v is None or k.startswith("guard_") or k.startswith(("lidar_chest", "lidar_back")):
             continue
+        if k.startswith(("batt_", "post_", "tray", "bulkhead")):   # the chest's bay frame,
+            continue                                               # inside it: meets nothing
         if k.startswith("lidar_head"):
             roof.append(v)
             continue

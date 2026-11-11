@@ -13,14 +13,14 @@ also what spreads a knock into the torso instead of into four M3 threads.
 """
 from cadgen import build123d as _bd
 
-from .spec import GUARD, LIDAR_PAD, LIDARS, MID360, PLATE, TORSO_UP, WALL
+from .spec import DROP, GUARD, LIDAR_PAD, LIDARS, MID360, PLATE, TORSO_UP, WALL
 
 M3, M4, M4_TAP = 0.0034, 0.0045, 0.0033
 GUSSET = 0.005
 CABLE = 0.016                     # hole for the M12 lead, under each head lidar's plug:
                                   # a right-angle plug, turned down into the chest between
                                   # the front (back) panel and the shoulder actuators
-BRIM_Z = (0.035, 0.065, 0.095)   # M4 from outside the panel into each hat brim, at y = GUARD['y']
+BRIM_Z = tuple(z + DROP for z in (0.035, 0.065, 0.095))   # M4 from outside the panel into each hat brim, at y = GUARD['y']
 FOOT = (0.020, 0.018, 0.005)      # a guard's foot on its panel: across, up, thick; 2 x M4, 14 apart
 
 
@@ -123,7 +123,7 @@ def sunk(name):
     _, S, a, _ = LIDARS[name]
     s = a[0]
     assert abs(s) == 1.0 and a[1] == a[2] == 0.0, name
-    xb, x_in, z0, z1 = S[0], s * (d / 2 - WALL), 0.020, 0.110
+    xb, x_in, z0, z1 = S[0], s * (d / 2 - WALL), 0.020 + DROP, 0.110 + DROP
     parts = {name + "_crown": _box(xb - s * PLATE, xb, -0.065, 0.065, z0, z1)
              - sensor_holes(name, -2 * PLATE, 0.001)}
     cut = None

@@ -21,6 +21,7 @@ tools/
   check_pair.py    two neighbouring connectors, swept over their joint's range
   check_swing.py   a link against an actuator two joints away, swept over both
   check_seams.py   is each connector drawn as ONE part? no seam across a skin
+  check_bay.py     room in the chest for the battery and boards (spec.BAY)?
   balance.py       where the mass actually sits, per link and for the robot
   preview.py       write tmp/<name>.step and the same bolted between its motors
   arm_view.py      every arm connector so far, bolted into one chain
@@ -125,10 +126,22 @@ torso. `MOUNT_AT` existed for that layout only and is empty now.
 **The three torso links are frames, not connectors**, so they are panels and
 decks rather than cheeks - but the rule they are drawn to is the same: every
 actuator is held by a plate lying on a face it really has, with a clearance
-hole for every one of its bolts. `base_link` is a stadium-section shell (the
-140 x 180 box cut back to R90, because the waist turns the upper body over it
-and the elbow actuator sweeps a 93 mm circle) with the waist actuator nose-up
-on a deck in its top. `waist_link` is a cone that takes the Ø54 output flange
+hole for every one of its bolts. `base_link` is the pelvis, drawn ready for legs: the waist actuator nose-up on
+a deck in its top, and under it two 6 mm side walls that each hip's first
+actuator (`spec.HIPS`, a pitch AK80-64 as on Unitree G1) will bolt its front face
+to from inside, output out through the wall - the shoulders' mounting, a floor
+lower. No hip actuator is fitted yet. The hips are 146 mm apart and 425 mm under
+the shoulders (a 1.40 m person: ~150 and 403; the hips sit 22 mm low so their
+bodies clear the waist actuator), the waist 305 mm under the shoulders at navel
+height (`spec.DROP`: it sat 0.10 m higher until 2026-11-11). The section is the
+140 x 142 box cut back to R86.5, because the waist turns the upper body over the
+pelvis and a hanging forearm sweeps a circle 88 mm round the waist axis. Neither
+actuator is hollow, so the harness goes ROUND the waist: legs in through the window
+over each hip, out of the pelvis's open top, a loop in the 40 mm under the chest's
+deck, up through the deck's two slots. The chest carries `spec.BAY`: the battery
+drawer on two rails, out through the back panel; over it a tray on four posts (IMU,
+CAN board, DC-DC) and on that the bulkhead the Jetson stands on, both drilled on an
+M3 grid (`tools/check_bay.py` checks the room). `waist_link` is a cone that takes the Ø54 output flange
 out to the frame's Ø88 bolt circle in one surface. `torso_upper` is the chest:
 a box round the two shoulder pitch actuators, carried the way Berkeley
 Humanoid Lite, OP3 and the Unitree torsos carry theirs - each actuator inside,

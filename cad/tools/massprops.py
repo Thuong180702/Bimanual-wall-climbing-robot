@@ -17,7 +17,7 @@ from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
 
 from lib.build import BUILDERS, CHILD_OF, fuse, mount_plane
-from lib.spec import AL, BODY_DIR, IFACE, JOINTS, LIDARS, MID360, MOTOR_OF, MOTORS, PAYLOAD
+from lib.spec import AL, BODY_DIR, IFACE, JOINTS, LIDARS, MID360, MOTOR_OF, MOTORS, PAYLOAD, PAYLOAD_LINK
 
 MM = 0.001
 
@@ -84,7 +84,7 @@ def link_props(link):
         Id = [mp * (b * b + h * h) / 12, mp * (a * a + h * h) / 12, mp * (a * a + b * b) / 12]
         I = [[sum(R[k][i] * Id[k] * R[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
         parts.append(("Mid-360 " + nm, mp, tuple(o[i] + z[i] * h / 2 for i in range(3)), I))
-    if link == "base_link":
+    if link == PAYLOAD_LINK:
         for nm, mp, c in PAYLOAD:
             r = 0.05
             parts.append((nm, mp, c, [[mp * r * r * 2 / 5 if i == j else 0.0

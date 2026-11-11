@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "src"))
 from cadgen import build123d as bd
 from lib.build import BUILDERS, CHILD_OF, fuse, mount_plane
 from lib.motors import MOTORS
-from lib.spec import AL, FIXED, MOTOR_OF, PAYLOAD
+from lib.spec import AL, FIXED, MOTOR_OF, PAYLOAD, PAYLOAD_LINK
 
 AX = "XYZ"
 
@@ -33,7 +33,7 @@ def link_mass(name):
         z = -MOTORS[key]["len_mm"] / 2000.0          # middle of the barrel
         o = m.origin + m.z_dir * z
         items.append((MOTORS[key]["mass_kg"], (o.X, o.Y, o.Z)))
-    if name == "base_link":
+    if name == PAYLOAD_LINK:
         items += [(m, p) for _, m, p in PAYLOAD]
     M = sum(m for m, _ in items)
     if M <= 0.0:                     # a link whose connector is not drawn yet
