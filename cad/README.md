@@ -20,6 +20,7 @@ tools/
   check_one.py     ONE connector: one solid? clears both actuators? bolts on?
   check_pair.py    two neighbouring connectors, swept over their joint's range
   check_swing.py   a link against an actuator two joints away, swept over both
+  check_seams.py   is each connector drawn as ONE part? no seam across a skin
   balance.py       where the mass actually sits, per link and for the robot
   preview.py       write tmp/<name>.step and the same bolted between its motors
   arm_view.py      every arm connector so far, bolted into one chain
@@ -61,6 +62,21 @@ instead of butting onto them. Nothing wraps an actuator: each one is held by
 the bolts on a single face and cantilevers off it, the way the open-source arms
 on this class of actuator do it.
 
+**Drawn as one part, not as blocks pushed together.** A web stops AT the
+plate it stands on - it used to run 3 mm into it, and a leg had its whole face
+plate inside it - so the joint is a face and the two rims are one surface.
+Where a web meets a round plate off its centre it is as wide as the plate is
+on that chord, not as the plate's diameter: the upper arm's cheek stood 4.3 mm
+outside the ring it bolts to at both corners. Every bolt a web covers gets a
+counterbore down to its seat at the diameter of the HEAD (at thread size the
+head was buried in the web, or stood half inside a cheek that only brushed
+it); where that would leave under 1 mm of metal at a rim it is opened through
+the rim, and over the AK80-64's output - six M4 heads 0.6 mm from the cable
+bore - the web is bored once over the whole bolt circle. `check_seams.py`
+counts the edges whose two faces are the same plane or cylinder, which is what
+a part put together from blocks is made of; the arm has none. (The upper torso
+keeps 17, all bolt-hole edges of a few mm where a lidar hat meets a panel.)
+
 **Except at a corner.** Where the two axes are perpendicular to each other AND
 to the link - both wrist links - the two faces lie in perpendicular planes and
 no single plate sits flat on both. There it is one leg per face, and the two
@@ -68,7 +84,12 @@ share ONE SPINE where they meet: each leg's thickness is the other leg's
 width, and each leg's taper is centred on the other leg rather than on its own
 joint axis. Sized any other way the legs stand proud of each other and leave
 two wings and a rib that carry nothing - which is exactly what the first two
-attempts looked like.
+attempts looked like. Each leg is drawn on 8 mm into the other as a parallel
+neck, and the corner where its taper turns into that neck is a 6 mm radius, so
+the legs meet in a round and not a crease (8 mm put 0.2 mm3 of `wrist_L` into
+`wrist_dev_L` at -15 deg). One corner stays sharp: the child leg's on the side
+of the parent actuator, whose barrel is 0.5 mm away. The hook's web and palm
+hand over the same way.
 
 The spine is a rectangle, not a square, because its two dimensions do not cost
 the same. Across the arm is open space; fore-and-aft is where the NEXT link's

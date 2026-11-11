@@ -45,9 +45,9 @@ the two sections after "What moved".
 
 | | before | now |
 |---|---|---|
-| total mass | 11.13 kg | **24.16 kg** (21.52 before the lidars) |
+| total mass | 11.13 kg | **24.06 kg** (21.42 before the lidars) |
 | of which actuators | - | 12.73 kg (53 %) |
-| of which structure | - | 7.88 kg (6061-T6; 1.59 of it the lidar mounts and cage) |
+| of which structure | - | 7.78 kg (6061-T6; 1.59 of it the lidar mounts and cage) |
 | of which payload | - | 2.50 kg (battery, compute, wiring) |
 | of which lidars | - | 1.06 kg (4 × Livox Mid-360) |
 | arm root to arm root | 0.310 m | 0.310 m |
@@ -330,7 +330,7 @@ in `cad/STEP/robot.step`.
   measured off the files match the datasheets: 61.9 × 98 × 98, 67 × 79 × 79,
   54 × 55 × 55 mm.
 - All three canonicalised to +Z = joint axis, output flange at z = 0.
-- Link masses sum to structure + actuators + payload (and lidars) = 24.1647 kg,
+- Link masses sum to structure + actuators + payload (and lidars) = 24.0635 kg,
   and MuJoCo agrees to 1 mg.
 - All 19 inertia tensors positive definite and obeying the triangle inequality.
 - All 17 joints: axis, range and forcerange match spec and datasheet.

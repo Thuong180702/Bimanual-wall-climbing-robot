@@ -62,6 +62,13 @@ if __name__ == "__main__":
     hold(35.0, ctrl)   # the pendulum needs ~20 s to stop swinging; after that it
                        # holds to 0.04 mm per 5 s, which is what v1 reported as 0.0
     q0 = d.qpos.copy()
+    # Back onto y = 0, where place() hung it. Where along the rung the settle
+    # ends is not part of the hang: on about half of all masses within the
+    # +-10 % training randomizes (this model's nominal ones among them) the left
+    # hook chatters on the rung and walks the robot along it at 0.05 mm/s, and
+    # 35 s of that put the start 1.5 mm to one side. The lessons are laid out
+    # about y = 0 (rl.walls.HY) and the rung is the same all along.
+    q0[1] = 0.0
     p0 = d.body("base_link").xpos.copy()
     hold(5.0, ctrl)
     p1 = d.body("base_link").xpos.copy()

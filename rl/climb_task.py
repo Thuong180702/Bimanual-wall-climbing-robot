@@ -1847,16 +1847,19 @@ def main():
     t.reset()
     stale = lambda: float((t._throat_true(t.anchor) - t.hold[t.anchor][1]) @ ax)
     off, slam = [], []
-    for _ in range(300):                       # 12 s
+    for _ in range(1500):                      # 60 s: 12 of the drift's SLAM_DRIFT_TAU
         t.step(z)
         off.append(stale())
         slam.append(float(t._slam_err @ ax))
     # (the anchor reads off by minus the drift, plus the lever of the attitude's error,
-    # which the IMU's offsets move: over seeds 0-2 the correlation is -0.45..-0.68)
+    # which the IMU's offsets move. 12 s held only ~2 of the drift's swings: on the
+    # 24.06 kg robot, whose left hook chatters on the rung at this hang, the attitude's
+    # lever took 3 seeds of 8 there (-0.28, +0.17, +0.13); over 60 s seeds 0-7 read
+    # -0.76..-0.89, the hook 81 mm off at most)
     follow = float(np.corrcoef(off, slam)[0, 1])
     assert follow < -0.3 and max(map(abs, off)) < 0.1, (follow, max(map(abs, off)))
     print(f"sensor test: exact when off; SLAM error {e.std()*1e3:.1f} mm, fix-to-fix correlation {rho:.3f} "
-          f"({SLAM_RHO:.3f}); on, hanging still 12 s, the anchor is up to {max(map(abs, off))*1e3:.0f} mm off "
+          f"({SLAM_RHO:.3f}); on, hanging still 60 s, the anchor is up to {max(map(abs, off))*1e3:.0f} mm off "
           f"along the rung, following the drift (correlation {follow:+.2f})")
 
     # The map holds what the four Mid-360 can see (rl.lidar). Straight along a lidar's

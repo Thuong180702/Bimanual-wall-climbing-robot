@@ -47,13 +47,19 @@ def _disc(r, z0, z1):
         align=(_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN))
 
 
-def _holes(bc, n, d, z0, z1):
+def _holes(bc, n, d, z0, z1, slot=0.0):
+    """n holes of diameter d on a bolt circle. `slot` > 0 carries each one out
+    radially by that much, as a slot of the same width - a counterbore that
+    would leave a foil of metal at a rim is opened through it instead."""
     out = None
+    al = (_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN)
     for i in range(n):
         a = 2 * math.pi * i / n
         c = _bd.Pos(bc / 2 * math.cos(a), bc / 2 * math.sin(a), z0) * _bd.Cylinder(
-            radius=d / 2, height=z1 - z0,
-            align=(_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN))
+            radius=d / 2, height=z1 - z0, align=al)
+        if slot > 0.0:
+            c += _bd.Rot(0, 0, math.degrees(a)) * _bd.Pos(bc / 2 + slot / 2, 0, z0) * \
+                _bd.Box(slot, d, z1 - z0, align=al)
         out = c if out is None else out + c
     return out
 
@@ -155,23 +161,61 @@ def face_plate(key, face, od, t=PLATE):
     return p
 
 
+HEAD_CLEAR = 0.0003         # round a socket head, in the counterbore it sits in
+MIN_LAND = 0.001            # thinnest wall worth leaving beside a counterbore
+
+
+def head_r(th):
+    """Radius of the socket head _screws() draws on a thread of that size (mm)."""
+    return 0.9 * th * MM
+
+
 def bolt_access(key, face, reach):
-    """The bolt holes continued on through whatever structure covers them.
+    """The bolt holes continued on through whatever structure covers them, at
+    the diameter of the HEAD.
 
     A plate gets a clearance hole for every bolt, but the web fused on top of
-    that plate then sits over the same holes and there is no way to get a
-    driver in. Real brackets carry the hole straight through. `reach` is how
-    far past the face to take it, in the actuator's own frame.
+    that plate sits over the same bolts. Carried through at thread size, the
+    hole left the head buried in the web - or, where a cheek only brushes a
+    head, standing half inside it - and no bolt goes in that way. Real brackets
+    counterbore down to the seat. Where the counterbore would leave less than
+    MIN_LAND of metal at the face's rim it is opened out through the rim.
+    `reach` is how far past the face to take it, in the actuator's own frame.
     """
     d = IFACE[key]
     if face == "output":
         bc, n, th, z0 = d["out_bc"], d["out_n"], d["out_thread"], d["out_z"] * MM
+        rim = d["out_od"] / 2 * MM
     elif face == "rear":
         bc, n, th, z0 = d["rear_bc"], d["rear_n"], d["rear_thread"], d["rear_z"] * MM
-        return _holes(bc * MM, n, (th + 0.4) * MM, z0 - reach, z0)
+        rim = face_od(key, "rear") / 2
     else:
         bc, n, th, z0 = d["hou_bc"], d["hou_n"], d["hou_thread"], d["hou_z"] * MM
-    return _holes(bc * MM, n, (th + 0.4) * MM, z0, z0 + reach)
+        rim = face_od(key, "front") / 2
+    r = head_r(th) + HEAD_CLEAR
+    land = rim - bc / 2 * MM - r
+    slot = (land + 0.002) if land < MIN_LAND else 0.0
+    if face == "rear":
+        return _holes(bc * MM, n, 2 * r, z0 - reach, z0, slot)
+    return _holes(bc * MM, n, 2 * r, z0, z0 + reach, slot)
+
+
+def access_r(key):
+    """How big the hole over an output flange's centre has to be in a web that
+    lies flat on its plate.
+
+    The cable bore, normally. But where the output bolts sit so close round
+    that bore that their counterbores would leave a foil between them and it
+    (the AK80-64: M4 heads on a Ø28 circle round a Ø19 hole, 0.6 mm), the web
+    is bored once, over the whole bolt circle, and the plate with its six
+    heads shows at the bottom of it.
+    """
+    d = IFACE[key]
+    cable = max(d["out_bore"] - 2.0, 4.0) / 2 * MM
+    r = head_r(d["out_thread"]) + HEAD_CLEAR
+    if d["out_bc"] / 2 * MM - r - cable < MIN_LAND:
+        return d["out_bc"] / 2 * MM + r
+    return cable
 
 
 def bolt_ring(bc, n, d, z0, z1):
@@ -318,7 +362,7 @@ def _tangent(pu, pv, r, cu, cv, side):
     return (cu + t[0], cv + t[1])
 
 
-def cheek_profile(half_w, z_top, r_b, z_b, c=0.0, u_b=0.0):
+def cheek_profile(half_w, z_top, r_b, z_b, c=0.0, u_b=0.0, neck=None):
     """2D outline of a cheek plate: the straight edge on the mounting face that
     shows edge-on, two TANGENT lines across to the face that shows as a circle,
     and that face's rim.
@@ -341,13 +385,30 @@ def cheek_profile(half_w, z_top, r_b, z_b, c=0.0, u_b=0.0):
     # the arc takes the long way round, through the point on the rim furthest
     # from the straight edge
     far = (u_b, z_b - math.copysign(r_b, z_top - z_b))
-    outline = (_bd.Polyline((lo, z_top), (hi, z_top), t1)
-               + _bd.ThreePointArc(t1, far, t2)
-               + _bd.Polyline(t2, (lo, z_top)))
-    return _bd.make_face(outline)
+    if not neck:
+        outline = (_bd.Polyline((lo, z_top), (hi, z_top), t1)
+                   + _bd.ThreePointArc(t1, far, t2)
+                   + _bd.Polyline(t2, (lo, z_top)))
+        return _bd.make_face(outline)
+    # `neck` = (length, r at the lo corner, r at the hi corner): the straight
+    # edge carried on as a parallel-sided neck, and the corner where each
+    # taper turns into it rounded. The neck is what the other leg of an angle
+    # bracket is - drawn into it, the two legs meet in a radius, not a crease.
+    n_len, r_lo, r_hi = neck
+    z_n = z_top + math.copysign(n_len, z_top - z_b)
+    outline = (_bd.Polyline(t2, (lo, z_top), (lo, z_n), (hi, z_n), (hi, z_top), t1)
+               + _bd.ThreePointArc(t1, far, t2))
+    face = _bd.make_face(outline)
+    for u, r in ((lo, r_lo), (hi, r_hi)):
+        vs = [v for v in face.vertices()
+              if abs(v.X - u) < 1e-9 and abs(v.Y - z_top) < 1e-9]
+        if r > 0.0 and vs:          # none where the taper runs straight into the neck
+            face = _bd.fillet(vs, r)
+    return face
 
 
-def hook_profile(neck_c, neck_w, z_neck, half_w, z_wide, z_bot, r, bow=0.18):
+def hook_profile(neck_c, neck_w, z_neck, half_w, z_wide, z_bot, r, bow=0.18,
+                 stub=0.0, r_neck=(0.0, 0.0)):
     """The hooked hand's outline, in its own plane.
 
     A neck the width of the web it hands over to, two flanks spreading to the
@@ -357,23 +418,35 @@ def hook_profile(neck_c, neck_w, z_neck, half_w, z_wide, z_bot, r, bow=0.18):
     They are arcs instead, hollowed by `bow` of their own spread, which is
     what the throat of a hook looks like and takes metal out rather than
     adding it.
+
+    `stub` carries the neck on up into the web it hands over to, and `r_neck`
+    rounds the corner (lo side, hi side) where each flank leaves it - the same
+    hand-over as an angle bracket's two legs (cheek_profile's `neck`).
     """
     lo, hi = neck_c - neck_w / 2.0, neck_c + neck_w / 2.0
     zm = (z_neck + z_wide) / 2.0
     ml = ((lo - half_w) / 2.0 + bow * abs(lo + half_w), zm)
     mr = ((hi + half_w) / 2.0 - bow * abs(half_w - hi), zm)
-    outline = (_bd.Polyline((lo, z_neck), (hi, z_neck))
+    top = [(lo, z_neck), (hi, z_neck)] if stub <= 0.0 else \
+        [(lo, z_neck), (lo, z_neck + stub), (hi, z_neck + stub), (hi, z_neck)]
+    outline = (_bd.Polyline(*top)
                + _bd.ThreePointArc((hi, z_neck), mr, (half_w, z_wide))
                + _bd.Polyline((half_w, z_wide), (half_w, z_bot),
                               (-half_w, z_bot), (-half_w, z_wide))
                + _bd.ThreePointArc((-half_w, z_wide), ml, (lo, z_neck)))
     face = _bd.make_face(outline)
     sh = [v for v in face.vertices() if abs(v.Y - z_wide) < 1e-9]
-    return _bd.fillet(sh, r) if sh else face
+    face = _bd.fillet(sh, r) if sh else face
+    for u, rn in ((lo, r_neck[0]), (hi, r_neck[1])):
+        vs = [v for v in face.vertices()
+              if abs(v.X - u) < 1e-9 and abs(v.Y - z_neck) < 1e-9]
+        if stub > 0.0 and rn > 0.0 and vs:
+            face = _bd.fillet(vs, rn)
+    return face
 
 
 def cheek(half_w, z_top, r_b, z_b, w0, t, bore=None, lighten=None,
-          across="Y", c=0.0, u_b=0.0):
+          across="Y", c=0.0, u_b=0.0, neck=None):
     """The cheek plate as a solid: profile extruded across, bored for the rotor.
 
     `across` is the axis the plate is thick along - "Y" lays it in the XZ plane,
@@ -383,20 +456,29 @@ def cheek(half_w, z_top, r_b, z_b, w0, t, bore=None, lighten=None,
     `w0` is the mating face the plate starts on and `t` is how thick it is,
     SIGNED: a plate on a front face grows along that axis, a plate on a rear
     flange grows back the other way, and both start on their own face.
+
+    A cheek whose round end is ABOVE its straight edge is extruded and bored
+    from the far face back. The solid is the same; what changes is which way
+    round its cylinders are drawn (the rim's arc runs the other way when the
+    profile is upside down), and the kernel only merges a cheek's rim with the
+    rim of the plate it stands on when both are drawn the same way. Without
+    this every such joint keeps a seam - tools/check_seams.py counts them.
     """
     plane = _bd.Plane.XZ if across == "Y" else _bd.Plane.YZ
-    rot = _bd.Rot(-90, 0, 0) if across == "Y" else _bd.Rot(0, 90, 0)
+    flip = z_b > z_top
+    k = -1 if flip else 1
+    rot = _bd.Rot(-90 * k, 0, 0) if across == "Y" else _bd.Rot(0, 90 * k, 0)
     tt = abs(t)
     lo = w0 if t > 0 else w0 - tt
-    part = _bd.extrude(plane * cheek_profile(half_w, z_top, r_b, z_b, c, u_b),
-                       amount=tt)
+    part = _bd.extrude(plane * cheek_profile(half_w, z_top, r_b, z_b, c, u_b, neck),
+                       amount=tt * k)
     bb = part.bounding_box()
     d = lo - (bb.min.Y if across == "Y" else bb.min.X)
     part = (_bd.Pos(0, d, 0) if across == "Y" else _bd.Pos(d, 0, 0)) * part
     holes = ([(u_b, z_b, bore / 2)] if bore else []) + list(lighten or [])
+    w = lo + 2 * tt if flip else lo - tt
     for cu, cv, cr in holes:
-        pos = (_bd.Pos(cu, lo - tt, cv) if across == "Y"
-               else _bd.Pos(lo - tt, cu, cv))
+        pos = _bd.Pos(cu, w, cv) if across == "Y" else _bd.Pos(w, cu, cv)
         part -= pos * rot * _bd.Cylinder(
             radius=cr, height=3 * tt,
             align=(_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN))

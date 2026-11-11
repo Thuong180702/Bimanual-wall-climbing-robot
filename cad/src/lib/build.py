@@ -13,7 +13,7 @@ import math
 from cadgen import build123d as _bd
 
 from . import lidar
-from .connect import (bolt_access, bolt_ring, cheek, face_od, face_plate,
+from .connect import (_disc, access_r, bolt_access, bolt_ring, cheek, face_od, face_plate,
                       hook_profile, mate_bore_r, output_plate,
                       plane_at)
 from .spec import (BODY_DIR, CLEAR, FIXED, HOOK, IFACE, JOINTS, MOTOR_OF,
@@ -22,6 +22,7 @@ from .spec import (BODY_DIR, CLEAR, FIXED, HOOK, IFACE, JOINTS, MOTOR_OF,
                    WALL)
 
 MM = 0.001
+MIN_ = (_bd.Align.MIN,) * 3
 PJOINT = {j[2]: j for j in JOINTS}
 CHILD_OF = {}
 for _j in JOINTS:
@@ -33,6 +34,22 @@ def clear_bolts(web, faces, reach=0.05):
     for pl, key, face in faces:
         web -= pl * bolt_access(key, face, reach)
     return web
+
+
+def seat(web, pl, key, face, od, t=PLATE):
+    """Stop a web AT the plate it stands on instead of running through it.
+
+    Every web used to overlap its plates - a cheek 3 mm deep into the disc it
+    grows from, a leg with the whole face plate inside it. Where the two had
+    the same rim that left two cylinders in one place, which the kernel does
+    not merge: the part came out with a seam round every joint and looked
+    like two blocks pushed together, because it was. Butted on the plate's
+    face, the rims are one surface and the joint is a face, not a volume.
+    """
+    d = IFACE[key]
+    z0 = {"output": d["out_z"] * MM, "rear": d["rear_z"] * MM - t,
+          "front": d["hou_z"] * MM}[face]
+    return web - pl * _disc(od / 2, z0, z0 + t)
 
 
 def mount_plane(joint, origin):
@@ -158,11 +175,18 @@ def tee(name):
     b = _pt(pl_c, IFACE[c_key]["hou_z"] * MM)           # the child's mounting face
     # the cheek stops short of the output-flange plane: the actuator's
     # centering spigot lives in that last millimetre
-    web = cheek(a_od / 2, a[2] + 0.004, b_od / 2, cj[4][2],
+    # The cheek meets the round top plate off its centre, on a chord, so it is
+    # as wide as the plate is THERE - at the face of it furthest out - and not
+    # as wide as the plate's diameter, which left both top corners standing
+    # outside the rim.
+    y_far = max(abs(b[1]), abs(b[1] + grow(pl_c, "Y") * web_t(c_key)))
+    web = cheek(math.sqrt((a_od / 2) ** 2 - y_far ** 2), a[2] + 0.004,
+                b_od / 2, cj[4][2],
                 b[1], grow(pl_c, "Y") * web_t(c_key),
                 bore=2 * mate_bore_r(c_key, "front"),
                 lighten=[(0.0, (a[2] + cj[4][2]) / 2 + 0.008, 0.013)])
     web = clear_bolts(web, [(pl_p, p_key, "output"), (pl_c, c_key, "front")])
+    web = seat(seat(web, pl_p, p_key, "output", a_od), pl_c, c_key, "front", b_od)
     return {"plate_out": top, "plate_face": side, "cheek": web}
 
 
@@ -196,8 +220,6 @@ def forearm_rot_L():
 #   stands 18 mm up out of the face the plate bolts to.
 # --------------------------------------------------------------------------
 ARM_CHEEK_T = 0.012
-PILOT_CLEAR = 0.002         # radial clearance around the rear pilot boss; any
-                            # more and the two legs beside it drop under 8 mm
 LIGHT_GAP = 0.008           # metal left between lightening holes
 
 
@@ -250,13 +272,22 @@ def hang(name, t=ARM_CHEEK_T, stand=0.0, plate_t=PLATE):
              dp["out_spigot_h"] * MM + CLEAR + 0.0005))["XY".index(ax)]
     z_rear = _pt(pl_c, dc["rear_z"] * MM)[2]
     z_pilot = _pt(pl_c, (dc["rear_z"] - dc["rear_pilot_h"]) * MM)[2]
-    r_cable = max(dp["out_bore"] - 2.0, 4.0) / 2 * MM
-    r_pilot = dc["rear_pilot"] / 2 * MM + PILOT_CLEAR
+    r_cable = access_r(p_key)
+    # the pilot bore is the ring's own bore, so the two legs beside it come
+    # down flush with the inside of the ring instead of a hair off it
+    r_pilot = mate_bore_r(c_key, "rear")
     z_boss = (z_rear + z_pilot) / 2.0
     web = cheek(b_od / 2, z_rear, a_od / 2, 0.0, w0, grow(pl_p, ax) * t,
                 lighten=[(0.0, 0.0, r_cable), (0.0, z_boss, r_pilot)]
                 + _span_holes(z_boss + r_pilot, -r_cable), across=ax)
+    # The cheek stands on the ring off its centre, on a chord, so a slab as
+    # wide as the ring overhangs the rim at both corners (4.3 mm on the upper
+    # arm). It is turned to the ring's own diameter instead.
+    rz = dc["rear_z"] * MM
+    web &= pl_c * _disc(b_od / 2, rz - 0.3, rz + 0.01)
     web = clear_bolts(web, [(pl_p, p_key, "output"), (pl_c, c_key, "rear")])
+    web = seat(seat(web, pl_p, p_key, "output", a_od, plate_t),
+               pl_c, c_key, "rear", b_od)
     return {"plate_out": top, "plate_face": side, "cheek": web}
 
 
@@ -319,6 +350,9 @@ def upper_arm_L():
 #   138 MPa at a stall, 87 and 100 at the 52 N.m the hang actually asks for.
 WRIST_X = 0.016             # spine, fore-and-aft
 WRIST_Y = 0.014             # spine, across the arm
+WAIST_R = 0.006             # the round where one leg turns into the other. 8 mm
+                            # put 0.2 mm3 of wrist_L's into wrist_dev_L at -15 deg
+NECK = 0.008                # how far each leg is drawn on into the other
 
 
 def corner(name, face="front", stand=0.0, plate_t=PLATE, spine=None):
@@ -372,27 +406,34 @@ def corner(name, face="front", stand=0.0, plate_t=PLATE, spine=None):
     w_c = _pt(pl_c, dc["%s_z" % ("rear" if face == "rear" else "hou")] * MM)[i_c]
     # they hand over at the bottom of the parent actuator's own silhouette
     z_hand = -(dp["od"] / 2 * MM + 0.0005)
-    z_bar = -(dp["od"] / 2 + 1.0) * MM              # below which its barrel ends
 
+    # Each leg is drawn on into the other as a parallel neck, and the corner
+    # where its taper turns into that neck is a radius. They used to stop 4 mm
+    # apart in height, so the child's flare began beside the parent leg and
+    # stood up its side as a spike; and where each taper ended on the other
+    # leg there was a crease. The neck lies wholly inside the other leg, whose
+    # section there is the same spine, so it adds nothing but the radius.
+    #
+    # One corner stays sharp: the child leg's, on the side of the parent
+    # actuator. Flush on its flange the parent leg is 0.5 mm off that barrel.
+    r_bar = 0.0 if stand <= 0.0 else WAIST_R
+    lo_bar = (_pt(pl_p, -0.02)[i_p] < w_p)           # the barrel is on the low side
     c_p = w_c + sgn * t_c / 2
     web_p = cheek(t_c / 2, z_hand, a_od / 2, 0.0, w_p, sgp * t_p,
                   lighten=[(0.0, 0.0, max(dp["out_bore"] - 2.0, 4.0) / 2 * MM)],
-                  across=ax_p, c=c_p)
-    web_c = cheek(t_p / 2, z_hand + 0.004, b_od / 2, cj[4][2], w_c, sgn * t_c,
-                  bore=2 * mate_bore_r(c_key, face), across=ax_c,
-                  c=w_p + sgp * t_p / 2)
-    # the parent's barrel fills everything inboard of its own flange, so above
-    # z_bar the child leg's inboard edge is a straight line flush with that
-    # flange instead of the tangent hull
-    cut = _bd.Box(0.12, 0.12, 0.2, align=(_bd.Align.MIN,) * 3)
-    o = w_p - 0.12 if sgp > 0 else w_p        # the barrel side of that flange
-    if sgp < 0:
-        cut = _bd.Pos(0, 0, 0) * cut
-    web_c -= (_bd.Pos(-0.06, o, z_bar) if ax_p == "Y"
-              else _bd.Pos(o, -0.06, z_bar)) * cut
+                  across=ax_p, c=c_p, neck=(NECK, WAIST_R, WAIST_R))
+    web_c = cheek(t_p / 2, z_hand, b_od / 2, cj[4][2], w_c, sgn * t_c,
+                  across=ax_c, c=w_p + sgp * t_p / 2,
+                  neck=(NECK, r_bar if lo_bar else WAIST_R,
+                        WAIST_R if lo_bar else r_bar))
+    # bored along the face plate's own axis and from its far side: drawn that
+    # way round, the leg's bore and the plate's merge into one (check_seams.py)
+    web_c -= pl_c * _bd.Rot(180, 0, 0) * _disc(mate_bore_r(c_key, face), -0.1, 0.1)
 
     webs = clear_bolts(web_p + web_c,
                        [(pl_p, p_key, "output"), (pl_c, c_key, face)])
+    webs = seat(seat(webs, pl_p, p_key, "output", a_od, plate_t),
+                pl_c, c_key, face, b_od)
     return {"plate_out": top, "plate_face": side, "web": webs}
 
 
@@ -444,14 +485,21 @@ def side_corner(name, face="rear", plate_t=PLATE, web_min=0.016):
     end = _bd.Pos((y0 + y1) / 2, zc) * _bd.Rectangle(t, b_od)
     disc = _bd.Pos(cj[4][1], zc) * _bd.Circle(b_od / 2)
     hull_yz = _bd.make_hull(end.edges() + disc.edges())
-    leg = _bd.Pos(xs0, 0, 0) * _bd.extrude(_bd.Plane.YZ * hull_yz, amount=xs1 - xs0)
+    # extruded back from its far face: drawn the other way round, its two flat
+    # sides do not merge with the web's and the corner keeps a seam
+    leg = _bd.Pos(xs1, 0, 0) * _bd.extrude(_bd.Plane.YZ * hull_yz, amount=xs0 - xs1)
     leg -= _bd.Pos(xs0 - 0.01, cj[4][1], zc) * _bd.Rot(0, 90, 0) * _bd.Cylinder(
         radius=mate_bore_r(c_key, face), height=xs1 - xs0 + 0.02,
         align=(_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN))
 
     faces = [(pl_p, p_key, "output"), (pl_c, c_key, face)]
+
+    def fit(part):
+        return seat(seat(clear_bolts(part, faces), pl_p, p_key, "output", a_od, plate_t),
+                    pl_c, c_key, face, b_od)
+    # the leg is butted on the web's end, not run through it
     return {"plate_out": top, "plate_face": side,
-            "web": clear_bolts(web, faces), "leg": clear_bolts(leg, faces)}
+            "web": fit(web), "leg": fit(leg) - web}
 
 
 def shoulder_L():
@@ -540,25 +588,29 @@ def hook_L():
     sg0 = grow(pl_p, "Y")
     y_ring = _pt(pl_p, dp["hou_z"] * MM)[1] + sg0 * WRIST_Y
     y_lo = y_ring + sg0 * 0.002
-    top = pl_p * output_plate(
-        p_key, a_od,
-        abs(y_lo - _pt(pl_p, dp["out_z"] * MM)[1]) + 0.004)
+    t_top = abs(y_lo - _pt(pl_p, dp["out_z"] * MM)[1]) + 0.004
+    top = pl_p * output_plate(p_key, a_od, t_top)
     z_neck = -(dp["od"] / 2 * MM + 0.0025)           # clear of the actuator
     t = HOOK["thk"]
 
     sgp = grow(pl_p, "Y")
+    # web and palm hand over like a wrist's two legs: each is drawn on into the
+    # other as a neck and rounded where it leaves it. The palm's flank on the
+    # side of the link above stays sharp - that link's ring is 2 mm away.
     web = cheek(t / 2, z_neck, a_od / 2, 0.0, y_lo, sgp * HOOK_SPINE,
                 lighten=[(0.0, 0.0, max(dp["out_bore"] - 2.0, 4.0) / 2 * MM)],
-                across="Y", c=0.0)
+                across="Y", c=0.0, neck=(NECK, WAIST_R, WAIST_R))
     palm = _bd.extrude(_bd.Plane.YZ * hook_profile(
         y_lo + sgp * HOOK_SPINE / 2, HOOK_SPINE, z_neck, HOOK["width"] / 2,
-        HOOK_WIDE, -HOOK["back"], HOOK_FILLET), amount=t)
+        HOOK_WIDE, -HOOK["back"], HOOK_FILLET, stub=NECK,
+        r_neck=(0.0, WAIST_R) if sgp > 0 else (WAIST_R, 0.0)), amount=t)
     bb = palm.bounding_box()
     palm = _bd.Pos(-t / 2 - bb.min.X, 0, 0) * palm
     lip = _bd.Pos(t / 2 + HOOK["lip"] / 2, 0.0, -HOOK["back"] + t / 2) * \
         _bd.Box(HOOK["lip"], HOOK["width"], t)
 
-    web = clear_bolts(web, [(pl_p, p_key, "output")])
+    web = seat(clear_bolts(web, [(pl_p, p_key, "output")]),
+               pl_p, p_key, "output", a_od, t_top)
     return {"plate_out": top, "web": web, "palm": palm + lip}
 
 
@@ -572,7 +624,6 @@ def hook_L():
 # provides: waist_link to torso_upper, which the URDF calls a fixed joint.
 # spec.TORSO_BC names it - Ø88, 8 x M4 - and both sides are drawn from it.
 # --------------------------------------------------------------------------
-MIN_ = (_bd.Align.MIN,) * 3
 CMIN = (_bd.Align.CENTER, _bd.Align.CENTER, _bd.Align.MIN)
 FLOOR = 0.005               # the lower torso's floor, under the battery
 DECK = 0.006
@@ -748,8 +799,20 @@ for _n in ("shoulder", "upper_arm", "humerus_rot", "fore_arm",
 
 
 def fuse(parts):
+    """A link's parts as the one solid they are machined as.
+
+    The union alone leaves a seam wherever two parts share a surface that is
+    the same only to within arithmetic - a hull's tangent comes out 3e-7 rad
+    off the plane it is tangent to - so the faces are merged again here, at
+    1 um and 1e-4 rad, which no intended feature is finer than.
+    """
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
     live = [p for p in parts.values() if p is not None]
     out = live[0]
     for p in live[1:]:
         out = out + p
-    return out
+    u = ShapeUpgrade_UnifySameDomain(out.wrapped, True, True, False)
+    u.SetLinearTolerance(1e-6)
+    u.SetAngularTolerance(1e-4)
+    u.Build()
+    return _bd.Part(u.Shape())

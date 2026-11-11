@@ -60,8 +60,9 @@ REFS = [
     (7, 0.60, 1, 1, 'climb_f7_s60'), (7, 0.60, -1, 1, 'climb_f7m_s60'),      # taught
     *[(8, b, 1, 1, f'climb_f8_b{round(b * 100)}') for b in (0.35, 0.50, 0.55, 0.60, 0.70)],
     *[(9, g, s, 1, f'climb_f9{"m" if s < 0 else ""}_g{round(g * 100)}')
-      for g in (0.55, 0.60, 0.70, 0.80, 0.90) for s in (1, -1)],
-]
+      for g in (0.55, 0.60, 0.70, 0.80, 0.90) for s in (1, -1)
+      if (g, s) != (0.70, -1)],  # its swing falls on the 2026-11-11 robot (-101 g); lessons 8-9
+]                                # are not in the paper's runs, so it waits for a new search
 TOP = {3: 'spacing', 4: 'spacing', 5: 'drop', 6: 'rise', 7: 'side', 8: 'behind', 9: 'gap'}
 
 SHARE = (0.75, 0.25)  # of a family's walls begun at a start: until its gate is first passed --
