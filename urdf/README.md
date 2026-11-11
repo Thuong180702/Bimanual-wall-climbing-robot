@@ -46,7 +46,7 @@ the two sections after "What moved".
 | | before | now |
 |---|---|---|
 | total mass | 11.13 kg | **24.50 kg** (21.86 before the lidars) |
-| of which actuators | - | 12.73 kg (53 %) |
+| of which actuators | - | 12.73 kg (52 %) |
 | of which structure | - | 8.22 kg (6061-T6; 1.59 of it the lidar mounts and cage) |
 | of which payload | - | 2.50 kg (battery, Jetson, IMU, CAN, DC-DC and wiring) |
 | of which lidars | - | 1.06 kg (4 × Livox Mid-360) |
