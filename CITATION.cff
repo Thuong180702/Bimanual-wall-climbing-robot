@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you refer to this work, please cite it as below."
 title: "Bimanual wall-climbing robot"
-abstract: "A 24.2 kg two-armed robot that hangs from wall rungs by hooked hands, in MuJoCo, and a PPO policy that learns to climb with it."
+abstract: "Code, robot model, benchmark, reference climbs and evaluation scripts of the paper Learning Versatile Bimanual Wall-Rung Climbing from Hardware-Available Sensing with Search-Seeded Reverse Curricula: a 24.5 kg two-armed robot that hangs from wall rungs by hooked hands, in MuJoCo, and one PPO policy that learns seven climbing skills with it."
 authors:
   - family-names: "Nguyen Van"
     given-names: "Thuong"
