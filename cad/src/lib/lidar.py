@@ -13,7 +13,7 @@ also what spreads a knock into the torso instead of into four M3 threads.
 """
 from cadgen import build123d as _bd
 
-from .spec import DROP, GUARD, LIDAR_PAD, LIDARS, MID360, PLATE, TORSO_UP, WALL
+from .spec import DROP, GUARD, HEAD_RISE, LIDAR_PAD, LIDARS, MID360, PLATE, TORSO_UP, WALL
 
 M3, M4, M4_TAP = 0.0034, 0.0045, 0.0033
 GUSSET = 0.005
@@ -97,7 +97,8 @@ def head_roof():
     """The two head lidars back to back on a roof: a base plate on the lid (the
     heat plate, and what closes the lid's window), a pad for each 45 deg slope,
     and a gable at each end of the ridge. -> (parts, cut from the lid)"""
-    d, _, h = TORSO_UP
+    d, _, h0 = TORSO_UP
+    h = h0 + HEAD_RISE                               # the roof's host face
     ho, n = (0.0, 0.0, h), (0.0, 0.0, 1.0)
     parts, cut, tbs = {}, None, []
     for name in ("lidar_head_front", "lidar_head_back"):
@@ -110,8 +111,45 @@ def head_roof():
     for sx in (-1, 1):                               # M3 through the lid's band, clear of the tabs
         for sy in (-0.074, 0.0, 0.074):
             cut += _bd.Pos(sx * 0.058, sy, h + (tb - WALL) / 2) * _bd.Cylinder(M3 / 2, tb + WALL + 0.002)
-    parts["lidar_head_plate"] = _box(-0.064, 0.064, -0.077, 0.077, h, h + tb) - cut
-    return parts, cut
+    if not HEAD_RISE:
+        parts["lidar_head_plate"] = _box(-0.064, 0.064, -0.077, 0.077, h, h + tb) - cut
+        return parts, cut
+    parts["lidar_head_plate"] = _box(-0.064, 0.064, -0.077, 0.077, h, h + tb) - cut - _riser_bolts(h, LIP)
+    low = _bd.Pos(0, 0, -HEAD_RISE) * cut            # the same leads and bolts, at the lid
+    parts["lidar_head_riser"] = riser(h0, HEAD_RISE) - _riser_bolts(h, LIP) - low
+    return parts, low
+
+
+LIP = 0.005                       # the riser's top and bottom lips, where the M3s go
+
+
+def _riser_bolts(h, t):
+    """M3 down through the roof's plate into the riser's top lip (its nuts inside)"""
+    cut = None
+    for sx in (-1, 1):
+        for sy in (-0.074, 0.0, 0.074):
+            c = _bd.Pos(sx * 0.058, sy, h - t / 2) * _bd.Cylinder(M3 / 2, 2 * t + 0.02)
+            cut = c if cut is None else cut + c
+    return cut
+
+
+def riser(h0, rise):
+    """A 6061 box section under the roof, the plate's footprint (128 x 154), WALL thick,
+    from the lid to the roof's plate: a lip across each end, top and bottom, carries the
+    six M3 of each joint (the lid's own holes below, the plate's above); a window in
+    each face for the leads and the hands, and to lighten it."""
+    x, y = 0.064, 0.077
+    body = (_box(-x, x, -y, y, h0, h0 + rise)
+            - _box(-x + WALL, x - WALL, -y + WALL, y - WALL, h0 - 0.001, h0 + rise + 0.001))
+    for sx in (-1, 1):
+        for z0 in (h0, h0 + rise - LIP):
+            body += _box(sx * x, sx * (0.058 - 0.008), -y, y, z0, z0 + LIP)
+    zw0, zw1 = h0 + LIP + 0.010, h0 + rise - LIP - 0.010
+    for sy in (-1, 1):
+        body -= _box(-x + 0.014, x - 0.014, sy * (y + 0.001), sy * (y - WALL - 0.001), zw0, zw1)
+    for sx in (-1, 1):
+        body -= _box(sx * (x + 0.001), sx * (x - WALL - 0.001), -y + 0.014, y - 0.014, zw0, zw1)
+    return body
 
 
 def sunk(name):

@@ -13,13 +13,13 @@ import math
 from cadgen import build123d as _bd
 
 from . import lidar
-from .connect import (_disc, access_r, bolt_access, bolt_ring, cheek, face_od, face_plate,
+from .connect import (_disc, access_r, bolt_access, bolt_ring, cheek, face_od, face_plate, face_t,
                       hook_profile, mate_bore_r, output_plate,
                       plane_at)
 from .spec import (BAY, BODY_DIR, CLEAR, FIXED, HOOK, IFACE, JOINTS, MOTOR_OF,
                    MOUNT_AT, MOUNT_ROT, PLATE, SHELL, TORSO_BC, TORSO_LOW,
                    TORSO_LOW_R, TORSO_N, HIPS, HIP_KEY, LOW_Z0, TORSO_TH, TORSO_UP, TRAY_Z, WAIST_DIA,
-                   WALL)
+                   WALL, WRIST_GIMBAL)
 
 MM = 0.001
 MIN_ = (_bd.Align.MIN,) * 3
@@ -47,6 +47,7 @@ def seat(web, pl, key, face, od, t=PLATE):
     face, the rims are one surface and the joint is a face, not a volume.
     """
     d = IFACE[key]
+    t = face_t(key, face, t) if face != "output" else t
     z0 = {"output": d["out_z"] * MM, "rear": d["rear_z"] * MM - t,
           "front": d["hou_z"] * MM}[face]
     return web - pl * _disc(od / 2, z0, z0 + t)
@@ -77,7 +78,20 @@ def in_turned_frame(pl, a):
 # Which face a connector actually bolts to, where it is not the one
 # mount_face_of() would pick. The shoulder is the only one so far: see
 # shoulder_L().
-FACE = {"shoulder_L": "rear", "shoulder_R": "rear"}
+FACE = {"shoulder_L": "rear", "shoulder_R": "rear",
+        # the full robot's hips: the RS04 bolts its FRONT (housing) face to the pelvis
+        # wall, as v2's sockets do -- the joint lies sideways, so the rule below reads
+        # it as a stacked joint and would take the rear
+        "hip_L_pitch": "front", "hip_R_pitch": "front",
+        "hip_L": "rear", "hip_R": "rear"}          # the hip roll's far flange, as the shoulder
+if not IFACE[MOTOR_OF["shoulder_L_abduction"]]["rear_n"]:      # full: X12-320, no rear flange
+    FACE.update(shoulder_L="front", shoulder_R="front", upper_arm_L="front", upper_arm_R="front")
+if WRIST_GIMBAL:                    # full: the gimbal holds both wrist actuators by their rear
+    FACE.update(forearm_rot_L="rear", forearm_rot_R="rear", wrist_L="rear", wrist_R="rear",
+                wrist_L_flexion="rear", wrist_R_flexion="rear",
+                wrist_L_deviation="rear", wrist_R_deviation="rear")
+if "hip_L_roll" in MOTOR_OF and not IFACE[MOTOR_OF["hip_L_roll"]]["rear_n"]:   # full: AKE90-8
+    FACE.update(hip_L="front", hip_R="front", hip_roll_L="front", hip_roll_R="front")
 
 
 def grow(pl, axis):
@@ -90,6 +104,8 @@ def grow(pl, axis):
 
 def mount_face_of(cj):
     """Which of the child actuator's two flanges this connector bolts to."""
+    if cj[0] in FACE:
+        return FACE[cj[0]]
     import math as _m
     L = _m.sqrt(sum(v * v for v in cj[4]))
     u = tuple(v / L for v in cj[4])
@@ -201,8 +217,81 @@ def forearm_rot_L():
     The same part as the elbow bracket one joint down and a size smaller: the
     faces are Ø54 and Ø78 instead of Ø72 and Ø97, and the AK60-39 leaves only
     5.5 mm between its front face and its output flange, so that is the web.
+    On the full robot's gimbal wrist it is gimbal_hang.
     """
+    if WRIST_GIMBAL:
+        return gimbal_hang("forearm_rot_L")
     return tee("forearm_rot_L")
+
+
+def _bbox(part):
+    b = part.bounding_box()
+    return (b.min.X, b.max.X), (b.min.Y, b.max.Y), (b.min.Z, b.max.Z)
+
+
+def gimbal_hang(name):
+    """The full robot's forearm: forearm-roll output (down the arm) -> the wrist-flexion
+    actuator's REAR flange, that actuator lying across the arm 60 mm to one side of the
+    wrist centre with its flange toward it. The output plate is carried out sideways as
+    a bridge over the gimbal, then down as one cheek in the plane of the rear plate:
+    everything inboard of the flexion actuator, so the deviation actuator's swing under
+    the bridge and between the cheek and the wrist centre stays clear."""
+    pj, cj = PJOINT[name], CHILD_OF[name][0]
+    p_key, c_key = MOTOR_OF[pj[0]], MOTOR_OF[cj[0]]
+    pl_p, pl_c = mount_plane(pj, (0.0, 0.0, 0.0)), mount_plane(cj, cj[4])
+    assert abs(pl_p.z_dir.Z) > 0.9 and abs(pl_c.z_dir.Y) > 0.9, name
+    a_od, b_od = IFACE[p_key]["out_od"] * MM, face_od(c_key, "rear")
+    top = pl_p * output_plate(p_key, a_od)
+    side = pl_c * face_plate(c_key, "rear", b_od)
+    (_, _), (ty0, ty1), (tz0, tz1) = _bbox(top)
+    (_, _), (sy0, sy1), (_, _) = _bbox(side)
+    zc = cj[4][2]
+    far = sy0 if abs(sy0) > abs(sy1) else sy1            # the rear plate's outer face
+    near = sy1 if far == sy0 else sy0
+    y_lo, y_hi = sorted((far, near))
+    w = a_od
+    bridge = _box_at((-w / 2, w / 2), sorted((0.0, far)), (tz0, tz1))
+    prof = _bd.make_hull((_bd.Pos(0, zc) * _bd.Circle(b_od / 2)).edges()
+                         + (_bd.Pos(0, (tz0 + tz1) / 2) * _bd.Rectangle(w, tz1 - tz0)).edges())
+    web = _bd.Plane.XZ.offset(-y_lo) * _bd.extrude(prof, amount=-(y_hi - y_lo))
+    web = web + bridge
+    web -= pl_c * _bd.Rot(180, 0, 0) * _disc(mate_bore_r(c_key, "rear"), -0.1, 0.1)   # the rear pilot
+    web = clear_bolts(web, [(pl_p, p_key, "output"), (pl_c, c_key, "rear")])
+    web = seat(seat(web, pl_p, p_key, "output", a_od), pl_c, c_key, "rear", b_od)
+    return {"plate_out": top, "plate_face": side, "web": web}
+
+
+def _box_at(xr, yr, zr):
+    (x0, x1), (y0, y1), (z0, z1) = xr, yr, zr
+    return _bd.Pos((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2) * _bd.Box(x1 - x0, y1 - y0, z1 - z0)
+
+
+def yoke(name):
+    """The full robot's gimbal: wrist-flexion output -> the wrist-deviation actuator's
+    REAR flange. Both axes meet at the wrist centre; the flexion output plate faces it
+    from one side (y), the deviation actuator lies behind it (x). One plate in the
+    flexion plate's plane runs back past the deviation actuator's barrel (5 mm off it)
+    to its rear plate, which takes a tab across to meet it: an L round the actuator."""
+    pj, cj = PJOINT[name], CHILD_OF[name][0]
+    p_key, c_key = MOTOR_OF[pj[0]], MOTOR_OF[cj[0]]
+    pl_p, pl_c = mount_plane(pj, (0.0, 0.0, 0.0)), mount_plane(cj, cj[4])
+    assert abs(pl_p.z_dir.Y) > 0.9 and abs(pl_c.z_dir.X) > 0.9, name
+    a_od, b_od = IFACE[p_key]["out_od"] * MM, face_od(c_key, "rear")
+    top = pl_p * output_plate(p_key, a_od)
+    side = pl_c * face_plate(c_key, "rear", b_od)
+    (_, _), (py0, py1), (_, _) = _bbox(top)
+    (sx0, sx1), (_, _), (_, _) = _bbox(side)
+    h = a_od / 2
+    x_far = sx0 if abs(sx0) > abs(sx1) else sx1           # the rear plate's outer face
+    pilot = IFACE[c_key]["rear_pilot"] / 2 * MM + CLEAR
+    yf = py0 if abs(py0) > abs(py1) else py1               # the flexion plate's back face
+    arm = _box_at(sorted((0.0, x_far)), (py0, py1), (-h, h))
+    tab = _box_at((sx0, sx1), sorted((yf, math.copysign(pilot, yf))), (-h, h))
+    web = arm + tab
+    web -= pl_c * _bd.Rot(180, 0, 0) * _disc(mate_bore_r(c_key, "rear"), -0.1, 0.1)   # the rear pilot
+    web = clear_bolts(web, [(pl_p, p_key, "output"), (pl_c, c_key, "rear")])
+    web = seat(seat(web, pl_p, p_key, "output", a_od), pl_c, c_key, "rear", b_od)
+    return {"plate_out": top, "plate_face": side, "web": web}
 
 
 # --------------------------------------------------------------------------
@@ -296,6 +385,47 @@ def fore_arm_L():
     return hang("fore_arm_L")
 
 
+def side_hang(name, plate_t=0.010, cheek_t=0.012, web_t=0.010, web_y=0.029, web_h=0.050):
+    """A link whose child actuator hangs down the link on its own axis, body up at the
+    parent, held by its FRONT ring by its output -- an actuator with no rear flange (the
+    full robot's X12-320). The link cannot come down the middle: the child's body is in
+    the way, so it comes down BEHIND it. The parent's output plate (its output faces
+    aft), two webs back from it over the child's body, one cheek down the child's back
+    1.5 mm off its barrel, and the child's front-ring flange, the cheek's foot on its rim.
+    The child's reaction (about the link) goes round as shear in the two webs."""
+    pj, cj = PJOINT[name], CHILD_OF[name][0]
+    p_key, c_key = MOTOR_OF[pj[0]], MOTOR_OF[cj[0]]
+    dp, dc = IFACE[p_key], IFACE[c_key]
+    pl_p, pl_c = mount_plane(pj, (0.0, 0.0, 0.0)), mount_plane(cj, cj[4])
+    assert abs(pl_p.z_dir.X) > 0.9 and abs(pl_c.z_dir.Z) > 0.9, \
+        "side_hang(%s): wants the parent output along X and the child along Z" % name
+    sx = grow(pl_p, "X")                             # the side the output plate grows to
+    a_od, b_od = dp["out_od"] * MM, face_od(c_key, "front")
+    top = pl_p * output_plate(p_key, a_od, plate_t)
+    t_f = face_t(c_key, "front")
+    ring = pl_c * face_plate(c_key, "front", b_od)
+    z_f = sorted((_pt(pl_c, dc["hou_z"] * MM)[2], _pt(pl_c, dc["hou_z"] * MM + t_f)[2]))
+    x_back = sx * (dc["od"] / 2 * MM + CLEAR)        # the cheek's face toward the child
+    x_out = x_back + sx * cheek_t
+    prof = _bd.make_hull((_bd.Circle(a_od / 2)).edges()
+                         + (_bd.Pos(0, (z_f[0] + z_f[1]) / 2) * _bd.Rectangle(b_od, z_f[1] - z_f[0])).edges())
+    back = _bd.extrude(_bd.Plane.YZ * prof, amount=cheek_t)              # along +X
+    back = _bd.Pos(min(x_back, x_out), 0, 0) * back
+    x_plate = _pt(pl_p, dp["out_z"] * MM + plate_t)[0]
+    webs = None
+    for sy in (1, -1):
+        w = _bd.Pos((x_plate + x_back) / 2, sy * web_y, 0.0) * _bd.Box(
+            abs(x_back - x_plate) + 0.002, web_t, web_h)
+        webs = w if webs is None else webs + w
+    # the cheek's foot onto the flange's rim
+    tab = _bd.Pos(x_back - sx * 0.004, 0.0, (z_f[0] + z_f[1]) / 2) * _bd.Box(0.010, 0.050, z_f[1] - z_f[0])
+    faces = [(pl_p, p_key, "output"), (pl_c, c_key, "front")]
+    fit = lambda part: seat(seat(clear_bolts(part, faces), pl_p, p_key, "output", a_od, plate_t),
+                            pl_c, c_key, "front", b_od)
+    return {"plate_out": top, "plate_face": ring, "cheek": fit(back), "webs": fit(webs),
+            "foot": fit(tab - pl_c * _disc(mate_bore_r(c_key, "front"), -0.1, 0.1))}
+
+
 def upper_arm_L():
     """shoulder-abduction (roll) output -> shoulder-rotation housing, rear face.
 
@@ -312,6 +442,8 @@ def upper_arm_L():
     link at stall. A 12 x 97 plate takes that at 26 MPa and twists 0.7 deg over
     its length, so 12 mm holds here too.
     """
+    if not IFACE[MOTOR_OF["shoulder_L_rotation"]]["rear_n"]:      # full: X12-320, no rear flange
+        return side_hang("upper_arm_L")
     return hang("upper_arm_L", stand=0.009, plate_t=0.013)
 
 
@@ -440,12 +572,15 @@ def corner(name, face="front", stand=0.0, plate_t=PLATE, spine=None):
 def wrist_L():
     """wrist-flexion output -> wrist-deviation housing, front face.
 
-    Flexion turns about Y, deviation about X, the link runs along Z.
+    Flexion turns about Y, deviation about X, the link runs along Z. On the full
+    robot's gimbal wrist the two axes meet: yoke.
     """
+    if WRIST_GIMBAL:
+        return yoke("wrist_L")
     return corner("wrist_L")
 
 
-def side_corner(name, face="rear", plate_t=PLATE, web_min=0.016):
+def side_corner(name, face="rear", plate_t=PLATE, web_min=0.016, web_from=0.0):
     """A link whose child actuator sits BESIDE the parent's output, at the same
     height and on a perpendicular axis - the pitch-first shoulder (spec.py).
 
@@ -468,8 +603,9 @@ def side_corner(name, face="rear", plate_t=PLATE, web_min=0.016):
     top = pl_p * output_plate(p_key, a_od, plate_t)
     side = pl_c * face_plate(c_key, face, b_od)
 
-    # the web: from where the output plate's spigot recess ends to the child's flank
-    y0 = _pt(pl_p, (dp["out_z"] + dp["out_spigot_h"]) * MM + CLEAR + 0.0005)[1]
+    # the web: from where the output plate's spigot recess ends (or `web_from` past the
+    # output face, where the parent's own housing has a wall round it) to the child's flank
+    y0 = _pt(pl_p, max((dp["out_z"] + dp["out_spigot_h"]) * MM + CLEAR + 0.0005, web_from))[1]
     y1 = cj[4][1] - sg * (dc["od"] / 2 * MM + CLEAR)
     t = abs(y1 - y0)
     assert t >= web_min, "side_corner(%s): %.1f mm of web, want %.1f" % (
@@ -518,7 +654,9 @@ def shoulder_L():
     side, where upper_arm_L bolts on and swings; this leaves that whole side to
     the upper arm, and the bracket sits on the inboard flank and behind.
     """
-    return side_corner("shoulder_L", face="rear", plate_t=0.010)
+    # the full robot's X12-320 roll has no rear flange: its one mounting face is the
+    # shoulder ring by its output, and the bracket takes that (FACE below)
+    return side_corner("shoulder_L", face=FACE["shoulder_L"], plate_t=0.010)
 
 
 def wrist_dev_L():
@@ -541,7 +679,12 @@ def wrist_dev_L():
     at every deviation angle. So this link's plate is 16 mm thick and its leg
     starts 12 mm out, clear of wrist_L by 2 mm through the whole sweep.
     """
-    return corner("wrist_dev_L", stand=0.012, plate_t=0.016)
+    # The full robot's AKE90-8 has its housing face 1 mm under the output, not the
+    # AK60-39's 6, so wrist_L's ring reaches 5 mm further past it: stand off that much more.
+    extra = (IFACE[MOTOR_OF["wrist_L_deviation"]]["hou_z"] - IFACE["AK60-39"]["hou_z"]) * MM
+    if WRIST_GIMBAL:              # the yoke holds the deviation actuator from behind: no ring here
+        return corner("wrist_dev_L")
+    return corner("wrist_dev_L", stand=0.012 + extra, plate_t=0.016 + extra)
 
 
 # --------------------------------------------------------------------------
@@ -684,7 +827,8 @@ def base_link():
     floor -= bolt_ring(0.110, 6, 0.030, z0 - 0.001, z0 + FLOOR + 0.001)
     parts["floor"] = floor
 
-    for hj in HIPS:                                          # the legs' sockets
+    hips = HIPS or [j for j in CHILD_OF["base_link"] if j[0].startswith("hip_")]   # full: joints
+    for hj in hips:                                          # the legs' sockets
         pl_h = mount_plane(hj, hj[4])
         b_od = face_od(HIP_KEY, "front")
         ya = _pt(pl_h, IFACE[HIP_KEY]["hou_z"] * MM)[1]
@@ -911,3 +1055,8 @@ def fuse(parts):
     u.SetAngularTolerance(1e-4)
     u.Build()
     return _bd.Part(u.Shape())
+
+
+from .spec import ROBOT as _ROBOT          # noqa: E402  the full robot's legs register here
+if _ROBOT == "full":
+    from . import legs                     # noqa: E402,F401

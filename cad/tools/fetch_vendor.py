@@ -1,4 +1,4 @@
-"""Download the three vendor actuator STEP files and verify their checksums, and
+"""Download the vendor actuator STEP files and verify their checksums, and
 check the ones that have to be put in cad/vendor/ by hand.
 
 The files are the manufacturers', not ours, so they are not in the repository.
@@ -17,6 +17,18 @@ PARTS = {
         "00e18639c4794eff5a83ea6930ae681433054ba1ed58fbb4b54434d303c4fe19",
     "cubemars_ak45_36_kv80":
         "d6d093884d7daab8517e38d75f5b86762dd1363e8c7a758280e77abbfd1e4686",
+    # the full robot's hip pitch and knee (spec.ROBOT == "full")
+    "robstride_04":
+        "34547e29ff0312bd1b2eb55c51f99dbd63348a05f24d99871ca14f5b3adb3e95",
+    # the full robot's shoulders, elbows and wrist flexion
+    "myactuator_rmd_x12_320":
+        "e2aa1d51e4e86c67ef9dffc5c288f00304ed7526cbe60ed1d8e01e12e9649700",
+    # the full robot's elbows
+    "myactuator_rmd_x15_450":
+        "75b51cfb62ec6f5d5b7ecbd426afd1ab76d316267504e1b9d20d635981db461c",
+    # the full robot's wrist deviation
+    "cubemars_ake90_8_kv35":
+        "51b3afb3caee98997c3f622cd981fb9826500d8626339c33d219ef024a46e338",
 }
 # Not on step.parts: Livox gives the Mid-360's STEP only from its download centre
 # (livoxtech.com/mid-360 -> Downloads -> 3D model, "mid-360-asm.stp"). Save it as

@@ -8,7 +8,7 @@ from lib.connect import plane_at
 from lib.spec import BODY_DIR, MOTOR_OF
 
 MM = 0.001
-STEPS = {"AK80-64": "ak80_64", "AK60-39": "ak60_39", "AK45-36": "ak45_36"}
+STEPS = {"AK80-64": "ak80_64", "AK60-39": "ak60_39", "AK45-36": "ak45_36", "RS04": "rs04", "X12-320": "x12_320", "X15-450": "x15_450", "AKE90-8": "ake90_8"}
 
 
 def vendor(key):

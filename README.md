@@ -72,6 +72,12 @@ peak torque, but exceeds the continuous rating in one-handed phases (the elbow n
 against 48 N m rated), so one-handed phases must last seconds. Full measurements are in
 [`urdf/README.md`](urdf/README.md).
 
+A second model of the same robot with two walking legs (`ROBOT=full`, 63.8 kg on one 48 V
+battery: RobStride 04 hip pitch and a 1.5:1 belt knee, a parallel ankle, and 320 N m arm
+actuators that hang the whole of it)
+is drawn and checked in [`urdf/README.md`](urdf/README.md#the-full-robot-legs); it is not
+used by the paper's lessons or policies.
+
 ## Task and sensing
 
 The policy acts at 25 Hz (500 Hz physics) with 17 setpoint increments. Its 145-number

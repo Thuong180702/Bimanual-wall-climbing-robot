@@ -29,6 +29,8 @@ def link_mass(name):
         items.append((p.volume * AL, com_of(p)))
     for cj in CHILD_OF.get(name, []):
         key = MOTOR_OF[cj[0]]
+        if key is None:                              # the full robot's ankle: driven from the calf
+            continue
         m = mount_plane(cj, cj[4])
         z = -MOTORS[key]["len_mm"] / 2000.0          # middle of the barrel
         o = m.origin + m.z_dir * z

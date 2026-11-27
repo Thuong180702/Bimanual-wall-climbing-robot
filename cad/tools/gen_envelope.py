@@ -15,8 +15,21 @@ sys.path.insert(0, os.path.join(HERE, "..", "src"))
 from cadgen import build123d as bd
 from lib.spec import IFACE
 
-STEPS = {"AK80-64": "ak80_64", "AK60-39": "ak60_39", "AK45-36": "ak45_36"}
+STEPS = {"AK80-64": "ak80_64", "AK60-39": "ak60_39", "AK45-36": "ak45_36", "RS04": "rs04", "AKE90-8": "ake90_8"}
+# Read off the vendor's 2D drawing instead: the X12-320's STEP has faces OCC will not
+# tessellate (build123d stops on a face without a triangulation). Ø85 output flange 3 mm,
+# Ø109 front cover 12.5 mm, Ø124 body 69.5 mm (myactuator.pages.dev, rmd-x12-p20-320).
+DRAWN = {"X12-320": {"z0": -85.0, "z1": 0.0,
+                     "bands": [[-85.0, -15.5, 62.0], [-15.5, -3.0, 54.5], [-3.0, 0.0, 42.5]]},
+         # likewise the X15-450 (its STEP is 42 MB): Ø124 hub 21, Ø166 body 56, Ø144 cover 10,
+         # Ø115 output 3 (rmd-x15-p20-450-2d-drawing.pdf)
+         "X15-450": {"z0": -90.0, "z1": 0.0,
+                     "bands": [[-90.0, -69.0, 62.0], [-69.0, -13.0, 83.0], [-13.0, -3.0, 72.0],
+                               [-3.0, 0.0, 57.5]]}}
 STEP = 0.5
+# the AKE90-8 is motor + gearbox only: its CubeMars driver board bolts behind it, 11 mm
+# deep inside Ø80 (estimate, as spec.IFACE's length): (depth, radius) in mm
+BOARD = {"AKE90-8": (11.0, 40.0)}
 
 
 def envelope(path):
@@ -97,10 +110,15 @@ if __name__ == "__main__":
         p = os.path.join(HERE, "..", "STEP", "purchased", f + ".step")
         out[key] = envelope(p)
         out[key]["bands"] = clip(out[key]["bands"], IFACE[key])
+        if key in BOARD:                 # a driver board behind the STEP's back face
+            z1 = out[key]["z0"]
+            out[key]["z0"] = z1 - BOARD[key][0]
+            out[key]["bands"].insert(0, [round(out[key]["z0"], 3), round(z1, 3), BOARD[key][1]])
         bands = out[key]["bands"]
         print("%-9s z %.1f..%.1f, %d bands, max r %.1f mm"
               % (key, out[key]["z0"], out[key]["z1"], len(bands),
                  max(b[2] for b in bands)))
+    out.update(DRAWN)
     dst = os.path.join(HERE, "..", "src", "lib", "_envelope.json")
     json.dump(out, open(dst, "w"), indent=1)
     print("wrote", dst)

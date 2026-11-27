@@ -357,6 +357,60 @@ stress — a 70 × 40 × 3 box section sees 15 MPa at 120 N·m and 6061-T6 yield
 
 ---
 
+## The full robot (legs)
+
+A second model, `ROBOT=full`, adds two walking legs and the arm actuators that can then
+hang the whole robot; the paper's robot (`ROBOT` unset, everything above) is unchanged,
+regenerating it gives the committed files to 1e-9 (`check_full.py variant`). It is CAD
+and a simulation model only: no lesson, climb or policy uses it yet.
+
+![the full robot at its zero pose](full/full_robot.png)
+![hanging at lesson 3, legs stowed](full/full_hang.png)
+
+| | |
+|---|---|
+| mass | 69.19 kg |
+| legs | 6 DoF each, G1's order: hip pitch RobStride 04, hip roll CubeMars AKE90-8, hip yaw AK60-39, knee RobStride 04, a parallel ankle (two AK60-39 high on the calf, cranks and rods to the foot); thigh and calf 0.32 m, a 200 mm foot shaped as a person's |
+| arms | shoulders x3 and wrist flexion MyActuator RMD-X12-P20-320, elbow RMD-X15-P20-450, forearm roll AK80-64, wrist deviation AKE90-8, finger AK60-39 |
+| power | 48 V battery for all; the two X15 elbows on a 72 V branch from a 48 -> 72 V boost converter (in the head riser, with the legs' CAN interface: 0.6 + 0.5 kg allowances) |
+| head | the roof and its two lidars stand on a 111 mm riser: the bigger arms hang the body that much lower under the rung |
+| climbing | legs stowed at hip pitch +30 (`spec.STOW`), held at 10.6 N.m |
+
+Checked by `python cad/tools/check_full.py all` (each piece by name):
+
+| check | result |
+|---|---|
+| arms, static hold over the joint box / the climbing envelope | every joint >= 1.31x (forearm roll L) / >= 1.55x |
+| arms, speed over the 27 reference climbs and the dropped ones | p99.9 at most 1/2.8 of no-load |
+| legs, standing (both feet squatting at 90 deg, one foot, COM over toe, heel, edges) | every actuator >= 1.75x; ankle rods 101 / 134 N.m vs 73.5 / 38.7 |
+| legs, walking (one foot carrying 1.5 x the weight) | hip roll 1.18x (accepted), the rest >= 3.2x |
+| waist AK60-39 bearing (C0r 2520 N) | 7.2x walking, 21x hanging; yaw 4.0x at 10 rad/s^2 |
+| stow at every lesson's hang, simulated | 9 / 9 hooked, the legs touch nothing |
+| self-collision | 0 in 18 named poses; 8.9 % of 2000 random poses (a wrist into a hip at the joint limits) |
+| reach | 0.56 m, as v2 |
+| walking, reported | ~0.3 h on the 288 Wh battery at a rough 980 W (0.3 x the leg actuators' rated power, the rest of the robot not counted); standing, the chest lidar reaches the floor within 0.6 m of the feet on 665 of its 5340 downward rays |
+
+Not settled here:
+
+- **Dynamic arm torques.** v2's reference climbs keep its own servos at their peak much
+  of the time (CEM found them within those limits), so their motion cannot say what the
+  full robot needs; that comes with the full robot's own climbs.
+- **The reference climbs themselves.** Played with the full robot, its legs go up to
+  165 mm into the walls and rungs: v2's climbs swing the pelvis's underside to the wall.
+  They are searched again when the full robot enters the simulation.
+- **Lidar view.** The bigger arm actuators hide part of the held rung: the head sees 14-22
+  cells of the start rung where v2 sees 24-30 (reported by `check_full.py stow`).
+- **Estimates:** the AKE90-8's driver board (11 mm, 50 g behind it, not drawn), the boost
+  converter (0.6 kg), whether the X15's driver runs from 48 V directly (asked of
+  MyActuator: it would drop the converter), and the waist bearing's moment rating (not
+  published).
+
+```bash
+python cad/tools/fetch_vendor.py                    # adds RS04, X12-320, X15-450, AKE90-8
+ROBOT=full python cad/src/robot.py                  # cad/STEP/robot_full.step (~1 GB)
+python cad/tools/check_full.py all                  # regenerates urdf/full/ and checks it
+```
+
 ## Regenerating
 
 `meshes/` is in git (15 MB), so nothing below is needed to simulate or train.

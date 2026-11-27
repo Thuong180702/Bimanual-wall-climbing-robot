@@ -12,14 +12,18 @@ import os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
 from lib.build import BUILDERS, CHILD_OF, PJOINT, fuse, mount_plane
-from lib.connect import keepout, witness
-from lib.spec import MOTOR_OF
+from lib.connect import keepout, plane_at, witness
+from lib.spec import ANKLE_DRIVE, MOTOR_OF
 
 MIN_COVER = 0.55
 
 
 def main(name):
     parts = BUILDERS[name]()
+    from cadgen import build123d as _bd
+    left = name[:-2] + "_L"
+    mirror_of = (BUILDERS[left]() if name.endswith("_R") and left in BUILDERS
+                 and getattr(BUILDERS[name], "__qualname__", "").startswith("mirrored") else None)
     link = fuse(parts)
     bad = 0
 
@@ -32,21 +36,41 @@ def main(name):
     from lib.build import FACE, mount_face_of
     # the root link has no parent joint, and a link whose parent joint is the
     # fixed one has no parent ACTUATOR to bolt to
-    jobs = ([(PJOINT[name][0], "output", mount_plane(PJOINT[name], (0, 0, 0)))]
-            if name in PJOINT and not isinstance(PJOINT[name], str) else [])
+    # a link bolted on turned (spec.MOUNT_ROT, the hooks) sees its parent's actuator in
+    # its own turned frame -- untransformed it was on the wrong side of the hook
+    from lib.build import in_turned_frame
+    from lib.spec import MOUNT_ROT
+    pl0 = (in_turned_frame(mount_plane(PJOINT[name], (0, 0, 0)), MOUNT_ROT[name]) if MOUNT_ROT.get(name)
+           else mount_plane(PJOINT[name], (0, 0, 0))) if name in PJOINT and not isinstance(PJOINT[name], str) else None
+    jobs = ([(PJOINT[name][0], MOTOR_OF[PJOINT[name][0]], "output", pl0)]
+            if name in PJOINT and not isinstance(PJOINT[name], str)
+            and MOTOR_OF[PJOINT[name][0]] is not None else [])
     for cj in CHILD_OF.get(name, []):
-        jobs.append((cj[0], FACE.get(name, mount_face_of(cj)),
+        if MOTOR_OF[cj[0]] is None:          # driven through a linkage (spec.ANKLE_DRIVE)
+            continue
+        jobs.append((cj[0], MOTOR_OF[cj[0]], FACE.get(name, mount_face_of(cj)),
                      mount_plane(cj, cj[4])))
+    for mn, key, host, xyz, ax, _r in ANKLE_DRIVE:     # motors bolted on a link, not at a joint
+        if host == name:
+            jobs.append((mn, key, "front", plane_at(xyz, tuple(-v for v in ax))))
 
-    for jn, face, pl in jobs:
-        key = MOTOR_OF[jn]
+    for jn, key, face, pl in jobs:
         v = (link & (pl * keepout(key))).volume * 1e9
         ok = v <= 1.0
         bad += not ok
         print("  %-4s clears %-22s %-7s %9.1f mm3"
               % ("PASS" if ok else "FAIL", jn, "", v))
         w = pl * witness(key, face)
-        frac = (link & w).volume / w.volume
+        # part by part, then united: the same volume as link & w, but OCC's boolean of
+        # a mirrored, fused link against the thin witness can come back empty
+        # (hip_roll_R: 0 against its plate's own 98 %)
+        if mirror_of:          # a right link is the left one reflected (build.mirrored):
+            # OCC's booleans on reflected solids come back empty or inside out, so the
+            # witness is reflected onto the left part instead
+            hits = [p & _bd.mirror(w, about=_bd.Plane.XZ) for p in mirror_of.values() if p is not None]
+        else:
+            hits = [p & w for p in parts.values() if p is not None]
+        frac = abs(fuse({i: h for i, h in enumerate(hits) if abs(h.volume) > 0} or {0: w - w}).volume / w.volume)   # a reflected solid reads inside out
         ok = frac >= MIN_COVER
         bad += not ok
         print("  %-4s bolts to %-20s %-7s %5.0f %% of the face"

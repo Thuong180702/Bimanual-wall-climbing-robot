@@ -11,7 +11,7 @@ from cadgen import build123d as bd
 from lib.build import BUILDERS, CHILD_OF, fuse, mount_plane
 from lib.spec import FIXED, MOTOR_OF
 
-STEPS = {"AK80-64": "ak80_64", "AK60-39": "ak60_39", "AK45-36": "ak45_36"}
+STEPS = {"AK80-64": "ak80_64", "AK60-39": "ak60_39", "AK45-36": "ak45_36", "RS04": "rs04", "X12-320": "x12_320", "X15-450": "x15_450", "AKE90-8": "ake90_8"}
 _CACHE = {}
 
 

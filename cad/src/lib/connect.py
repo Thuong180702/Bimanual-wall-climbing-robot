@@ -114,6 +114,8 @@ def mate_bore_r(key, face="front"):
     d = IFACE[key]
     if face == "rear":
         return max(d["rear_pilot"], d["rear_id"]) / 2 * MM + CLEAR + 0.5 * MM
+    if d.get("hou_pilot"):                 # a flange that centres on the boss (X12-320)
+        return d["hou_boss"] / 2 * MM + 0.00005
     if d["hou_boss_h"] > 0:
         return d["hou_boss"] / 2 * MM + CLEAR + 0.5 * MM
     return d["out_od"] / 2 * MM + 0.002
@@ -137,12 +139,22 @@ def face_od(key, face):
     return min(d["od"], max(od, bc + 2 * (0.9 * th + 0.8))) * MM
 
 
+def face_t(key, face, t=PLATE):
+    """A plate's thickness on that face: as asked, but a flange on a pilot boss stands
+    0.5 mm past the boss's top, so its bolt heads clear it (spec IFACE hou_pilot)"""
+    d = IFACE[key]
+    if face == "front" and d.get("hou_pilot"):
+        return max(t, d["hou_boss_h"] * MM + 0.0005)
+    return t
+
+
 def face_plate(key, face, od, t=PLATE):
     """Plate bolted to ONE housing face of the actuator, in that actuator's frame.
 
     'front' is the annulus beside the output; 'rear' is the flange at the other
     end of the barrel. The plate lies on the face and grows away from the body.
     """
+    t = face_t(key, face, t)
     d = IFACE[key]
     if face == "rear":
         bc, n, th = d["rear_bc"], d["rear_n"], d["rear_thread"]

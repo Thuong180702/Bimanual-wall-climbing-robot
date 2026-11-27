@@ -72,10 +72,19 @@ free. The abduction-first shoulder needed it (30 mm, so the raised arm's
 rotation actuator swept past the abduction actuator); pitch-first does not.
 """
 import math
+import os
 
 from .motors import MOTORS
 
 MM = 0.001
+
+# Which robot: "v2", the arms-only robot the paper trains, or "full", the same robot
+# with legs and the arm actuators that hang its extra mass
+# (docs/superpowers/specs/2026-11-24-legs-design.md). Set by the environment, so every
+# tool builds either one unchanged; "full" writes its model under OUT_DIR.
+ROBOT = os.environ.get("ROBOT", "v2")
+assert ROBOT in ("v2", "full"), ROBOT
+OUT_DIR = "urdf" if ROBOT == "v2" else "urdf/full"
 
 # ---------------------------------------------------------------- actuators
 # joint suffix -> catalogue key. Sized in tools/size.py against the measured
@@ -142,6 +151,68 @@ IFACE = {
         rear_z=-54.0, rear_id=18.0, rear_od=54.4, rear_pilot=0.0, rear_pilot_h=0.0,
         rear_bc=48.0, rear_n=6, rear_thread=3.0,
         barrel=55.0),
+    # RobStride 04, read off robstride_04.step the same way (vendor z + 25.5 = here):
+    # the output is the planetary carrier, 9 x M5 and three 6 mm dowels standing
+    # 2.7 mm proud on a 36 mm circle; the housing face is the front ring, 12 x M3 on
+    # 115.2 (an inner ring of 12 x M3 on 70 is the gearbox's own); the rear cover
+    # carries 3 x M3 on 68.
+    "RS04": dict(
+        od=120.0, length=55.7,
+        out_z=0.0, out_od=49.6, out_bore=30.2, out_spigot=0.0, out_spigot_h=0.0,
+        out_bc=36.0, out_n=9, out_thread=5.0,
+        pin_bc=36.0, pin_n=3, pin_d=6.0, pin_h=2.7,
+        hou_z=-0.5, hou_id=83.2, hou_od=120.0, hou_boss=0.0, hou_boss_h=0.0,
+        hou_bc=115.2, hou_n=12, hou_thread=3.0,
+        rear_z=-52.7, rear_id=27.7, rear_od=92.0, rear_pilot=0.0, rear_pilot_h=0.0,
+        rear_bc=68.0, rear_n=3, rear_thread=3.0,
+        barrel=120.0),
+    # MyActuator RMD-X12-P20-320, off MyActuator's 2D drawing (the STEP has no holes): the
+    # output is the Ø85 flange, 16 x M4 on 72, 3 mm proud of the Ø109 front cover, which
+    # stands 12.5 mm out of the housing face: a Ø124 shoulder with 12 x M5 on 116.5 -- the
+    # only face it mounts by (its back is a vented cover on three M3 screws, not a flange)
+    "X12-320": dict(
+        od=124.0, length=85.0,
+        out_z=0.0, out_od=85.0, out_bore=12.6, out_spigot=0.0, out_spigot_h=0.0,
+        out_bc=72.0, out_n=16, out_thread=4.0,
+        # the Ø109 cover (0/-0.1) is a PILOT: a mounting flange slides over it at a slip fit
+        # and stands 0.5 mm past its top, so the M5 heads sit above it (they reach 4 mm
+        # inside the bolt circle and the cover is 3.75 inside it) -- a 13 mm flange
+        hou_z=-15.5, hou_id=109.0, hou_od=124.0, hou_boss=109.0, hou_boss_h=12.5, hou_pilot=True,
+        hou_bc=116.5, hou_n=12, hou_thread=5.0,
+        rear_z=-85.0, rear_id=0.0, rear_od=124.0, rear_pilot=0.0, rear_pilot_h=0.0,
+        rear_bc=0.0, rear_n=0, rear_thread=3.0,
+        pin_bc=0.0, pin_n=0, pin_d=0.0, pin_h=0.0,
+        barrel=124.0),
+    # MyActuator RMD-X15-P20-450, off its 2D drawing: the output is the Ø115 flange, 16 x M5
+    # on 100 and two Ø5 dowel holes 100 apart, 3 mm proud of the Ø144 cover (a 0/-0.04
+    # pilot) standing 10 mm out of the Ø166 shoulder, 12 x M5 on 154; the rear face, 69 mm
+    # back, has 12 x M5 on 157 round a Ø124 connector hub standing 21 mm out of it
+    "X15-450": dict(
+        od=166.0, length=90.0,
+        out_z=0.0, out_od=115.0, out_bore=21.5, out_spigot=0.0, out_spigot_h=0.0,
+        out_bc=100.0, out_n=16, out_thread=5.0,
+        pin_bc=100.0, pin_n=2, pin_d=5.0, pin_h=0.0,
+        hou_z=-13.0, hou_id=144.0, hou_od=166.0, hou_boss=144.0, hou_boss_h=10.0, hou_pilot=True,
+        hou_bc=154.0, hou_n=12, hou_thread=5.0,
+        rear_z=-69.0, rear_id=124.0, rear_od=166.0, rear_pilot=124.0, rear_pilot_h=21.0,
+        rear_bc=157.0, rear_n=12, rear_thread=5.0,
+        barrel=166.0),
+    # CubeMars AKE90-8 KV35, off cubemars_ake90_8_kv35.step (vendor axis on Y, output at
+    # y = -11: here it is turned and lowered 11 mm) and its drawing: the output is the
+    # Ø53 (-0.02) disc, 6 x M5 and three Ø4 dowel holes on Ø40, 1 mm proud of the
+    # housing face, the top of a Ø82 ring with 8 x M4 on 73.5 standing 8 mm out of the
+    # Ø107.5 body; the back is a spoked cover over the encoder magnet, where the driver
+    # board goes -- `length` takes 11 mm for that board (estimate), no rear flange
+    "AKE90-8": dict(
+        od=107.5, length=54.5,
+        out_z=0.0, out_od=53.0, out_bore=22.0, out_spigot=0.0, out_spigot_h=0.0,
+        out_bc=40.0, out_n=6, out_thread=5.0,
+        pin_bc=40.0, pin_n=3, pin_d=4.0, pin_h=0.0,
+        hou_z=-1.0, hou_id=67.0, hou_od=82.0, hou_boss=0.0, hou_boss_h=0.0,
+        hou_bc=73.5, hou_n=8, hou_thread=4.0,
+        rear_z=-42.5, rear_id=75.0, rear_od=105.5, rear_pilot=0.0, rear_pilot_h=0.0,
+        rear_bc=0.0, rear_n=0, rear_thread=3.0,
+        barrel=107.5),
 }
 
 # --------------------------------------------------------------- kinematics
@@ -160,6 +231,11 @@ D = math.radians
 DROP = 0.100
 SH_Y, SH_Z = 0.085, 0.165 + DROP   # shoulder pitch axis in the torso frame
 SH_ROLL = 0.070                 # pitch output -> roll axis, sideways
+# each arm joint's origin along the arm from the one before (the comments in _arm and at
+# the top of this file say what sets each); the full robot's bigger actuators re-space
+# them by the same rules (ROBOT == "full" below)
+ARM_OFF = dict(roll=SH_ROLL, rot=0.200, elbow=0.060, froll=0.145, wflex=0.060, wdev=0.084,
+               finger=0.072)
 
 
 def _arm(s, sg):
@@ -175,22 +251,22 @@ def _arm(s, sg):
         # bracket's web from -15 (tools/check_pair.py). The humanoids surveyed
         # stop their roll inward at -7 to -25 (N1 -10, BHL -15, H1 -19.5).
         ("shoulder_%s_abduction" % s, "shoulder_%s" % s, "upper_arm_%s" % s,
-         (1, 0, 0), (0.0, sg * SH_ROLL, 0.0),
+         (1, 0, 0), (0.0, sg * ARM_OFF["roll"], 0.0),
          (D(-12), D(180)) if sg > 0 else (D(-180), D(12)), (1, 0, 0)),
         ("shoulder_%s_rotation" % s, "upper_arm_%s" % s, "humerus_rot_%s" % s,
-         (0, 0, 1), (0.0, 0.0, -0.200),
+         (0, 0, 1), (0.0, 0.0, -ARM_OFF["rot"]),
          (D(-70), D(90)) if sg > 0 else (D(-90), D(70)), (0, 0, 1)),
         ("elbow_%s" % s, "humerus_rot_%s" % s, "fore_arm_%s" % s,
-         (0, 1, 0), (0.0, 0.0, -0.060), (D(-110), D(0)), (0, sg, 0)),
+         (0, 1, 0), (0.0, 0.0, -ARM_OFF["elbow"]), (D(-110), D(0)), (0, sg, 0)),
         ("forearm_%s_roll" % s, "fore_arm_%s" % s, "forearm_rot_%s" % s,
-         (0, 0, 1), (0.0, 0.0, -0.145), (D(-85), D(85)), (0, 0, 1)),
+         (0, 0, 1), (0.0, 0.0, -ARM_OFF["froll"]), (D(-85), D(85)), (0, 0, 1)),
         ("wrist_%s_flexion" % s, "forearm_rot_%s" % s, "wrist_%s" % s,
-         (0, 1, 0), (0.0, 0.0, -0.060), (D(-25), D(25)), (0, -sg, 0)),
+         (0, 1, 0), (0.0, 0.0, -ARM_OFF["wflex"]), (D(-25), D(25)), (0, -sg, 0)),
         ("wrist_%s_deviation" % s, "wrist_%s" % s, "wrist_dev_%s" % s,
-         (1, 0, 0), (0.0, 0.0, -0.084),
+         (1, 0, 0), (0.0, 0.0, -ARM_OFF["wdev"]),
          (D(-30), D(20)) if sg > 0 else (D(-20), D(30)), (-1, 0, 0)),
         ("finger_%s" % s, "wrist_dev_%s" % s, "hook_%s" % s,
-         (0, 1, 0), (0.0, 0.0, -0.072), (D(-90), D(20)), (0, sg, 0)),
+         (0, 1, 0), (0.0, 0.0, -ARM_OFF["finger"]), (D(-90), D(20)), (0, sg, 0)),
     ]
 
 
@@ -214,8 +290,192 @@ HIPS = [("hip_%s_pitch" % s, "base_link", None, (0, 1, 0), (0.0, sg * HIP_Y, HIP
          (D(-150), D(60)), (0, -sg, 0)) for s, sg in (("L", 1), ("R", -1))]
 LOW_Z0 = -0.076                       # the pelvis floor's underside, under the hips
 
+# ------------------------------------------------------------------ legs (ROBOT == "full")
+# Two 6-DOF legs, G1's order: hip pitch (on the pelvis) -> roll -> yaw -> knee -> ankle
+# pitch -> ankle roll (docs/superpowers/specs/2026-11-24-legs-design.md). A 1.40 m
+# person's leg scaled toward G1: hip pitch axis to knee THIGH, knee to ankle CALF, ankle
+# axis to sole SOLE. Hip pitch and knee are RobStride 04 (fast enough to walk), hip roll
+# CubeMars AKE90-8 (an AK80-64 held 0.90x walking: 134 N.m on one foot at 1.5 x the
+# weight; the user's choice 2026-11-25), hip yaw AK60-39; the ankle has no motor at its joints: two AK60-39 high on the
+# calf (ANKLE_DRIVE) turn cranks of CRANK_R that push two rods to the foot, as on G1.
+THIGH, CALF, SOLE = 0.320, 0.320, 0.060
+# pitch output -> roll axis, sideways (the X12 hips, running, 2026-11-25): the output
+# stands 2.5 mm past its flange's ring, the web starts 2 mm past the output, 16.5 mm of
+# web, 1.5 of air and the roll X12's 62 radius
+HIP_ROLL = 0.002 + 0.0165 + 0.0015 + 0.062
+# roll axis -> yaw output, down: the roll X12's radius 62 + a 6 mm plate + 1.5 of air +
+# the yaw AK80-64's 61.9 mm body standing on it
+HIP_YAW_Z = 0.062 + 0.0075 + 0.0619
+# The ankle drive (G1's parallel ankle). The calf is a box of two 5 mm plates: the
+# outboard one at y 0.014..0.019 (clear of the thigh's 10 mm knee plate and the 3 mm
+# heads of its knee bolts), the inboard one 72.5 mm in. Motor A (high) bolts its FRONT face to the outboard plate's inside, body
+# in, output out through it; motor B (low) the mirror image on the inboard plate. Each
+# turns a crank of CRANK_R on the outside of its plate, pointing back, and a rod drops
+# from it to the foot FOOT_LEVER behind the ankle axis, one each side of the roll axis
+# (46 mm out): together they pitch the foot, against each other they roll it. The ankle
+# sits ANKLE_IN inboard of the knee so the two rods straddle it.
+CRANK_R = 0.050
+FOOT_LEVER = 0.060
+ANKLE_IN = 0.017
+CALF_T = 0.005
+
+
+def _leg(s, sg):
+    """One leg, in the arm's format. sg = +1 left, -1 right; limits mirror about the
+    sagittal plane. About y, NEGATIVE hip pitch lifts the thigh forward; POSITIVE knee
+    bends it (the foot goes back). Hip roll is positive outward on the left."""
+    return [
+        ("hip_%s_pitch" % s, "base_link", "hip_%s" % s, (0, 1, 0), (0.0, sg * HIP_Y, HIP_Z),
+         (D(-150), D(60)), (0, -sg, 0)),
+        # the roll actuator outboard at the same height, its body pointing back, clear
+        # of a thigh lifting forward. Inward it stops at -20: the hip_roll cheek meets the
+        # hip bracket from -23 (check_pair); walking asks ~10-15 of adduction
+        ("hip_%s_roll" % s, "hip_%s" % s, "hip_roll_%s" % s, (1, 0, 0), (0.0, sg * HIP_ROLL, 0.0),
+         (D(-20), D(90)) if sg > 0 else (D(-90), D(20)), (-1, 0, 0)),
+        ("hip_%s_yaw" % s, "hip_roll_%s" % s, "thigh_%s" % s, (0, 0, 1), (0.0, 0.0, -HIP_YAW_Z),
+         (D(-45), D(45)), (0, 0, 1)),
+        # the knee stops at 110: from 115 the high ankle motor meets the thigh's plate
+        # (a walk asks ~65, stairs ~100)
+        ("knee_%s" % s, "thigh_%s" % s, "calf_%s" % s, (0, 1, 0), (0.0, 0.0, -(THIGH - HIP_YAW_Z)),
+         (D(0), D(110)), (0, -sg, 0)),
+        ("ankle_%s_pitch" % s, "calf_%s" % s, "ankle_%s" % s, (0, 1, 0), (0.0, -sg * ANKLE_IN, -CALF),
+         (D(-45), D(30)), None),
+        ("ankle_%s_roll" % s, "ankle_%s" % s, "foot_%s" % s, (1, 0, 0), (0.0, 0.0, 0.0),
+         (D(-20), D(20)), None),
+    ]
+
+
+ANKLE_DRIVE = []    # (name, motor key, host link, output flange xyz in it, output axis, crank m)
+# With legs, an arm hanging straight down meets the hip roll and yaw motors: the hips
+# (0.38 m across the roll motors) are wider than the arm line (+-0.155). From 15 deg of
+# shoulder abduction the forearms clear them, also with the waist hard over and the
+# thighs swinging +-30 (check_fit); a hanging arm keeps ARMS_DOWN_ABD out (the user's
+# choice 2026-11-24, over narrower hips). Climbing raises the arms and never meets it.
+ARMS_DOWN_ABD = D(18)
+# Where the legs fold while the arms climb (cad/tools/stow.py): the thighs 30 deg back,
+# knees and ankles straight. At every lesson's hang it clears the walls and rungs by 49
+# mm and hides no rung cell from the lidars; legs straight down meet lesson 4's rows
+# below. (The recorded v2 climbs bring the pelvis's underside to the wall, where the
+# hips' own motors are: a full robot climbs those differently -- 2026-11-24, CAD round.)
+STOW = {"hip_L_pitch": D(30), "hip_R_pitch": D(30)} if ROBOT == "full" else {}
+if ROBOT == "full":
+    # Running (the user's choice, 2026-11-25): the hip pitch is an X12-320 (320 N.m; a jog
+    # asks ~145 at this mass). Two of them face each other in the pelvis, 69.5 mm of body
+    # behind each housing face, so the walls go out until 1.5 mm stands between the two
+    # bodies (the RS04s fitted the v2 walls at +-71): housing faces at +-70.25, the 6 mm
+    # walls on them, the flange's ring over the Ø109 pilot 7 mm proud of the wall
+    # (connect.face_t), the output 2.5 mm past that.
+    HIP_KEY = "X12-320"
+    _hk = IFACE[HIP_KEY]
+    _hou = 0.00075 + (_hk["length"] + _hk["hou_z"]) * MM     # housing face, off the centre
+    HIP_W = _hou + 0.006                                     # the walls' outer faces (PLATE)
+    HIP_Y = _hou - _hk["hou_z"] * MM                         # the output
+    HIP_Z = HIP_Z - (_hk["od"] - IFACE["AK80-64"]["od"]) / 2 * MM   # its top stays put
+    LOW_Z0 = HIP_Z - _hk["od"] / 2 * MM - 0.007                     # 7 mm under it, as before
+    # the arms that hang the robot with its legs: an X12-320 at shoulder pitch, roll and
+    # rotation and at the elbow, an AK80-64 at forearm roll and at both wrist joints (the
+    # gimbal, below), an AK60-39 at the finger; all on 48 V
+    PICK.update(shoulder_flexion="X12-320", shoulder_abduction="X12-320",
+                shoulder_rotation="X12-320", elbow="X12-320", wrist_flexion="AK80-64",
+                forearm_roll="AK80-64", wrist_deviation="AK80-64", finger="AK60-39")
+    # re-spaced by v2's own rules for the bigger bodies (radii X12 62, AK80 49, AK60 39.5):
+    #   SH_Y      the two 85 mm shoulder bodies inboard of their outputs, 2.5 mm apart
+    #   roll      the roll's radius + 1.5 air + a 16 mm web + 2.5 (the output plate's bolts)
+    #   elbow     the elbow's radius (X15 83) + v2's 11 mm to the rotation output
+    #   froll     the elbow's radius + the AK80-64 forearm roll's 61.9 mm body + 6 mm
+    #   wflex     the X12's radius + v2's 20.5 mm to the forearm roll output
+    #   wdev      X12 + AKE90-8 radii + 3 mm (v2: two AK60-39, 82 needed, 84 given)
+    #   finger    AKE90-8 + AK60-39 radii + 3, + v2's 2 mm
+    # 2026-11-25 (the user's go-ahead): the arm was 39 % longer than a 1.40 m person's,
+    # the hand most of all (0.327 m wrist to hook tip, a person's 0.151) -- three actuators
+    # in a row. The wrist is now a gimbal: the flexion and deviation axes MEET (wdev 0),
+    # each actuator's body to one side of that point (MOUNT_AT below), so nothing stands
+    # down the hand; the elbow then needs 230 N.m, not 308, and an X12-320 holds it on
+    # 48 V (the X15-450 and its 72 V branch go); the wrists need ~90 N.m: AK80-64.
+    #   elbow     X12 radius 62 + v2's 11
+    #   froll     the elbow's radius + the AK80-64 forearm roll's 61.9 mm body + 6 mm
+    #   wflex     forearm roll output -> wrist centre: the deviation actuator, swung
+    #             +-25 deg about the flexion axis, passes 11 mm under the forearm's plate
+    #   finger    AK80-64 + AK60-39 radii + 3, + v2's 2 mm
+    SH_Y = 0.0875
+    ARM_OFF.update(roll=0.082, elbow=0.073, froll=0.130, wflex=0.110, wdev=0.0, finger=0.0935)
+    JOINTS = JOINTS[:1] + _arm("L", 1) + _arm("R", -1) + _leg("L", 1) + _leg("R", -1)
+    # the gimbal's flexion actuator stands 60 mm off the wrist centre: pointing inboard,
+    # as v2's does, it met the hip yaw actuators with the arms down and the legs apart
+    # (check_fit): it points outboard
+    JOINTS = [j[:6] + ((0, 1 if "_L_" in j[0] else -1, 0),) if j[0].startswith("wrist_") and
+              j[0].endswith("_flexion") else j for j in JOINTS]
+    # the X12 elbow sits 21 mm nearer the shoulder than the X15 did: folded past -108 deg
+    # the forearm roll's body meets the shoulder rotation's (check_fit): -107
+    JOINTS = [j[:5] + ((D(-107), j[5][1]),) + j[6:] if j[0] in ("elbow_L", "elbow_R") else j
+              for j in JOINTS]
+    # and its deviation actuator's body stood toward the wall with the arms raised: on a
+    # rung 60 mm off the wall (rl lessons) its rim met the wall and levered the hook off
+    # the rung (urdf/_gen_keyframe.py fell): it points away from the wall
+    JOINTS = [j[:6] + ((1, 0, 0),) if j[0].startswith("wrist_") and j[0].endswith("_deviation")
+              else j for j in JOINTS]
+    HIPS = []                       # the hip pitch is a joint now
+    # running (2026-11-25): X12-320 hip pitch and roll, AK80-64 hip yaw
+    PICK.update(hip_pitch="X12-320", hip_roll="X12-320", hip_yaw="AK80-64", knee=None,
+                ankle_pitch=None, ankle_roll=None)
+    # A over B (79 mm bodies, 90 apart) just under the knee, axes on the leg line so the
+    # cranks reach FOOT_LEVER behind it (A's top 5.5 mm under the knee's RS04);
+    # each output face 1 mm past its plate's outer face (AK60-39: front face 6 mm behind
+    # the output), the plates inner faces at y 0.014 and -0.0485 (each 67 mm body ends
+    # 1.5 mm short of the other plate)
+    _out_a, _out_b = 0.014 + 0.006, -0.0485 - 0.006
+    ANKLE_DRIVE = [("ankle_%s_a" % _s, "AK60-39", "calf_%s" % _s, (CRANK_R - FOOT_LEVER, _sg * _out_a, -0.105), (0, _sg, 0), CRANK_R)
+                   for _s, _sg in (("L", 1), ("R", -1))] + \
+                  [("ankle_%s_b" % _s, "AK60-39", "calf_%s" % _s, (CRANK_R - FOOT_LEVER, _sg * _out_b, -0.195), (0, -_sg, 0), CRANK_R)
+                   for _s, _sg in (("L", 1), ("R", -1))]
+    # (motor, crank direction at zero, the rod's foot end at zero), in the calf frame: the
+    # crank points back, the rod hangs plumb from its pin (16 mm outside the output face:
+    # an 8 mm crank hub whose arm runs on its outer 4 mm, over the plate's bolt heads, and
+    # half a rod end) to the foot, 30 mm under the ankle axis
+    ANKLE_RODS = [("ankle_%s_%s" % (_s, _k), (-1.0, 0.0, 0.0),
+                   (-FOOT_LEVER, _sg * _y, -CALF - 0.030))
+                  for _s, _sg in (("L", 1), ("R", -1))
+                  for _k, _y in (("a", _out_a + 0.016), ("b", _out_b - 0.016))]
+    # each linkage-driven ankle joint, at zero: its two motors and how many radians of
+    # crank a radian of the joint asks of each (both rods FOOT_LEVER behind the pitch
+    # axis; each its own distance off the roll axis). The joint's peak torque is
+    # sum(peak * gear), its speed the motor's / max(gear), its reflected inertia
+    # sum(gear^2 * the motor's) -- at zero; check_full.ankle has the whole range.
+    ANKLE_JOINT = {}
+    for _s, _sg in (("L", 1), ("R", -1)):
+        _rods = [r for r in ANKLE_RODS if r[0].startswith("ankle_%s_" % _s)]
+        ANKLE_JOINT["ankle_%s_pitch" % _s] = dict(motor="AK60-39", gear=[FOOT_LEVER / CRANK_R] * 2)
+        ANKLE_JOINT["ankle_%s_roll" % _s] = dict(
+            motor="AK60-39", gear=[abs(r[2][1] + _sg * ANKLE_IN) / CRANK_R for r in _rods])
+    # The knee through a toothed belt (the user's choice, 2026-11-25): on one foot at a
+    # 90 deg knee it needs 99 N.m, climbing a step 129, where a RobStride 04 at the joint
+    # held 1.21x / 0.93x. The RS04 moves up the thigh, KNEE_BELT["c"] over the knee axis,
+    # its body outboard and its output inboard through the thigh plate; a 30-tooth pulley
+    # on it drives a 45-tooth one fixed to the calf's inboard plate by an 8 mm pitch
+    # (8MGT) carbon belt of 66 teeth (528 mm), 21 mm wide, in the 39 mm between the thigh
+    # plate and the calf's inboard plate: 1.5:1, 180 N.m peak and 133 rpm no-load at the
+    # knee (HECTOR's knee belt is 1.55:1). Its pull at that peak is 3.1 kN on the big
+    # pulley -- the width is to be confirmed against Gates' rating tables. The motor's
+    # bolts sit in slots: the belt is tensioned by sliding the motor up the thigh.
+    _pd = lambda n: n * 0.008 / math.pi                       # pitch diameter
+    KNEE_BELT = dict(small=_pd(30), big=_pd(45), teeth=66, pitch=0.008, width=0.021, t=0.0056,
+                     y=(-0.0405, -0.0195))                    # the belt's faces, left leg
+    _L, _D, _d = 66 * 0.008, _pd(45), _pd(30)
+    _c = 0.11
+    for _ in range(30):                                       # centre distance for that belt
+        _c = (_L - math.pi * (_D + _d) / 2 - (_D - _d) ** 2 / (4 * _c)) / 2
+    KNEE_BELT["c"] = _c
+    _zk = -(THIGH - HIP_YAW_Z)                                # the knee axis, thigh frame
+    ANKLE_DRIVE += [("knee_%s_m" % _s, "RS04", "thigh_%s" % _s, (0.0, 0.0, _zk + _c), (0, -_sg, 0),
+                     KNEE_BELT["small"] / 2) for _s, _sg in (("L", 1), ("R", -1))]
+    for _s in "LR":
+        ANKLE_JOINT["knee_%s" % _s] = dict(motor="RS04", gear=[KNEE_BELT["big"] / KNEE_BELT["small"]])
+else:
+    ANKLE_RODS = []
+    ANKLE_JOINT = {}
+
 # ------------------------------------------------------------------ structure
-TORSO_LOW = (0.140, 2 * (HIP_Y - 0.002), 0.200 - DROP - LOW_Z0)  # d, w, h from LOW_Z0; w 0.210 -> 0.180 to clear the elbow motors
+TORSO_LOW = (0.140, 2 * HIP_W if ROBOT == "full" else 0.142, 0.200 - DROP - LOW_Z0)   # w: the hip walls' outer faces, +-71  # d, w, h from LOW_Z0; w 0.210 -> 0.180 to clear the elbow motors
 # ...and the four vertical corners are rounded away, because the waist turns the
 # arms over a STATIONARY lower torso: with the arms down, the elbow motor's
 # inboard face sweeps a circle of radius 93.1 mm about the waist axis, so every
@@ -223,11 +483,22 @@ TORSO_LOW = (0.140, 2 * (HIP_Y - 0.002), 0.200 - DROP - LOW_Z0)  # d, w, h from 
 # reaches 114 mm. The section is therefore that box intersected with a 180 mm
 # circle - a stadium, flat front and back, round left and right.
 TORSO_LOW_R = 0.0865    # 0.090 until the pelvis reached down past the forearms (2026-11-11)
+if ROBOT == "full":
+    # the RS04 hips are 120 mm across: the walls must reach x +-61.5 at y +-71 to cover
+    # their housing rings, so the round sides go out to 94 mm. A hanging forearm (88 mm)
+    # then meets the pelvis's corners when the waist turns far with the arms straight
+    # down: the waist is limited in that posture (measured by check_fit, Task 9), not
+    # in its joint range, which climbing uses whole.
+    TORSO_LOW_R = 0.094
+    # the X12 hips (2026-11-25): their Ø124 housing faces at y +-70.25, their 12 x M5 on
+    # Ø116.5 -- the walls reach x +-62 at y +-76.25
+    TORSO_LOW_R = math.hypot(0.062, HIP_W) + 0.0005
 # The chest is a box round the two shoulder pitch actuators (build.torso_upper):
 # as deep as the lower torso; as wide as its side walls, which are 6 mm plates
 # on the actuators' front faces (y = SH_Y - 8 mm .. - 2 mm); as tall as the
 # actuators' tops plus 1.5 mm of air and a 3 mm lid.
-TORSO_UP = (0.140, 2 * (SH_Y - 0.002), SH_Z + 0.049 + 0.0015 + 0.003)
+_SH = IFACE[PICK["shoulder_flexion"]]   # the shoulder pitch actuator: walls on its front face
+TORSO_UP = (0.140, 2 * (SH_Y + _SH["hou_z"] * MM + 0.006), SH_Z + _SH["od"] / 2 * MM + 0.0015 + 0.003)
 WAIST_DIA, WAIST_H = 0.100, 0.040
 HOOK = dict(back=0.110, lip=0.040, thk=0.012, width=0.065)
 # The one mating interface this design INVENTS rather than measures: the
@@ -320,6 +591,31 @@ LIDARS = {
 GUARD = dict(tube_d=0.016, tube_t=0.002, standoff=0.040, bend_r=0.020, y=0.071, head_y=0.050,
              foot_z=0.011 + DROP, jog=(0.190 + DROP, 0.230 + DROP), strut_z=0.2095 + DROP,
              ring_z=0.345 + DROP)
+HEAD_RISE = 0.0                        # a riser under the head's roof (full only)
+if ROBOT == "full":
+    # the X12 shoulders are 26 mm wider than the AK80-64s: the chest is 13 mm taller, and
+    # the head's lidars and the cage's upper half go up with its lid. The bigger arm
+    # actuators also hang the whole body 111 mm lower under the rung (the head lidars at
+    # every lesson's hang: z 0.338 against v2's 0.449), and from there the head saw 8-20
+    # cells of the start rung where v2 sees 24-30: the roof stands on a 111 mm riser
+    # (the user's choice, 2026-11-25), the cage's ring with it
+    HEAD_RISE = 0.111
+    _DZ = (IFACE["X12-320"]["od"] - IFACE["AK80-64"]["od"]) / 2 * MM
+    for _k in ("lidar_head_front", "lidar_head_back"):
+        _l, _o, _z, _x = LIDARS[_k]
+        LIDARS[_k] = (_l, (_o[0], _o[1], _o[2] + _DZ + HEAD_RISE), _z, _x)
+    GUARD.update(jog=(GUARD["jog"][0] + _DZ, GUARD["jog"][1] + _DZ),
+                 strut_z=GUARD["strut_z"] + _DZ, ring_z=GUARD["ring_z"] + _DZ + HEAD_RISE)
+    # The riser is a room of its own (122 x 148 inside, windows on all four faces): the
+    # full robot's extra electronics go in it, on its floor (the lid), clear of its lips.
+    #   leg_can  the legs' CAN interface and their harness to the pelvis: the design's
+    #            0.5 kg allowance. (Everything runs on the 48 V battery: the X15 elbows
+    #            and their 72 V boost converter went with the gimbal wrist.) Alone in
+    #            the room it sits on the centre line: 45 mm off, it leaned the hang 0.4 mm
+    #            to one side and the left wrist deviation took 0.7 N.m more (1.29x)
+    _h = TORSO_UP[2]
+    BAY.update(leg_can=((0.0, 0.0, _h + 0.010 + 0.0075), (0.040, 0.030, 0.015), 0.50))
+    PAYLOAD = [(k, m, c) for k, (c, _, m) in BAY.items()]
 
 # Where along its own axis an actuator's OUTPUT FLANGE sits, measured from the
 # joint origin in the body_dir direction, metres. The joint axis is a line, so
@@ -327,6 +623,14 @@ GUARD = dict(tube_d=0.016, tube_t=0.002, standoff=0.040, bend_r=0.020, y=0.071, 
 # clearance. The abduction-first shoulder slid its abduction actuator 30 mm
 # back out of the raised arm's sweep; nothing needs it pitch-first.
 MOUNT_AT = {}
+WRIST_GIMBAL = ROBOT == "full"
+if WRIST_GIMBAL:
+    # the gimbal wrist's two actuators each stand off the wrist centre along their own
+    # axis, flange toward it: flexion 60 mm (its output plate then clears the deviation
+    # actuator's Ø98 barrel by 5 mm), deviation 54 mm (its barrel clears the flexion one's)
+    for _s in "LR":
+        MOUNT_AT["wrist_%s_flexion" % _s] = 0.092
+        MOUNT_AT["wrist_%s_deviation" % _s] = 0.054
 
 # The hooks are bolted on TURNED OVER: a hook's frame is its finger joint's
 # frame turned 180 deg about the forearm axis (z). v1 learnt this the hard way
@@ -403,6 +707,8 @@ def motor_placements(q=None):
     F = fk(q)
     out = []
     for name, par, ch, ax, off, _lim, _bd in JOINTS:
+        if MOTOR_OF[name] is None:       # driven through a linkage (ANKLE_DRIVE)
+            continue
         po, pR = F[par]
         o = F[ch][0]
         cR = F[ch][1]                    # the axis is in the child's frame
@@ -412,6 +718,11 @@ def motor_placements(q=None):
         a = MOUNT_AT.get(name, 0.0)
         flange = tuple(o[k] + wbd[k] * a for k in range(3))
         out.append((name, MOTOR_OF[name], flange, wax, wbd))
+    for name, key, host, xyz, ax, _r in ANKLE_DRIVE:   # the full robot's ankle motors
+        ho, hR = F[host]
+        rot = lambda v: tuple(sum(hR[i][k] * v[k] for k in range(3)) for i in range(3))
+        out.append((name, key, tuple(ho[i] + rot(xyz)[i] for i in range(3)), rot(ax),
+                    tuple(-v for v in rot(ax))))
     po, pR = F["base_link"]              # the hips' actuators, where legs will bolt on
     rot = lambda v: tuple(sum(pR[i][k] * v[k] for k in range(3)) for i in range(3))
     for name, _par, _ch, ax, off, _lim, bd in HIPS:

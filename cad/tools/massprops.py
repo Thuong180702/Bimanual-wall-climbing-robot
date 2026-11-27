@@ -17,7 +17,8 @@ from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
 
 from lib.build import BUILDERS, CHILD_OF, fuse, mount_plane
-from lib.spec import AL, BODY_DIR, IFACE, JOINTS, LIDARS, MID360, MOTOR_OF, MOTORS, PAYLOAD, PAYLOAD_LINK
+from lib.spec import (AL, ANKLE_DRIVE, BODY_DIR, IFACE, JOINTS, LIDARS, MID360, MOTOR_OF, MOTORS,
+                      PAYLOAD, PAYLOAD_LINK, ROBOT)
 
 MM = 0.001
 
@@ -55,8 +56,14 @@ def cyl_inertia(m, r, L, axis):
 def motors_on(link):
     """(key, centre, axis) for every actuator whose housing this link carries."""
     out = []
+    for name, key, host, xyz, ax, _r in ANKLE_DRIVE:    # the full robot's ankle motors
+        if host == link:
+            c = tuple(xyz[i] - ax[i] * IFACE[key]["length"] * MM / 2 for i in range(3))
+            out.append((name, key, c, ax))
     for cj in CHILD_OF.get(link, []):
         key = MOTOR_OF[cj[0]]
+        if key is None:                    # driven through a linkage (spec.ANKLE_DRIVE)
+            continue
         d, bd = IFACE[key], BODY_DIR[cj[0]]
         o = mount_plane(cj, cj[4]).origin
         c = tuple(v + b * d["length"] * MM / 2
@@ -65,10 +72,48 @@ def motors_on(link):
     return out
 
 
+RUBBER, STEEL = 1200.0, 7850.0     # the foot's sole; the ankle rods
+
+
 def link_props(link):
     parts = []
-    m, com, I = solid_props(fuse(BUILDERS[link]()), AL)
+    built = BUILDERS[link]()
+    soft = {k: v for k, v in built.items() if k == "sole"}          # rubber, not 6061
+    m, com, I = solid_props(fuse({k: v for k, v in built.items() if k not in soft}), AL)
     parts.append(("structure", m, com, I))
+    for k, v in soft.items():
+        parts.append((k,) + solid_props(v, RUBBER))
+    if ROBOT == "full" and link[:-2] in ("calf", "foot"):
+        # the ankle drive's moving parts (legs.ankle_linkage_L): the cranks turn with the
+        # calf's motors and are booked to it; each rod is booked half to the calf and half
+        # to the foot, at its ends (ponytail: a two-point split, not the rod's motion)
+        from cadgen import build123d as _bdm
+        from lib import legs
+        lk = legs.ankle_linkage_L()
+        if link.endswith("_R"):
+            lk = {k: _bdm.mirror(v, about=_bdm.Plane.XZ) for k, v in lk.items()}
+        if link.startswith("foot"):
+            # the foot frame is the ankle centre: the rods' lower ends, in it
+            from lib.spec import JOINTS as _J
+            ao = [j[4] for j in _J if j[0] == "ankle_%s_pitch" % link[-1]][0]
+            lk = {k: _bdm.Pos(-ao[0], -ao[1], -ao[2]) * v for k, v in lk.items()}
+        for k, v in lk.items():
+            if k.startswith("crank") and link.startswith("calf"):
+                parts.append((k,) + solid_props(v, AL))
+            elif k.startswith("rod"):
+                mr, cr, Ir = solid_props(v, STEEL)
+                b = v.bounding_box()
+                end = (b.max.Z if link.startswith("calf") else b.min.Z)
+                parts.append((k + " half", mr / 2, (cr[0], cr[1], end), [[0.0] * 3 for _ in range(3)]))
+    if ROBOT == "full" and link[:-2] in ("thigh", "calf"):
+        # the knee belt drive (legs.knee_drive_L): pulleys and shaft 6061, the belt as
+        # rubber (polyurethane on carbon cord), the bearings steel
+        from cadgen import build123d as _bdm
+        from lib import legs
+        kd = legs.knee_drive_L()[link[:-2]]
+        for k, v in kd.items():
+            v = v if link.endswith("_L") else _bdm.mirror(v, about=_bdm.Plane.XZ)
+            parts.append((k,) + solid_props(v, RUBBER if k == "belt" else STEEL if k.startswith("bearing") else AL))
     for jname, key, c, axis in motors_on(link):
         d = IFACE[key]
         mm_ = MOTORS[key]["mass_kg"]

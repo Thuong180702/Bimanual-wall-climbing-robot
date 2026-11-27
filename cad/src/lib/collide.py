@@ -32,7 +32,7 @@ import functools, re
 
 from . import lidar
 from .build import BUILDERS, CHILD_OF, mount_plane
-from .spec import BODY_DIR, GUARD, HOOK, IFACE, LIDARS, MID360, MOTOR_OF
+from .spec import ANKLE_DRIVE, BODY_DIR, GUARD, HOOK, IFACE, LIDARS, MID360, MOTOR_OF
 
 MM = 0.001
 
@@ -47,8 +47,15 @@ def named_collision(link):
     """link_collision with a name for the geoms other tools find by it (None for
     the rest): '<lidar>_body' / '_window', and each guard tube's own"""
     out = []
+    for _n, key, host, xyz, ax, _r in ANKLE_DRIVE:    # the full robot's ankle motors, on the calf
+        if host == link:
+            d, L = IFACE[key], IFACE[key]["length"] * MM
+            c = tuple(xyz[i] + ax[i] * (d["out_z"] * MM - L / 2) for i in range(3))
+            out.append(("cylinder", (d["od"] / 2 * MM, L), c, tuple(-v for v in ax), None))
     for cj in CHILD_OF.get(link, []):
         key = MOTOR_OF[cj[0]]
+        if key is None:                      # linkage-driven (ANKLE_DRIVE)
+            continue
         d = IFACE[key]
         pl = mount_plane(cj, cj[4])
         L = d["length"] * MM

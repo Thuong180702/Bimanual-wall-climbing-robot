@@ -9,8 +9,8 @@ import itertools, math, sys, os
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 from build123d import Cylinder, Box, Plane, Pos, Rot, Vector, Axis, Align
-from lib.spec import (HIPS, JOINTS, IFACE, MOTOR_OF, LOW_Z0, TORSO_LOW, TORSO_LOW_R, TORSO_UP,
-                      WAIST_DIA, WAIST_H, motor_placements, fk)
+from lib.spec import (ARMS_DOWN_ABD, HIPS, JOINTS, IFACE, MOTOR_OF, LOW_Z0, ROBOT, TORSO_LOW,
+                      TORSO_LOW_R, TORSO_UP, WAIST_DIA, WAIST_H, motor_placements, fk)
 
 MM = 0.001
 
@@ -138,6 +138,33 @@ if __name__ == "__main__":
          {"shoulder_L_abduction": d(180), "shoulder_L_flexion": d(-177),
           "elbow_L": d(-114)}),
     ]
+    if ROBOT == "full":
+        # an arm that hangs down keeps ARMS_DOWN_ABD out (spec): the hips are in its way
+        def out(q):
+            q = dict(q)
+            for sd, sg in (("L", 1), ("R", -1)):
+                if q.get("shoulder_%s_flexion" % sd, 0.0) > d(-30) and abs(q.get("shoulder_%s_abduction" % sd, 0.0)) < ARMS_DOWN_ABD:
+                    q["shoulder_%s_abduction" % sd] = sg * ARMS_DOWN_ABD
+            return q
+        poses = [(lab + (" (arms down 18 out)" if out(q) != q else ""), out(q)) for lab, q in poses]
+        ARMS = out({})
+        poses += [
+            ("stand, arms down", ARMS),
+            ("squat: hips -45, knees 90, ankles -45", dict(ARMS, **{
+                "hip_L_pitch": d(-45), "hip_R_pitch": d(-45), "knee_L": d(90), "knee_R": d(90),
+                "ankle_L_pitch": d(-45), "ankle_R_pitch": d(-45)})),
+            ("one leg lifted: hip -70, knee 100", dict(ARMS, **{"hip_L_pitch": d(-70), "knee_L": d(100)})),
+            ("walking: thighs +-30, swing knee 60", dict(ARMS, **{
+                "hip_L_pitch": d(-30), "hip_R_pitch": d(30), "knee_L": d(60)})),
+            ("legs apart: roll 30 out, yaw 30 out", dict(ARMS, **{
+                "hip_L_roll": d(30), "hip_R_roll": d(-30), "hip_L_yaw": d(30), "hip_R_yaw": d(-30)})),
+            # both legs in at once: the calves are 172 mm apart at zero, so the ankles meet
+            # from ~10 deg of roll each, one leg fully in meets the other -- leg against leg is
+            # the walking controller's to avoid, as on any biped
+            ("legs together: roll 5 in, yaw 15 in", dict(ARMS, **{
+                "hip_L_roll": d(-5), "hip_R_roll": d(5), "hip_L_yaw": d(-15), "hip_R_yaw": d(15)})),
+            ("hang, legs straight", HANG),
+        ]
     n = 0
     for lab, q in poses:
         n += len(report(q, lab))

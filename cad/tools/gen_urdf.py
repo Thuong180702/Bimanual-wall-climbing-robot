@@ -12,8 +12,6 @@ import json, math, os, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
-OUT = os.path.abspath(os.path.join(HERE, "..", "..", "urdf"))
-
 from cadgen import build123d as bd
 from cadgen import read_step
 import trimesh
@@ -21,8 +19,11 @@ import trimesh
 from lib.build import BUILDERS, CHILD_OF, fuse, mount_plane
 from lib.collide import col_parts, link_collision
 from lib.motors import MOTORS
-from lib.spec import FIXED, JOINTS, LIDARS, MID360, MOTOR_OF, MOUNT_ROT, PICK
+from lib.spec import ANKLE_DRIVE, ANKLE_JOINT, FIXED, JOINTS, LIDARS, MID360, MOTOR_OF, MOUNT_ROT, OUT_DIR, PICK
+from lib.connect import plane_at
 from massprops import link_props
+
+OUT = os.path.abspath(os.path.join(HERE, "..", "..", OUT_DIR))   # urdf/ or urdf/full/
 
 MM = 0.001
 # The vendor solids carry every screw head; a fine tessellation of 17 of them
@@ -30,7 +31,7 @@ MM = 0.001
 # VISUAL only - the exact geometry lives in cad/STEP/robot.step.
 TOL, ANG = 0.6, 0.6
 RPM = math.pi / 30.0
-STEPS = {"AK80-64": "ak80_64", "AK60-39": "ak60_39", "AK45-36": "ak45_36", "Mid-360": "mid360"}
+STEPS = {"AK80-64": "ak80_64", "AK60-39": "ak60_39", "AK45-36": "ak45_36", "Mid-360": "mid360", "RS04": "rs04", "X12-320": "x12_320", "X15-450": "x15_450", "AKE90-8": "ake90_8"}
 PURCHASED = os.path.abspath(os.path.join(HERE, "..", "STEP", "purchased"))
 _cache = {}
 
@@ -72,10 +73,25 @@ def link_visual(link):
     """Link solid plus every actuator it carries, in the link frame, mm."""
     kids = [fuse(BUILDERS[link]()).scale(1000.0)]
     for cj in CHILD_OF.get(link, []):
+        if MOTOR_OF[cj[0]] is None:            # linkage-driven: its motors are ANKLE_DRIVE's
+            continue
         m = mount_plane(cj, cj[4])
         kids.append(bd.Location(bd.Plane(
             origin=tuple(v * 1000 for v in m.origin),
             x_dir=m.x_dir, z_dir=m.z_dir)) * motor_solid(MOTOR_OF[cj[0]]))
+    for _n, key, host, xyz, ax, _r in ANKLE_DRIVE:          # the full robot's ankle motors
+        if host == link:
+            m = plane_at(xyz, tuple(-v for v in ax))
+            kids.append(bd.Location(bd.Plane(origin=tuple(v * 1000 for v in m.origin),
+                                             x_dir=m.x_dir, z_dir=m.z_dir)) * motor_solid(key))
+    if link[:-2] in ("thigh", "calf") and MOTOR_OF.get("knee_L", "") is None:   # the knee belt
+        from lib import legs
+        for v in legs.knee_drive_L()[link[:-2]].values():
+            kids.append((v if link.endswith("_L") else bd.mirror(v, about=bd.Plane.XZ)).scale(1000.0))
+    if link == "calf_L" or link == "calf_R":                   # their cranks and rods
+        from lib import legs
+        for v in legs.ankle_linkage_L().values():
+            kids.append((v if link == "calf_L" else bd.mirror(v, about=bd.Plane.XZ)).scale(1000.0))
     for host, o, z, x in LIDARS.values():
         if host == link:
             kids.append(bd.Location(bd.Plane(origin=tuple(v * 1000 for v in o), x_dir=x, z_dir=z))
@@ -185,11 +201,20 @@ def main():
     for name, par, ch, ax, off, lim, _bdir in JOINTS:
         lo, hi = lim
         key = MOTOR_OF[name]
-        d = MOTORS[key]
-        eff, vel = d["peak_Nm"], d["noload_rpm"] * RPM
-        acts[name] = dict(motor=key, peak_Nm=eff, rated_Nm=d["rated_Nm"],
-                          noload_rad_s=vel, rated_rad_s=d["rated_rpm"] * RPM,
-                          lower=lo, upper=hi, axis=list(ax))
+        if key is None:                 # two calf motors through rods (spec.ANKLE_JOINT), at zero
+            aj = ANKLE_JOINT[name]
+            d, g = MOTORS[aj["motor"]], aj["gear"]
+            eff, vel = sum(d["peak_Nm"] * k for k in g), d["noload_rpm"] * RPM / max(g)
+            acts[name] = dict(motor="2 x %s, rods" % aj["motor"], peak_Nm=eff,
+                              rated_Nm=sum(d["rated_Nm"] * k for k in g), noload_rad_s=vel,
+                              rated_rad_s=d["rated_rpm"] * RPM / max(g), gear=g,
+                              lower=lo, upper=hi, axis=list(ax))
+        else:
+            d = MOTORS[key]
+            eff, vel = d["peak_Nm"], d["noload_rpm"] * RPM
+            acts[name] = dict(motor=key, peak_Nm=eff, rated_Nm=d["rated_Nm"],
+                              noload_rad_s=vel, rated_rad_s=d["rated_rpm"] * RPM,
+                              lower=lo, upper=hi, axis=list(ax))
         L += ['', '  <joint name="%s" type="revolute">' % name,
               '    <parent link="%s"/>' % par,
               '    <child link="%s"/>' % ch,
@@ -220,7 +245,8 @@ def main():
 
     json.dump(dict(total_mass=total, actuators=acts,
                    links={k: dict(mass=v[0], com=list(v[1])) for k, v in props.items()},
-                   picks=PICK, motors=MOTORS),
+                   picks=PICK, motors={k: v for k, v in MOTORS.items()
+                                       if k in set(MOTOR_OF.values()) | {d[1] for d in ANKLE_DRIVE}}),
               open(os.path.join(OUT, "_actuators.json"), "w"), indent=1)
     print("total mass %.4f kg, %d links, %d joints" % (total, len(BUILDERS), len(JOINTS)))
     print("wrote", OUT)

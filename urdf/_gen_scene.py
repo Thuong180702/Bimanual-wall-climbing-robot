@@ -25,9 +25,11 @@ sys.path.insert(0, os.path.join(HERE, "..", "cad", "tools"))
 from lib.build import BUILDERS, CHILD_OF, PJOINT
 from lib.collide import link_collision, named_collision
 from lib.motors import MOTORS
-from lib.spec import BAY, FIXED, JOINTS, LIDARS, MID360, MOTOR_OF, MOUNT_ROT, TORSO_UP, HOOK
+from lib.spec import (ANKLE_JOINT, BAY, FIXED, JOINTS, LIDARS, MID360, MOTOR_OF, MOUNT_ROT, OUT_DIR,
+                      TORSO_UP, HOOK)
 
-A = json.load(open(os.path.join(HERE, "_actuators.json")))
+OUT = os.path.join(HERE, "..", OUT_DIR)        # urdf/, or urdf/full/ for the robot with legs
+A = json.load(open(os.path.join(OUT, "_actuators.json")))
 PROPS = A["links"]
 
 # Position-servo gains, carried over from v1 by joint role.
@@ -36,7 +38,10 @@ for s in ("L", "R"):
     KP.update({"shoulder_%s_abduction" % s: 800, "shoulder_%s_flexion" % s: 800,
                "shoulder_%s_rotation" % s: 500, "elbow_%s" % s: 500,
                "forearm_%s_roll" % s: 200, "wrist_%s_flexion" % s: 150,
-               "wrist_%s_deviation" % s: 150, "finger_%s" % s: 200})
+               "wrist_%s_deviation" % s: 150, "finger_%s" % s: 200,
+               # the full robot's legs, by role as the arm's (G1-class stiffness)
+               "hip_%s_pitch" % s: 800, "hip_%s_roll" % s: 800, "hip_%s_yaw" % s: 500,
+               "knee_%s" % s: 800, "ankle_%s_pitch" % s: 300, "ankle_%s_roll" % s: 300})
 
 
 def rotor_inertia(key):
@@ -140,7 +145,7 @@ def occluders(link):
         elif kind == "box":
             out.append((nm, "box", tuple(v / 2 for v in size), pos, _frame_quat(zdir, xhint)))
         else:
-            hull = trimesh.load(os.path.join(HERE, "meshes", "%s.stl" % size[0]))
+            hull = trimesh.load(os.path.join(OUT, "meshes", "%s.stl" % size[0]))
             ob = hull.bounding_box_oriented
             T = ob.primitive.transform
             out.append((nm, "box", tuple(ob.primitive.extents * 0.0005), T[:3, 3] * 0.001,
@@ -177,10 +182,14 @@ def body_tree():
                 p, name, *off, _turn(MOUNT_ROT.get(name, 0.0)))]
             if jn is not None:
                 key = MOTOR_OF[jn]
+                if key is None:          # two calf motors through rods (spec.ANKLE_JOINT)
+                    g, mk = ANKLE_JOINT[jn]["gear"], ANKLE_JOINT[jn]["motor"]
+                    arm, fr = sum(k * k for k in g) * armature(mk), sum(g) * frictionloss(mk)
+                else:
+                    arm, fr = armature(key), frictionloss(key)
                 L.append('%s  <joint name="%s" type="hinge" axis="%d %d %d" '
                          'range="%.5f %.5f" armature="%.6g" frictionloss="%.4g"/>'
-                         % (p, jn, ax[0], ax[1], ax[2], lim[0], lim[1],
-                            armature(key), frictionloss(key)))
+                         % (p, jn, ax[0], ax[1], ax[2], lim[0], lim[1], arm, fr))
                 acts.append((jn, key, lim[0], lim[1]))
         L.append('%s  <inertial pos="%.6f %.6f %.6f" mass="%.6f" '
                  'fullinertia="%.9g %.9g %.9g %.9g %.9g %.9g"/>'
@@ -352,7 +361,8 @@ def main():
     L += ['', '    <!-- ===== robot ===== -->', tree, '  </worldbody>', '',
           '  <actuator>']
     for jn, key, lo, hi in acts:
-        eff = MOTORS[key]["peak_Nm"]
+        eff = (MOTORS[key]["peak_Nm"] if key else
+               sum(MOTORS[ANKLE_JOINT[jn]["motor"]]["peak_Nm"] * k for k in ANKLE_JOINT[jn]["gear"]))
         L.append('    <position name="act_%s" joint="%s" kp="%g" dampratio="1" '
                  'ctrlrange="%.5f %.5f" forcerange="-%g %g"/>   <!-- %s -->'
                  % (jn, jn, KP[jn], lo, hi, eff, eff, key))
@@ -390,7 +400,7 @@ def main():
               '    <torque name="ft_torque_%s" site="s_ft_%s"/>' % (sd, sd),
               '    <touch  name="grip_%s"      site="s_grip_%s"/>' % (sd, sd)]
     L += ['  </sensor>', '</mujoco>', '']
-    p = os.path.join(HERE, 'scene.xml')
+    p = os.path.abspath(os.path.join(OUT, 'scene.xml'))
     open(p, 'w').write('\n'.join(L))
     print('wrote %s  (%d lines, %d rungs, %d actuators)' % (p, len(L), len(rungs), len(acts)))
 

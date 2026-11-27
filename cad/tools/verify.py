@@ -43,6 +43,14 @@ def main():
             "00e18639c4794eff5a83ea6930ae681433054ba1ed58fbb4b54434d303c4fe19",
         "cubemars_ak45_36_kv80.step":
             "d6d093884d7daab8517e38d75f5b86762dd1363e8c7a758280e77abbfd1e4686",
+        "robstride_04.step":
+            "34547e29ff0312bd1b2eb55c51f99dbd63348a05f24d99871ca14f5b3adb3e95",
+        "myactuator_rmd_x12_320.step":
+            "e2aa1d51e4e86c67ef9dffc5c288f00304ed7526cbe60ed1d8e01e12e9649700",
+        "myactuator_rmd_x15_450.step":
+            "75b51cfb62ec6f5d5b7ecbd426afd1ab76d316267504e1b9d20d635981db461c",
+        "cubemars_ake90_8_kv35.step":
+            "51b3afb3caee98997c3f622cd981fb9826500d8626339c33d219ef024a46e338",
     }
     for key, d in MOTORS.items():
         p = os.path.join(HERE, "..", "vendor", d["step"])
@@ -59,12 +67,12 @@ def main():
     for key in MOTORS:
         f = os.path.join(ROOT, "cad", "STEP", "purchased",
                          {"AK80-64": "ak80_64", "AK60-39": "ak60_39",
-                          "AK45-36": "ak45_36"}[key] + ".step")
+                          "AK45-36": "ak45_36", "RS04": "rs04", "X12-320": "x12_320", "X15-450": "x15_450", "AKE90-8": "ake90_8"}[key] + ".step")
         s = bd.import_step(f)
         b = s.bounding_box()
-        L = MOTORS[key]["len_mm"]
-        check("%s spans z %.1f..%.1f (want %.1f..0)" % (key, b.min.Z, b.max.Z, -L),
-              abs(b.max.Z) < 0.1 and abs(b.min.Z + L) < 0.1)
+        L, up = MOTORS[key]["len_mm"], MOTORS[key].get("proud_mm", 0.0)
+        check("%s spans z %.1f..%.1f (want %.1f..%.1f)" % (key, b.min.Z, b.max.Z, up - L, up),
+              abs(b.max.Z - up) < 0.1 and abs(b.min.Z - (up - L)) < 0.1)
 
     h1("3. mass budget - CAD solids + datasheet actuator masses")
     struct = sum(fuse(BUILDERS[l]()).volume * AL for l in BUILDERS)

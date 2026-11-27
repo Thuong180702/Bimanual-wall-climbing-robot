@@ -8,7 +8,9 @@ import os, sys
 import numpy as np, mujoco
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-XML = os.path.join(HERE, "scene.xml")
+sys.path.insert(0, os.path.join(HERE, "..", "cad", "src"))
+from lib.spec import OUT_DIR                          # noqa: E402  urdf/, or urdf/full/
+XML = os.path.join(HERE, "..", OUT_DIR, "scene.xml")
 FLEX, ROLL = np.radians(-160.0), np.radians(5.0)
 
 m = mujoco.MjModel.from_xml_path(XML)
